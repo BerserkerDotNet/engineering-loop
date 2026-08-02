@@ -149,11 +149,19 @@ first remote write:
 2. Verify the approved RCA and fix-plan commits are still ancestors with
    `git merge-base --is-ancestor`, and that no unrelated commit entered the lineage.
 3. Verify the target is the original default branch supplied by the coordinator.
-4. Run a full-lineage secret and PII scan across every commit that will be published, for
-   example `git diff <original-default>...HEAD`, checking for secrets, tokens, authorization
-   headers, cookies, connection strings, personal or customer identifiers, and local
-   filesystem paths. Any hit blocks delivery: report it, treat exposed credentials as
-   compromised, and never rewrite history to hide it.
+4. Run a history-aware full-lineage secret and PII scan across every commit that will be
+   published. Scanning only the final aggregate diff is insufficient: a secret introduced in
+   one commit and deleted in a later commit disappears from `git diff <original-default>...HEAD`
+   while remaining permanently readable in the published history. Scan every commit, patch,
+   and tree in the range `<original-default>..HEAD`. Use a repository-native history-aware
+   secret scanner when the repository already provides one. Otherwise enumerate the commits
+   explicitly with `git rev-list <original-default>..HEAD` and scan each commit's own patch
+   and its resulting tree, for example `git show --format=%H --patch <commit>` and
+   `git grep -I -n -e <pattern> <commit>`. Scan for secrets, tokens, authorization headers,
+   cookies, connection strings, personal or customer identifiers, and local filesystem paths.
+   Any hit anywhere in that range blocks delivery: report it, treat exposed credentials as
+   compromised, abandon the contaminated lineage and re-derive the work cleanly from the
+   original default branch, and never rewrite history to hide it.
 5. Query remote state with `git ls-remote --heads <remote> <branch>` and check for an
    existing same-head pull request with `gh pr list --head <branch> --state all`, using the
    unqualified branch name for a same-repository head. If a pull request already exists,
@@ -183,7 +191,7 @@ TARGET: <original default branch>
 PR_NUMBER: <number>
 PR_URL: <url>
 HEAD_COMMIT: <full hash>
-SECRET_SCAN: clean
+SECRET_SCAN: clean across <commit-count> commits in <original-default>..HEAD
 ```
 
 Deliver each requested terminal envelope exactly once with `send_session_message` to the

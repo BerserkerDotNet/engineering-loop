@@ -430,15 +430,29 @@ the ledger state `delivery_started`.
 If any check fails, send `REVOKE` with the failed check, and return to the earliest affected
 gate.
 
-The implementation session then repeats its freshness checks, runs a full-lineage secret/PII
-scan across every commit it will publish, pushes only its own branch, checks for a duplicate
-pull request, creates exactly one pull request against the original default branch, and
-returns `PR_CREATED`. Move the ledger through `push_attempted`, `push_confirmed`, and
-`pr_confirmed` as each is proven.
+The implementation session then repeats its freshness checks, runs a history-aware
+full-lineage secret/PII scan across every commit it will publish, pushes only its own
+branch, checks for a duplicate pull request, creates exactly one pull request against the
+original default branch, and returns `PR_CREATED`. Move the ledger through
+`push_attempted`, `push_confirmed`, and `pr_confirmed` as each is proven.
 
-If the secret/PII scan finds a hit in unpushed lineage, block. Abandon that lineage, treat
-exposed credentials as compromised, and re-derive the work cleanly from the original default.
-Never rebase, force-push, reset, amend, or rewrite history to hide it.
+The full-lineage secret/PII scan must be history-aware. Scanning only the final aggregate
+diff is insufficient: a secret introduced in one commit and deleted in a later commit
+disappears from `git diff <original-default>...HEAD` while remaining permanently readable in
+the published history. Require the implementation session to scan every commit, patch, and
+tree in the range `<original-default>..HEAD`. Use a repository-native history-aware secret
+scanner when the repository already provides one. Otherwise require explicit commit
+enumeration with `git rev-list <original-default>..HEAD`, scanning each commit's own patch
+and its resulting tree, for example `git show --format=%H --patch <commit>` and
+`git grep -I -n -e <pattern> <commit>`. Scan for the same categories used for evidence
+redaction: secrets, tokens, authorization headers, cookies, connection strings, personal or
+customer identifiers, and local filesystem paths. Require the returned scan attestation to
+name the scanned range and the number of commits actually scanned; a bare claim of a clean
+final diff is not acceptable evidence.
+
+If the secret/PII scan finds a hit anywhere in unpushed lineage, block. Abandon that lineage,
+treat exposed credentials as compromised, and re-derive the work cleanly from the original
+default. Never rebase, force-push, reset, amend, or rewrite history to hide it.
 
 ## Vocabulary
 

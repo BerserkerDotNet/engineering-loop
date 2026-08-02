@@ -12,6 +12,14 @@
     repository into throwaway fixtures under the temporary directory, mutates the
     copies, and requires the validator to reject every negative fixture.
 
+    The contract checks are structural: they prove the skills state their rules, not
+    that an agent obeys them at run time. The one executable exception is the
+    history-aware secret-scan proof in -SelfTest, which builds a throwaway Git
+    repository whose earlier commit contains a synthetic token that a later commit
+    removes, then demonstrates that the final aggregate diff misses that token while
+    the per-commit scan prescribed by skills/issue-resolution detects it. That proof
+    is skipped, and reported as skipped, when no git executable is on PATH.
+
 .PARAMETER RepoRoot
     Repository root to validate. Defaults to the parent directory of this script.
 
@@ -563,6 +571,43 @@ function Test-ResolutionCoverage {
     }
 }
 
+function Test-SecretScanContract {
+    param([string] $Root, [string] $SkillText, [System.Collections.Generic.List[string]] $Violations)
+
+    $requirements = [ordered]@{
+        'history-aware'        = 'history-aware'
+        'final-diff-rejected'  = 'Scanning only the final aggregate diff is insufficient'
+        'full-range'           = 'every commit, patch, and tree in the range `<original-default>..HEAD`'
+        'native-scanner'       = 'repository-native history-aware secret scanner'
+        'commit-enumeration'   = 'git rev-list <original-default>..HEAD'
+        'per-commit-patch'     = 'git show --format=%H --patch <commit>'
+        'per-commit-tree'      = 'git grep -I -n -e <pattern> <commit>'
+        'redaction-categories' = 'connection strings, personal or customer identifiers, and local filesystem paths'
+        'contaminated-lineage' = 're-derive the work cleanly from the original default'
+    }
+
+    $targets = [ordered]@{
+        'issue-resolution/SKILL.md' = $SkillText
+    }
+
+    $implPath = Join-Path $Root 'skills/issue-resolution/prompts/implementation.md'
+    if (Test-Path -LiteralPath $implPath -PathType Leaf) {
+        $targets['issue-resolution/prompts/implementation.md'] = Get-NormalizedText -Path $implPath
+    }
+
+    foreach ($label in $targets.Keys) {
+        $text = $targets[$label]
+        foreach ($id in $requirements.Keys) {
+            if (-not (Test-Contains $text ([regex]::Escape($requirements[$id])))) {
+                Add-Violation $Violations 'secret-scan' "$label no longer states the history-aware secret-scan requirement '$id' (expected '$($requirements[$id])')."
+            }
+        }
+        if (Test-Contains $text 'for example `git diff <original-default>\.\.\.HEAD`') {
+            Add-Violation $Violations 'secret-scan' "$label offers the final aggregate diff as the secret-scan method; that diff cannot see a secret removed by a later commit."
+        }
+    }
+}
+
 function Test-SafetyDrift {    param([string] $Root, [string] $SkillText, [System.Collections.Generic.List[string]] $Violations)
 
     $referencePath = Join-Path $Root 'skills/engineering-loop/SKILL.md'
@@ -686,6 +731,7 @@ function Get-SkillViolations {
         Test-AuthorityHandshake -Root $Root -SkillText $skillText -Violations $violations
         Test-ProhibitedActions -SkillText $skillText -Violations $violations
         Test-ResolutionCoverage -SkillText $skillText -Violations $violations
+        Test-SecretScanContract -Root $Root -SkillText $skillText -Violations $violations
         Test-SafetyDrift -Root $Root -SkillText $skillText -Violations $violations
     }
 
@@ -841,6 +887,36 @@ function Get-NegativeFixtures {
             }
         },
         @{
+            Name  = 'skill-secret-scan-not-history-aware'
+            Apply = {
+                param([string] $Dir)
+                Edit-FixtureFile -Path (Join-Path $Dir 'skills/issue-resolution/SKILL.md') `
+                    -Find 'Scanning only the final aggregate\s+diff is insufficient' `
+                    -ReplaceWith 'A clean final diff is sufficient'
+            }
+        },
+        @{
+            Name  = 'implementation-final-diff-only-scan'
+            Apply = {
+                param([string] $Dir)
+                $path = Join-Path $Dir 'skills/issue-resolution/prompts/implementation.md'
+                $text = [System.IO.File]::ReadAllText($path)
+                $start = $text.IndexOf('4. Run a history-aware full-lineage secret')
+                if ($start -lt 0) { throw "Self-test fixture mutation did not apply: step 4 not found in $path." }
+                $end = $text.IndexOf('5. Query remote state', $start)
+                if ($end -lt 0) { throw "Self-test fixture mutation did not apply: step 5 not found in $path." }
+                $regressed = @"
+4. Run a full-lineage secret and PII scan across every commit that will be published, for
+   example ``git diff <original-default>...HEAD``, checking for secrets, tokens, authorization
+   headers, cookies, connection strings, personal or customer identifiers, and local
+   filesystem paths. Any hit blocks delivery: report it, treat exposed credentials as
+   compromised, and never rewrite history to hide it.
+
+"@
+                [System.IO.File]::WriteAllText($path, $text.Substring(0, $start) + $regressed + $text.Substring($end))
+            }
+        },
+        @{
             Name  = 'discovery-metadata-regression'
             Apply = {
                 param([string] $Dir)
@@ -852,12 +928,90 @@ function Get-NegativeFixtures {
     )
 }
 
+function Invoke-GitCommand {
+    param([string] $RepoDir, [string[]] $Arguments)
+
+    $output = & git -C $RepoDir @Arguments 2>&1
+    return [pscustomobject]@{
+        ExitCode = $LASTEXITCODE
+        Text     = ($output | Out-String)
+    }
+}
+
+function Invoke-HistoryScanProof {
+    param([System.Collections.Generic.List[string]] $Failures)
+
+    $git = Get-Command git -CommandType Application -ErrorAction SilentlyContinue
+    if (-not $git) {
+        Write-Host '  SKIP history-aware secret-scan proof (no git executable on PATH)'
+        return $false
+    }
+
+    # Assembled at runtime so the script itself never stores a contiguous credential-shaped literal.
+    $token = 'SYNTHETIC-' + 'SELFTEST' + '-TOKEN-' + 'a1b2c3d4e5f6a7b8'
+    $repo = Join-Path ([System.IO.Path]::GetTempPath()) ('validate-skills-historyscan-' + [Guid]::NewGuid().ToString('n'))
+    New-Item -ItemType Directory -Path $repo -Force | Out-Null
+
+    try {
+        Invoke-GitCommand $repo @('init', '--quiet') | Out-Null
+        Invoke-GitCommand $repo @('config', 'user.name', 'Skill Validator') | Out-Null
+        Invoke-GitCommand $repo @('config', 'user.email', 'validator@example.invalid') | Out-Null
+        Invoke-GitCommand $repo @('config', 'commit.gpgsign', 'false') | Out-Null
+
+        [System.IO.File]::WriteAllText((Join-Path $repo 'app.txt'), "baseline`n")
+        Invoke-GitCommand $repo @('add', '-A') | Out-Null
+        Invoke-GitCommand $repo @('commit', '--quiet', '-m', 'baseline') | Out-Null
+        $baseRef = (Invoke-GitCommand $repo @('rev-parse', 'HEAD')).Text.Trim()
+
+        [System.IO.File]::WriteAllText((Join-Path $repo 'config.txt'), "api_key = $token`n")
+        Invoke-GitCommand $repo @('add', '-A') | Out-Null
+        Invoke-GitCommand $repo @('commit', '--quiet', '-m', 'add configuration') | Out-Null
+
+        [System.IO.File]::WriteAllText((Join-Path $repo 'config.txt'), "api_key = REDACTED`n")
+        Invoke-GitCommand $repo @('add', '-A') | Out-Null
+        Invoke-GitCommand $repo @('commit', '--quiet', '-m', 'remove configuration value') | Out-Null
+
+        $aggregate = (Invoke-GitCommand $repo @('diff', "$baseRef...HEAD")).Text
+        $aggregateSeesToken = $aggregate.Contains($token)
+
+        $commits = @((Invoke-GitCommand $repo @('rev-list', "$baseRef..HEAD")).Text -split '\r?\n' | Where-Object { $_ -ne '' })
+        $historySeesToken = $false
+        foreach ($commit in $commits) {
+            $patch = (Invoke-GitCommand $repo @('show', '--format=%H', '--patch', $commit)).Text
+            $tree = (Invoke-GitCommand $repo @('grep', '-I', '-n', '-e', $token, $commit)).Text
+            if ($patch.Contains($token) -or $tree.Contains($token)) { $historySeesToken = $true }
+        }
+
+        if ($aggregateSeesToken) {
+            $Failures.Add('history-scan proof: the aggregate final diff still contained the synthetic token, so the fixture did not model a removed-but-published secret') | Out-Null
+        }
+        if (-not $historySeesToken) {
+            $Failures.Add('history-scan proof: the per-commit scan prescribed by the skill failed to detect the synthetic token in published history') | Out-Null
+        }
+
+        if (-not $aggregateSeesToken -and $historySeesToken) {
+            Write-Host "  PASS history-aware secret-scan proof ($($commits.Count) commits enumerated; final aggregate diff missed the token, prescribed per-commit scan found it)"
+        }
+        else {
+            Write-Host '  FAIL history-aware secret-scan proof'
+        }
+
+        return $true
+    }
+    finally {
+        if (Test-Path -LiteralPath $repo) {
+            Remove-Item -LiteralPath $repo -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
+}
+
 function Invoke-SelfTest {
     param([string] $Root)
 
     $resolved = (Resolve-Path -LiteralPath $Root).Path
     $sandbox = Join-Path ([System.IO.Path]::GetTempPath()) ('validate-skills-selftest-' + [Guid]::NewGuid().ToString('n'))
     $failures = [System.Collections.Generic.List[string]]::new()
+    $historyProofRan = $false
     $negatives = Get-NegativeFixtures
 
     try {
@@ -884,6 +1038,8 @@ function Invoke-SelfTest {
                 Write-Host "  PASS negative fixture $($negative.Name) (rejected)"
             }
         }
+
+        $historyProofRan = Invoke-HistoryScanProof -Failures $failures
     }
     finally {
         if (Test-Path -LiteralPath $sandbox) {
@@ -892,7 +1048,8 @@ function Invoke-SelfTest {
     }
 
     if ($failures.Count -eq 0) {
-        Write-Host "SELF-TEST PASS: clean fixture accepted and $($negatives.Count) negative fixtures rejected."
+        $proofNote = if ($historyProofRan) { ' and the history-aware secret-scan proof held' } else { ' (history-aware secret-scan proof skipped: no git)' }
+        Write-Host "SELF-TEST PASS: clean fixture accepted, $($negatives.Count) negative fixtures rejected$proofNote."
         return 0
     }
 

@@ -112,6 +112,13 @@ otherwise. `-SelfTest` copies the repository into temporary fixtures, breaks eac
 contract in turn, and requires the validator to reject every broken fixture; it
 never writes into this repository.
 
+The contract checks are structural. The one executable check is the history-aware
+secret-scan proof inside `-SelfTest`: it builds a throwaway Git repository whose
+earlier commit contains a synthetic token that a later commit removes, then shows
+that the final aggregate diff no longer sees that token while the per-commit scan
+prescribed by `skills/issue-resolution` still finds it in published history. The
+proof is skipped, and reported as skipped, when no `git` executable is available.
+
 ## Release
 
 Copy the current user-level skill directories into `skills/engineering-loop/`
