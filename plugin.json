@@ -1,0 +1,20 @@
+{
+  "name": "engineering-loop",
+  "description": "Coordinates requirements, design, independent critique, approval, implementation, pull request, and retrospective.",
+  "version": "1.0.0",
+  "author": {
+    "name": "BerserkerDotNet",
+    "email": "noreply@example.com"
+  },
+  "keywords": [
+    "copilot-cli",
+    "engineering",
+    "orchestration",
+    "requirements",
+    "design",
+    "implementation"
+  ],
+  "skills": [
+    "skills/"
+  ]
+}

@@ -1,0 +1,19 @@
+{
+  "name": "engineering-loop-marketplace",
+  "owner": {
+    "name": "BerserkerDotNet",
+    "email": "noreply@example.com"
+  },
+  "metadata": {
+    "description": "Plugin marketplace for the engineering-loop skill.",
+    "version": "1.0.0"
+  },
+  "plugins": [
+    {
+      "name": "engineering-loop",
+      "description": "Coordinates requirements, design, independent critique, approval, implementation, pull request, and retrospective.",
+      "version": "1.0.0",
+      "source": "."
+    }
+  ]
+}
