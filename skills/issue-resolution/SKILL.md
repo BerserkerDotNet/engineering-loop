@@ -189,7 +189,10 @@ Evidence intake happens in this coordinator session, before any child exists.
 
 Usable reproduction evidence requires all of:
 
-1. Environment: build, version, platform, and configuration that exhibits the defect.
+1. Environment: the exact code under test, identified precisely enough to check out or
+   install — a release version when one exists, and the commit SHA or build identifier it
+   was produced from when the version alone is ambiguous. Include the platform (OS,
+   runtime, browser, or device) and the configuration or feature flags in effect.
 2. Preconditions: starting state, data, and account or permission context.
 3. Actions: the ordered steps or request that triggers the defect.
 4. Input: concrete values used.

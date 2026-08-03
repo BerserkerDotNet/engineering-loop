@@ -13,7 +13,7 @@ it affects, and how often. Do not state the fix.
 
 | Element | Detail |
 |---|---|
-| Environment | <build, version, platform, configuration> |
+| Environment | <release version and/or commit SHA, platform, configuration> |
 | Preconditions | <starting state, data, permissions> |
 | Actions | <ordered steps or request> |
 | Input | <concrete values> |
