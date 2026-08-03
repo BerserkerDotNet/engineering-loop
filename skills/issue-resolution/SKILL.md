@@ -10,6 +10,16 @@ this coordinator session and delegate every phase to child project sessions. Use
 when observed behavior is wrong and needs a root cause before any code change, not to design
 or build a new capability. It requires the GitHub Copilot app session tools.
 
+## Mandatory order
+
+Phase 0 gates run in this order and nothing may be skipped, reordered, or deferred:
+capability gate, launch identity, target preflight, then Phase 1 evidence intake.
+
+Missing reproduction evidence never permits skipping or delaying Phase 0. Evidence is a
+Phase 1 concern and Phase 1 is unreachable until every Phase 0 gate passes, so a capability
+problem is always the earlier stop. When both a capability problem and an evidence problem
+exist, one terminal Phase 0 `BLOCKED` report names both.
+
 ## Supporting files
 
 Read each of these, relative to this skill directory, at the start of its phase and never
@@ -56,7 +66,16 @@ this workflow. Never edit another skill's files from this workflow.
 
 ## Phase 0: establish the run
 
-### Step 1: resolve launch identity
+### Step 1: capability gate
+
+Before resolving anything about the target, require every one of these app tools to be
+available: `list_projects`, `list_sessions_and_chats`, `create_session`, `get_session`,
+`send_session_message`, and `ask_user`. Launch identity needs the first two, and every later
+phase needs the rest, so one missing tool ends the run here.
+
+If any is missing, apply the blocked contract below in full and name each missing tool exactly.
+
+### Step 2: launch identity
 
 Resolve only what identifies the run: the defect and its user-visible symptom in enough detail
 to recognize a duplicate, the target project and repository, that repository's default branch
@@ -70,29 +89,41 @@ collect reproduction evidence, and do not create any child session here.
 The captured project default branch is the only pull-request base for the whole run. Never
 infer the base from the current branch and never retarget a supporting branch.
 
-### Step 2: preflight
+### Step 3: target preflight
 
-Preflight depends on knowing the target, so it runs immediately after Step 1 and before
-evidence collection, repository investigation, and any child creation.
+These checks need a resolved target, so they run after Step 2 and before evidence intake,
+repository investigation, and any child creation.
 
-Require the tools `create_session`, `get_session`, `send_session_message`, and `ask_user`; the
-resolved project to be a local Git repository project exposing `main_repo_path`;
+Require the resolved project to be a local Git repository project exposing `main_repo_path`;
 `create_session` accepting a local branch name in `base_branch`, because every handoff uses an
 unpushed branch; and that `gh` is installed and authenticated for the resolved target
 repository, because the same implementation session later creates the PR.
 
-If anything is missing, stop and report `BLOCKED` naming each missing capability exactly.
-There is no cloud, folder, single-session, or default-branch fallback. Do not read, search,
-diagnose, or edit repository files. Offer no alternative path for this defect, including one
-described as direct, lighter-weight, manual, or outside this skill, and never treat silence
-as permission. Do not close by inviting the user to authorize work outside this skill; the
-run resumes only once the missing capability exists. When reproduction evidence is also
-incomplete, list the missing evidence elements from Phase 1 in the same `BLOCKED` report
-(environment, preconditions, actions, input, expected result, actual result, reproducibility),
-and repeat that telemetry never replaces usable reproduction steps, so the user can supply
-what is needed.
+If any is missing, apply the blocked contract below in full and name each missing capability
+exactly.
 
-### Step 3: run namespace
+### Blocked contract
+
+Both Phase 0 gates end the run this way and have no other ending. Stop, change no file, and
+report `BLOCKED`. Do not read, search, diagnose, or edit repository files. There is no cloud,
+folder, single-session, or default-branch fallback, and no alternative path for this defect,
+including one described as direct, lighter-weight, manual, or outside this skill.
+
+The `BLOCKED` report always contains, in this order:
+
+1. Every missing capability, named exactly.
+2. Every reproduction evidence element the user has not yet supplied, drawn from the Phase 1
+   list (environment, preconditions, actions, input, expected result, actual result,
+   reproducibility). Always list them from the message you already have, without
+   investigating. Never defer this part or answer that evidence was not evaluated.
+3. The reminder that telemetry never replaces usable reproduction steps.
+4. What the user must restore for the run to resume.
+
+Never treat silence as permission, and never close by offering, proposing, or inviting work
+outside this skill. End with the line `This run cannot continue until the missing capability
+exists.` and write nothing after it.
+
+### Step 4: run namespace
 
 Artifacts always live at `docs/issue-resolution/<issue-id-and-slug>/rca.md` and
 `.../fix-plan.md`, slug lowercase kebab-case from the tracker ID or symptom. If that directory
@@ -154,6 +185,9 @@ approved commit; the authority epoch and any revocation; every superseded sessio
 invalidation that superseded it; and the final PR number and URL.
 
 ## Phase 1: evidence intake
+
+Enter Phase 1 only after both Phase 0 gates pass; missing evidence is not evaluated as an
+earlier phase.
 
 Happens in this coordinator session, before any child exists. Usable reproduction evidence
 requires all of:
