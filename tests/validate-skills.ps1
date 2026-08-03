@@ -5,8 +5,9 @@
 
 .DESCRIPTION
     Dependency-free contract validator. It proves that the packaged skills stay
-    discoverable, internally consistent, and aligned with the normative safety
-    invariants recorded in skills/engineering-loop/SKILL.md.
+    discoverable, internally consistent, and independently self-contained: each
+    skill must state the shared safety baseline in its own SKILL.md, and no skill
+    may resolve its rules against another skill.
 
     The validator never writes into the inspected repository. -SelfTest copies the
     repository into throwaway fixtures under the temporary directory, mutates the
@@ -114,70 +115,58 @@ $script:LedgerStates = @(
     'push_attempted', 'push_confirmed', 'pr_confirmed', 'blocked', 'superseded'
 )
 
-# Normative safety invariants. Reference is the statement that must still exist in
-# skills/engineering-loop/SKILL.md; Mirror is the equivalent statement required in
-# skills/issue-resolution/SKILL.md. A missing Reference means the normative source
-# drifted and the mirrored rule must be re-derived deliberately.
+# Shared safety baseline. Each published skill must state every one of these statements in
+# its own SKILL.md. Neither skill is normative over the other and neither may reference the
+# other; this is a repository-level parity check so a rule cannot be silently dropped from
+# one skill while the repository still ships the other.
 $script:SafetyInvariants = @(
     @{
         Id        = 'single-control-point'
-        Reference = 'is the only user-facing control point'
-        Mirror    = 'is the only user-facing control point'
+        Statement = 'is the only user-facing control point'
     },
     @{
         Id        = 'separate-sessions'
-        Reference = 'separate app project sessions'
-        Mirror    = 'separate app project sessions'
+        Statement = 'separate app project sessions'
     },
     @{
         Id        = 'writer-never-pushes'
-        Reference = 'They never push or create PRs\.'
-        Mirror    = 'They never push or create PRs\.'
+        Statement = 'They never push or create PRs\.'
     },
     @{
         Id        = 'critique-read-only'
-        Reference = 'read-only\. They never edit, commit, push, or create PRs\.'
-        Mirror    = 'read-only\. They never edit, commit, push, or create PRs\.'
+        Statement = 'read-only\. They never edit, commit, push, or create PRs\.'
     },
     @{
         Id        = 'no-model-substitution'
-        Reference = 'silently substitute a selected model'
-        Mirror    = 'silently substitute a selected model'
+        Statement = 'silently substitute a selected model'
     },
     @{
         Id        = 'same-session-delivers-pr'
-        Reference = 'The same implementation session that wrote the code pushes and creates the PR\.'
-        Mirror    = 'The same implementation session that wrote the code pushes and creates the PR\.'
+        Statement = 'The same implementation session that wrote the code pushes and creates the PR\.'
     },
     @{
         Id        = 'no-critique-artifact'
-        Reference = 'persist raw critique output in the repository'
-        Mirror    = 'persist raw critique output in the repository'
+        Statement = 'persist raw critique output in the repository'
     },
     @{
         Id        = 'retro-report-only'
-        Reference = 'reports proposals only'
-        Mirror    = 'reports proposals only'
+        Statement = 'reports proposals only'
     },
     @{
         Id        = 'no-success-after-blocker'
-        Reference = 'Never claim success after a blocked child, failed validation, failed push, or failed PR creation\.'
-        Mirror    = 'Never claim success after a blocked child, failed validation, failed push, or failed PR creation\.'
+        Statement = 'Never claim success after a blocked child, failed validation, failed push, or failed PR creation\.'
     },
     @{
         Id        = 'envelope-delivered-once'
-        Reference = 'exactly once through `send_session_message`'
-        Mirror    = 'exactly once through `send_session_message`'
+        Statement = 'exactly once through `send_session_message`'
     },
     @{
         Id        = 'no-history-rewrite'
-        Reference = 'Never rebase, force-push, reset, amend, or rewrite history'
-        Mirror    = 'Never rebase, force-push, reset, amend, or rewrite history'
+        Statement = 'Never rebase, force-push, reset, amend, or rewrite history'
     },
     @{
         Id        = 'never-infer-approval'
-        Reference = 'Never infer approval from autonomy settings\.'
-        Mirror    = 'Never infer approval from autonomy settings\.'
+        Statement = 'Never infer approval from autonomy settings\.'
     }
 )
 
@@ -608,18 +597,40 @@ function Test-SecretScanContract {
     }
 }
 
+function Test-SkillIndependence {
+    param([string] $Root, [System.Collections.Generic.List[string]] $Violations)
+
+    $pairs = @(
+        @{ Owner = $script:DefectSkill; Foreign = $script:FeatureSkill },
+        @{ Owner = $script:FeatureSkill; Foreign = $script:DefectSkill }
+    )
+
+    foreach ($pair in $pairs) {
+        $skillDir = Join-Path $Root ('skills/' + $pair.Owner)
+        if (-not (Test-Path -LiteralPath $skillDir -PathType Container)) { continue }
+
+        foreach ($file in Get-ChildItem -LiteralPath $skillDir -Recurse -File -Filter '*.md') {
+            $text = [System.IO.File]::ReadAllText($file.FullName)
+            if ($text.Contains($pair.Foreign)) {
+                $relative = $file.FullName.Substring($Root.Length).TrimStart('\', '/') -replace '\\', '/'
+                Add-Violation $Violations 'skill-independence' "$relative references the sibling skill '$($pair.Foreign)'. Published skills must be self-contained and must not resolve their rules against, or route the user to, another skill."
+            }
+        }
+    }
+}
+
 function Test-SafetyDrift {    param([string] $Root, [string] $SkillText, [System.Collections.Generic.List[string]] $Violations)
 
-    $referencePath = Join-Path $Root 'skills/engineering-loop/SKILL.md'
-    if (-not (Test-Path -LiteralPath $referencePath -PathType Leaf)) { return }
+    $peerPath = Join-Path $Root 'skills/engineering-loop/SKILL.md'
+    if (-not (Test-Path -LiteralPath $peerPath -PathType Leaf)) { return }
 
-    $reference = Get-NormalizedText -Path $referencePath
+    $peer = Get-NormalizedText -Path $peerPath
     foreach ($invariant in $script:SafetyInvariants) {
-        if (-not (Test-Contains $reference $invariant.Reference)) {
-            Add-Violation $Violations 'safety-drift' "Normative reference skills/engineering-loop/SKILL.md no longer states invariant '$($invariant.Id)'; the mirrored rule must be re-derived deliberately."
+        if (-not (Test-Contains $peer $invariant.Statement)) {
+            Add-Violation $Violations 'safety-drift' "skills/engineering-loop/SKILL.md no longer states shared safety baseline '$($invariant.Id)'; each published skill must state it independently."
         }
-        if (-not (Test-Contains $SkillText $invariant.Mirror)) {
-            Add-Violation $Violations 'safety-drift' "issue-resolution/SKILL.md drifted from safety invariant '$($invariant.Id)'."
+        if (-not (Test-Contains $SkillText $invariant.Statement)) {
+            Add-Violation $Violations 'safety-drift' "issue-resolution/SKILL.md no longer states shared safety baseline '$($invariant.Id)'."
         }
     }
 }
@@ -736,6 +747,7 @@ function Get-SkillViolations {
     }
 
     Test-PhaseContracts -Root $Root -Violations $violations
+    Test-SkillIndependence -Root $Root -Violations $violations
     Test-Discovery -Root $Root -Violations $violations
     return , $violations
 }
@@ -914,6 +926,15 @@ function Get-NegativeFixtures {
 
 "@
                 [System.IO.File]::WriteAllText($path, $text.Substring(0, $start) + $regressed + $text.Substring($end))
+            }
+        },
+        @{
+            Name  = 'cross-skill-reference'
+            Apply = {
+                param([string] $Dir)
+                $path = Join-Path $Dir 'skills/issue-resolution/SKILL.md'
+                $text = [System.IO.File]::ReadAllText($path)
+                [System.IO.File]::WriteAllText($path, $text + "`nSee ``skills/engineering-loop/SKILL.md`` for the shared rules.`n")
             }
         },
         @{

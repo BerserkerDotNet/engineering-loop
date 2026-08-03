@@ -10,8 +10,8 @@ this coordinator session. Delegate root cause analysis, critique, fix planning, 
 implementation to child project sessions.
 
 This workflow targets the GitHub Copilot app session tools. It is not a generic single-agent
-checklist, and it does not replace `engineering-loop`. Use `engineering-loop` for new
-capabilities; use this skill when observed behavior is wrong.
+checklist. Use it when observed behavior is wrong and a reproducible defect needs a root
+cause before any code changes. Do not use it to design or build a new capability.
 
 ## Required supporting files
 
@@ -30,9 +30,9 @@ Do not improvise a phase prompt from memory when its supporting file is availabl
 every placeholder in a supporting prompt with run-specific content before sending it. A
 prompt that still contains an unreplaced `<PLACEHOLDER>` is not ready to send.
 
-`skills/engineering-loop/SKILL.md` is the normative in-repository safety reference for the
-shared rubric, delivery, read-only, and history invariants restated below. Never edit it from
-this workflow.
+This file is self-contained. The invariants below are the complete normative safety rules for
+this workflow; do not resolve them against any other skill. Never edit another skill's files
+from this workflow.
 
 ## Non-negotiable invariants
 

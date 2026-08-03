@@ -99,8 +99,9 @@ are loaded by the same plugin.
 `tests/validate-skills.ps1` is a dependency-free structural validator. It checks
 required resources, unique skill frontmatter, the exact model table, the two
 approval gates, revision-bound critiques, the delivery vocabulary and authority
-handshake, prohibited actions, and drift from the safety invariants recorded in
-`skills/engineering-loop/SKILL.md`.
+handshake, prohibited actions, that each skill is self-contained and never
+references the other, and that every skill states the shared safety baseline in
+its own `SKILL.md`.
 
 ```powershell
 pwsh -File tests/validate-skills.ps1 -RepoRoot .
