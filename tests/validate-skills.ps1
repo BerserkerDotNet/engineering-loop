@@ -743,6 +743,8 @@ function Get-SkillViolations {
         Test-ProhibitedActions -SkillText $skillText -Violations $violations
         Test-ResolutionCoverage -SkillText $skillText -Violations $violations
         Test-SecretScanContract -Root $Root -SkillText $skillText -Violations $violations
+        Test-BlockingContract -SkillText $skillText -Violations $violations
+        Test-EvidenceFloor -SkillText $skillText -Violations $violations
         Test-SafetyDrift -Root $Root -SkillText $skillText -Violations $violations
     }
 
@@ -750,6 +752,48 @@ function Get-SkillViolations {
     Test-SkillIndependence -Root $Root -Violations $violations
     Test-Discovery -Root $Root -Violations $violations
     return , $violations
+}
+
+function Test-BlockingContract {
+    param([string] $SkillText, [System.Collections.Generic.List[string]] $Violations)
+
+    # A preflight blocker is only load-bearing if it is terminal. Wording that merely rules
+    # out alternative *session* strategies lets an agent read the rule, agree with it, and
+    # then do the work itself in the coordinator session.
+    $required = [ordered]@{
+        'preflight-runs-first'    = 'before anything else'
+        'no-single-session'       = 'single-session'
+        'no-alternative-path'     = 'Offer no alternative path for this defect'
+        'no-outside-skill-bypass' = 'outside this skill'
+        'no-silence-as-consent'   = 'never treat silence\s+as permission'
+        'no-work-while-blocked'   = 'Do not read, search, diagnose, or edit repository files'
+        'blocked-is-terminal'     = '`BLOCKED` is the final answer'
+        'evidence-listed-when-blocked' = 'list the missing evidence\s+elements from Phase 1 in the same `BLOCKED` report'
+        'telemetry-restated-when-blocked' = 'repeat that telemetry never replaces'
+    }
+
+    foreach ($id in $required.Keys) {
+        if (-not (Test-Contains $SkillText $required[$id])) {
+            Add-Violation $Violations 'blocking-contract' "issue-resolution/SKILL.md no longer makes the capability blocker terminal: missing '$id' (expected '$($required[$id])')."
+        }
+    }
+}
+
+function Test-EvidenceFloor {
+    param([string] $SkillText, [System.Collections.Generic.List[string]] $Violations)
+
+    foreach ($element in @(
+            'Environment',
+            'Preconditions',
+            'Actions',
+            'Input',
+            'Expected result',
+            'Actual result',
+            'Reproducibility')) {
+        if (-not (Test-Contains $SkillText ('\d\. ' + [regex]::Escape($element)))) {
+            Add-Violation $Violations 'evidence-floor' "issue-resolution/SKILL.md no longer enumerates reproduction evidence element '$element'."
+        }
+    }
 }
 
 function Invoke-SkillValidation {
@@ -836,7 +880,7 @@ function Get-NegativeFixtures {
             Apply = {
                 param([string] $Dir)
                 Edit-FixtureFile -Path (Join-Path $Dir 'skills/issue-resolution/SKILL.md') `
-                    -Find 'Never infer approval from autonomy settings\.' `
+                    -Find 'Never infer approval from\s+autonomy settings\.' `
                     -ReplaceWith 'Autonomy settings may imply approval.'
             }
         },
@@ -854,8 +898,8 @@ function Get-NegativeFixtures {
             Apply = {
                 param([string] $Dir)
                 Edit-FixtureFile -Path (Join-Path $Dir 'skills/issue-resolution/SKILL.md') `
-                    -Find 'Question: `Approve fix plan\?`' `
-                    -ReplaceWith 'Question: `Approve fix plan?` Question: `Approve implementation?`'
+                    -Find '`Approve fix plan\?`' `
+                    -ReplaceWith '`Approve fix plan?` `Approve implementation?`'
             }
         },
         @{
@@ -935,6 +979,26 @@ function Get-NegativeFixtures {
                 $path = Join-Path $Dir 'skills/issue-resolution/SKILL.md'
                 $text = [System.IO.File]::ReadAllText($path)
                 [System.IO.File]::WriteAllText($path, $text + "`nSee ``skills/engineering-loop/SKILL.md`` for the shared rules.`n")
+            }
+        },
+        @{
+            Name  = 'soft-preflight-blocker'
+            Apply = {
+                param([string] $Dir)
+                # Regression to wording that only rules out alternative session strategies.
+                # Live probes showed an agent then bypasses the blocker and edits code.
+                Edit-FixtureFile -Path (Join-Path $Dir 'skills/issue-resolution/SKILL.md') `
+                    -Find 'There is no cloud, folder, single-session, or default-branch fallback\. Do not read, search,\s+diagnose, or edit repository files\. Offer no alternative path for this defect, including one\s+described as direct, lighter-weight, manual, or outside this skill, and never treat silence\s+as permission\.' `
+                    -ReplaceWith 'There is no cloud, folder, or default-branch fallback.'
+            }
+        },
+        @{
+            Name  = 'missing-evidence-floor-element'
+            Apply = {
+                param([string] $Dir)
+                Edit-FixtureFile -Path (Join-Path $Dir 'skills/issue-resolution/SKILL.md') `
+                    -Find '7\. Reproducibility:' `
+                    -ReplaceWith '7. Frequency:'
             }
         },
         @{
