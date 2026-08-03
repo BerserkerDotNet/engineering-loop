@@ -744,6 +744,7 @@ function Get-SkillViolations {
         Test-ResolutionCoverage -SkillText $skillText -Violations $violations
         Test-SecretScanContract -Root $Root -SkillText $skillText -Violations $violations
         Test-BlockingContract -SkillText $skillText -Violations $violations
+        Test-PhaseZeroOrdering -SkillText $skillText -Violations $violations
         Test-EvidenceFloor -SkillText $skillText -Violations $violations
         Test-SafetyDrift -Root $Root -SkillText $skillText -Violations $violations
     }
@@ -761,14 +762,15 @@ function Test-BlockingContract {
     # out alternative *session* strategies lets an agent read the rule, agree with it, and
     # then do the work itself in the coordinator session.
     $required = [ordered]@{
-        'preflight-runs-first'    = 'before anything else'
+        'preflight-runs-before-work' = 'runs immediately after Step 1 and before\s+evidence collection, repository investigation, and any child creation'
         'no-single-session'       = 'single-session'
         'no-alternative-path'     = 'Offer no alternative path for this defect'
         'no-outside-skill-bypass' = 'outside this skill'
+        'no-out-of-skill-invitation' = 'Do not close by inviting the user to authorize work outside this\s+skill'
         'no-silence-as-consent'   = 'never treat silence\s+as permission'
         'no-work-while-blocked'   = 'Do not read, search, diagnose, or edit repository files'
         'blocked-is-terminal'     = '`BLOCKED` is the final answer'
-        'evidence-listed-when-blocked' = 'list the missing evidence\s+elements from Phase 1 in the same `BLOCKED` report'
+        'evidence-listed-when-blocked' = 'list the missing evidence\s+elements from Phase 1 in the same `BLOCKED` report\s+\(environment, preconditions, actions, input, expected result, actual result, reproducibility\)'
         'telemetry-restated-when-blocked' = 'repeat that telemetry never replaces'
     }
 
@@ -792,6 +794,94 @@ function Test-EvidenceFloor {
             'Reproducibility')) {
         if (-not (Test-Contains $SkillText ('\d\. ' + [regex]::Escape($element)))) {
             Add-Violation $Violations 'evidence-floor' "issue-resolution/SKILL.md no longer enumerates reproduction evidence element '$element'."
+        }
+    }
+}
+
+function Get-AnchorIndex {
+    param([string] $Text, [string] $Pattern)
+
+    $match = [regex]::Match($Text, $Pattern)
+    if ($match.Success) { return $match.Index }
+    return -1
+}
+
+function Test-PhaseZeroOrdering {
+    param([string] $SkillText, [System.Collections.Generic.List[string]] $Violations)
+
+    # Preflight validates target-specific facts (a local project exposing main_repo_path, and
+    # gh auth for the target repository), so it cannot run before the step that resolves the
+    # target. Prose alone cannot express an impossible order, so the order is asserted
+    # positionally: identity -> preflight -> evidence intake -> any child creation.
+    $anchors = [ordered]@{
+        'launch identity resolution' = '### Step 1: resolve launch identity'
+        'preflight'                  = '### Step 2: preflight'
+        'evidence intake'            = '## Phase 1: evidence intake'
+        'child launch contract'      = '## Child launch contract'
+    }
+
+    $index = [ordered]@{}
+    foreach ($name in $anchors.Keys) {
+        $found = Get-AnchorIndex $SkillText ([regex]::Escape($anchors[$name]))
+        if ($found -lt 0) {
+            Add-Violation $Violations 'phase-zero-ordering' "issue-resolution/SKILL.md is missing the '$name' section heading '$($anchors[$name])'."
+        }
+        $index[$name] = $found
+    }
+    if (@($index.Values | Where-Object { $_ -lt 0 }).Count -gt 0) { return }
+
+    $names = @($anchors.Keys)
+    $ordered = $true
+    for ($i = 1; $i -lt $names.Count; $i++) {
+        if ($index[$names[$i]] -lt $index[$names[$i - 1]]) {
+            $ordered = $false
+            Add-Violation $Violations 'phase-zero-ordering' "issue-resolution/SKILL.md places '$($names[$i])' before '$($names[$i - 1])'; the required order is $($names -join ' -> ')."
+        }
+    }
+    if (-not $ordered) { return }
+
+    $identityBlock = $SkillText.Substring($index['launch identity resolution'], $index['preflight'] - $index['launch identity resolution'])
+    $preflightBlock = $SkillText.Substring($index['preflight'], $index['evidence intake'] - $index['preflight'])
+    $beforeIdentity = $SkillText.Substring(0, $index['launch identity resolution'])
+
+    $identityRules = [ordered]@{
+        'project-discovery'  = 'list_projects'
+        'run-discovery'      = 'list_sessions_and_chats'
+        'no-code-inspection' = 'Do not inspect, search, or diagnose repository code'
+        'no-child-creation'  = 'do not create any child session here'
+    }
+    foreach ($id in $identityRules.Keys) {
+        if (-not (Test-Contains $identityBlock $identityRules[$id])) {
+            Add-Violation $Violations 'phase-zero-ordering' "issue-resolution/SKILL.md launch identity step is missing '$id' (expected '$($identityRules[$id])')."
+        }
+    }
+
+    # Target-specific preflight checks must live in preflight, which follows target resolution.
+    $targetSpecific = [ordered]@{
+        'local-project-path' = 'main_repo_path'
+        'gh-auth-for-target' = 'is installed and authenticated'
+    }
+    foreach ($id in $targetSpecific.Keys) {
+        if (-not (Test-Contains $preflightBlock $targetSpecific[$id])) {
+            Add-Violation $Violations 'phase-zero-ordering' "issue-resolution/SKILL.md preflight step no longer requires '$id' (expected '$($targetSpecific[$id])')."
+        }
+        if (Test-Contains $beforeIdentity $targetSpecific[$id]) {
+            Add-Violation $Violations 'phase-zero-ordering' "issue-resolution/SKILL.md requires target-specific check '$id' before the target is resolved."
+        }
+    }
+
+    if (-not (Test-Contains $preflightBlock 'runs immediately after Step 1 and before\s+evidence collection, repository investigation, and any child creation')) {
+        Add-Violation $Violations 'phase-zero-ordering' 'issue-resolution/SKILL.md preflight step no longer states that it precedes evidence collection, repository investigation, and child creation.'
+    }
+
+    # The consolidated approval procedure must still name its phase numbers, otherwise
+    # Phase 5 and Phase 7 appear to follow undefined phases.
+    if (-not (Test-Contains $SkillText 'Phase 4 is RCA approval and Phase 6 is fix-plan approval')) {
+        Add-Violation $Violations 'phase-zero-ordering' 'issue-resolution/SKILL.md does not identify the approval gates as Phase 4 and Phase 6.'
+    }
+    foreach ($row in @('\| Phase 4 [^|]*RCA \|', '\| Phase 6 [^|]*fix plan \|')) {
+        if (-not (Test-Contains $SkillText $row)) {
+            Add-Violation $Violations 'phase-zero-ordering' "issue-resolution/SKILL.md approval gate table is missing a row matching '$row'."
         }
     }
 }
@@ -999,6 +1089,52 @@ function Get-NegativeFixtures {
                 Edit-FixtureFile -Path (Join-Path $Dir 'skills/issue-resolution/SKILL.md') `
                     -Find '7\. Reproducibility:' `
                     -ReplaceWith '7. Frequency:'
+            }
+        },
+        @{
+            Name  = 'blocked-report-invites-out-of-skill-work'
+            Apply = {
+                param([string] $Dir)
+                # A live probe blocked correctly, then closed with "just say the word" and
+                # offered to fix the defect outside the skill. Removing this sentence must
+                # fail, because the observed failure mode is the closing invitation itself.
+                Edit-FixtureFile -Path (Join-Path $Dir 'skills/issue-resolution/SKILL.md') `
+                    -Find ' Do not close by inviting the user to authorize work outside this\s+skill; the\s+run resumes only once the missing capability exists\.' `
+                    -ReplaceWith ''
+            }
+        },
+        @{
+            Name  = 'preflight-before-target-resolution'
+            Apply = {
+                param([string] $Dir)
+                # Swaps Step 1 and Step 2 so preflight validates main_repo_path and gh auth
+                # for a target the coordinator has not resolved yet: an impossible order.
+                $path = Join-Path $Dir 'skills/issue-resolution/SKILL.md'
+                $text = [System.IO.File]::ReadAllText($path)
+                $pattern = '(?s)(### Step 1: resolve launch identity.*?)(### Step 2: preflight.*?)(### Step 3: run namespace)'
+                $updated = [regex]::Replace($text, $pattern, { param($m) $m.Groups[2].Value + $m.Groups[1].Value + $m.Groups[3].Value })
+                if ($updated -eq $text) {
+                    throw "Self-test fixture mutation did not apply: Phase 0 step blocks not found in $path."
+                }
+                [System.IO.File]::WriteAllText($path, $updated)
+            }
+        },
+        @{
+            Name  = 'identity-step-allows-repository-inspection'
+            Apply = {
+                param([string] $Dir)
+                Edit-FixtureFile -Path (Join-Path $Dir 'skills/issue-resolution/SKILL.md') `
+                    -Find 'This step resolves identity only\. Do not inspect, search, or diagnose repository code, do not\s+collect reproduction evidence, and do not create any child session here\.' `
+                    -ReplaceWith 'Investigate the repository as needed while resolving identity.'
+            }
+        },
+        @{
+            Name  = 'unnumbered-approval-gates'
+            Apply = {
+                param([string] $Dir)
+                Edit-FixtureFile -Path (Join-Path $Dir 'skills/issue-resolution/SKILL.md') `
+                    -Find 'Phase 4 is RCA approval and Phase 6 is fix-plan approval' `
+                    -ReplaceWith 'Both gates share one procedure'
             }
         },
         @{

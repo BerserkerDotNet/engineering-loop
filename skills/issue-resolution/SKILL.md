@@ -56,32 +56,43 @@ this workflow. Never edit another skill's files from this workflow.
 
 ## Phase 0: establish the run
 
-### Preflight
+### Step 1: resolve launch identity
 
-Run this before anything else, including before investigating the defect.
+Resolve only what identifies the run: the defect and its user-visible symptom in enough detail
+to recognize a duplicate, the target project and repository, that repository's default branch
+recorded once as the original default, and whether a run already exists for the same defect.
+Use `list_projects` and `list_sessions_and_chats`, and ask one focused `ask_user` question at
+a time when ambiguous.
 
-Require the tools `create_session`, `get_session`, `send_session_message`, and `ask_user`; a
-local Git repository project exposing `main_repo_path`; `create_session` accepting a local
-branch name in `base_branch`, because every handoff uses an unpushed branch; and that `gh`
-is installed and authenticated for the target repository, because the same implementation
-session later creates the PR.
+This step resolves identity only. Do not inspect, search, or diagnose repository code, do not
+collect reproduction evidence, and do not create any child session here.
+
+The captured project default branch is the only pull-request base for the whole run. Never
+infer the base from the current branch and never retarget a supporting branch.
+
+### Step 2: preflight
+
+Preflight depends on knowing the target, so it runs immediately after Step 1 and before
+evidence collection, repository investigation, and any child creation.
+
+Require the tools `create_session`, `get_session`, `send_session_message`, and `ask_user`; the
+resolved project to be a local Git repository project exposing `main_repo_path`;
+`create_session` accepting a local branch name in `base_branch`, because every handoff uses an
+unpushed branch; and that `gh` is installed and authenticated for the resolved target
+repository, because the same implementation session later creates the PR.
 
 If anything is missing, stop and report `BLOCKED` naming each missing capability exactly.
 There is no cloud, folder, single-session, or default-branch fallback. Do not read, search,
 diagnose, or edit repository files. Offer no alternative path for this defect, including one
 described as direct, lighter-weight, manual, or outside this skill, and never treat silence
-as permission. When reproduction evidence is also incomplete, list the missing evidence
-elements from Phase 1 in the same `BLOCKED` report, and repeat that telemetry never replaces
-usable reproduction steps, so the user can supply what is needed.
+as permission. Do not close by inviting the user to authorize work outside this skill; the
+run resumes only once the missing capability exists. When reproduction evidence is also
+incomplete, list the missing evidence elements from Phase 1 in the same `BLOCKED` report
+(environment, preconditions, actions, input, expected result, actual result, reproducibility),
+and repeat that telemetry never replaces usable reproduction steps, so the user can supply
+what is needed.
 
-### Launch inputs
-
-Capture with `list_projects` and `list_sessions_and_chats`: the symptom, the target project
-and repository, the default branch (recorded once as the original default), and any existing
-run for the same defect. Ask one focused `ask_user` question at a time when ambiguous.
-
-The captured project default branch is the only pull-request base for the whole run. Never
-infer the base from the current branch and never retarget a supporting branch.
+### Step 3: run namespace
 
 Artifacts always live at `docs/issue-resolution/<issue-id-and-slug>/rca.md` and
 `.../fix-plan.md`, slug lowercase kebab-case from the tracker ID or symptom. If that directory
@@ -244,18 +255,20 @@ resolve that critic's accepted findings close through the resolution map and nee
 critic. Inspect the updated artifact and the map before requesting approval; return any
 silently skipped finding to the writer.
 
-## Approval gates
+## Phases 4 and 6: approval gates
 
-Both gates use this procedure, and there are no others. Present a short summary, a clickable
-link to the artifact in its worktree plus the repository-relative path, what it depends on,
-the key accepted and rejected critique findings with rationale, and any remaining material
-risk. Then ask with `ask_user`, offering exactly the choices `Approved` and
-`Needs refinement`.
+Phase 4 is RCA approval and Phase 6 is fix-plan approval. They share one procedure, described
+here once, and there are no other user gates.
+
+Present a short summary, a clickable link to the artifact in its worktree plus the
+repository-relative path, what it depends on, the key accepted and rejected critique findings
+with rationale, and any remaining material risk. Then ask with `ask_user`, offering exactly
+the choices `Approved` and `Needs refinement`.
 
 | Gate | Ledger state | Question | Refinement question | Also state |
 |---|---|---|---|---|
-| RCA | `awaiting_rca_approval` | `Approve RCA?` | `What should be refined in the RCA?` | The evidence IDs relied on and the stated confidence |
-| Fix plan | `awaiting_plan_approval` | `Approve fix plan?` | `What should be refined in the fix plan?` | That approving grants implementation, push, and pull-request authority with no further approval prompt |
+| Phase 4 — RCA | `awaiting_rca_approval` | `Approve RCA?` | `What should be refined in the RCA?` | The evidence IDs relied on and the stated confidence |
+| Phase 6 — fix plan | `awaiting_plan_approval` | `Approve fix plan?` | `What should be refined in the fix plan?` | That approving grants implementation, push, and pull-request authority with no further approval prompt |
 
 On `Needs refinement`: ask the free-form refinement question, send the feedback to the same
 writer session, and require an updated artifact, a new local commit, and a change summary.
