@@ -5,8 +5,9 @@
 
 .DESCRIPTION
     Dependency-free contract validator. It proves that the packaged skills stay
-    discoverable, internally consistent, and aligned with the normative safety
-    invariants recorded in skills/engineering-loop/SKILL.md.
+    discoverable, internally consistent, and independently self-contained: each
+    skill must state the shared safety baseline in its own SKILL.md, and no skill
+    may resolve its rules against another skill.
 
     The validator never writes into the inspected repository. -SelfTest copies the
     repository into throwaway fixtures under the temporary directory, mutates the
@@ -114,70 +115,58 @@ $script:LedgerStates = @(
     'push_attempted', 'push_confirmed', 'pr_confirmed', 'blocked', 'superseded'
 )
 
-# Normative safety invariants. Reference is the statement that must still exist in
-# skills/engineering-loop/SKILL.md; Mirror is the equivalent statement required in
-# skills/issue-resolution/SKILL.md. A missing Reference means the normative source
-# drifted and the mirrored rule must be re-derived deliberately.
+# Shared safety baseline. Each published skill must state every one of these statements in
+# its own SKILL.md. Neither skill is normative over the other and neither may reference the
+# other; this is a repository-level parity check so a rule cannot be silently dropped from
+# one skill while the repository still ships the other.
 $script:SafetyInvariants = @(
     @{
         Id        = 'single-control-point'
-        Reference = 'is the only user-facing control point'
-        Mirror    = 'is the only user-facing control point'
+        Statement = 'is the only user-facing control point'
     },
     @{
         Id        = 'separate-sessions'
-        Reference = 'separate app project sessions'
-        Mirror    = 'separate app project sessions'
+        Statement = 'separate app project sessions'
     },
     @{
         Id        = 'writer-never-pushes'
-        Reference = 'They never push or create PRs\.'
-        Mirror    = 'They never push or create PRs\.'
+        Statement = 'They never push or create PRs\.'
     },
     @{
         Id        = 'critique-read-only'
-        Reference = 'read-only\. They never edit, commit, push, or create PRs\.'
-        Mirror    = 'read-only\. They never edit, commit, push, or create PRs\.'
+        Statement = 'read-only\. They never edit, commit, push, or create PRs\.'
     },
     @{
         Id        = 'no-model-substitution'
-        Reference = 'silently substitute a selected model'
-        Mirror    = 'silently substitute a selected model'
+        Statement = 'silently substitute a selected model'
     },
     @{
         Id        = 'same-session-delivers-pr'
-        Reference = 'The same implementation session that wrote the code pushes and creates the PR\.'
-        Mirror    = 'The same implementation session that wrote the code pushes and creates the PR\.'
+        Statement = 'The same implementation session that wrote the code pushes and creates the PR\.'
     },
     @{
         Id        = 'no-critique-artifact'
-        Reference = 'persist raw critique output in the repository'
-        Mirror    = 'persist raw critique output in the repository'
+        Statement = 'persist raw critique output in the repository'
     },
     @{
         Id        = 'retro-report-only'
-        Reference = 'reports proposals only'
-        Mirror    = 'reports proposals only'
+        Statement = 'reports proposals only'
     },
     @{
         Id        = 'no-success-after-blocker'
-        Reference = 'Never claim success after a blocked child, failed validation, failed push, or failed PR creation\.'
-        Mirror    = 'Never claim success after a blocked child, failed validation, failed push, or failed PR creation\.'
+        Statement = 'Never claim success after a blocked child, failed validation, failed push, or failed PR creation\.'
     },
     @{
         Id        = 'envelope-delivered-once'
-        Reference = 'exactly once through `send_session_message`'
-        Mirror    = 'exactly once through `send_session_message`'
+        Statement = 'exactly once through `send_session_message`'
     },
     @{
         Id        = 'no-history-rewrite'
-        Reference = 'Never rebase, force-push, reset, amend, or rewrite history'
-        Mirror    = 'Never rebase, force-push, reset, amend, or rewrite history'
+        Statement = 'Never rebase, force-push, reset, amend, or rewrite history'
     },
     @{
         Id        = 'never-infer-approval'
-        Reference = 'Never infer approval from autonomy settings\.'
-        Mirror    = 'Never infer approval from autonomy settings\.'
+        Statement = 'Never infer approval from autonomy settings\.'
     }
 )
 
@@ -608,18 +597,40 @@ function Test-SecretScanContract {
     }
 }
 
+function Test-SkillIndependence {
+    param([string] $Root, [System.Collections.Generic.List[string]] $Violations)
+
+    $pairs = @(
+        @{ Owner = $script:DefectSkill; Foreign = $script:FeatureSkill },
+        @{ Owner = $script:FeatureSkill; Foreign = $script:DefectSkill }
+    )
+
+    foreach ($pair in $pairs) {
+        $skillDir = Join-Path $Root ('skills/' + $pair.Owner)
+        if (-not (Test-Path -LiteralPath $skillDir -PathType Container)) { continue }
+
+        foreach ($file in Get-ChildItem -LiteralPath $skillDir -Recurse -File -Filter '*.md') {
+            $text = [System.IO.File]::ReadAllText($file.FullName)
+            if ($text.Contains($pair.Foreign)) {
+                $relative = $file.FullName.Substring($Root.Length).TrimStart('\', '/') -replace '\\', '/'
+                Add-Violation $Violations 'skill-independence' "$relative references the sibling skill '$($pair.Foreign)'. Published skills must be self-contained and must not resolve their rules against, or route the user to, another skill."
+            }
+        }
+    }
+}
+
 function Test-SafetyDrift {    param([string] $Root, [string] $SkillText, [System.Collections.Generic.List[string]] $Violations)
 
-    $referencePath = Join-Path $Root 'skills/engineering-loop/SKILL.md'
-    if (-not (Test-Path -LiteralPath $referencePath -PathType Leaf)) { return }
+    $peerPath = Join-Path $Root 'skills/engineering-loop/SKILL.md'
+    if (-not (Test-Path -LiteralPath $peerPath -PathType Leaf)) { return }
 
-    $reference = Get-NormalizedText -Path $referencePath
+    $peer = Get-NormalizedText -Path $peerPath
     foreach ($invariant in $script:SafetyInvariants) {
-        if (-not (Test-Contains $reference $invariant.Reference)) {
-            Add-Violation $Violations 'safety-drift' "Normative reference skills/engineering-loop/SKILL.md no longer states invariant '$($invariant.Id)'; the mirrored rule must be re-derived deliberately."
+        if (-not (Test-Contains $peer $invariant.Statement)) {
+            Add-Violation $Violations 'safety-drift' "skills/engineering-loop/SKILL.md no longer states shared safety baseline '$($invariant.Id)'; each published skill must state it independently."
         }
-        if (-not (Test-Contains $SkillText $invariant.Mirror)) {
-            Add-Violation $Violations 'safety-drift' "issue-resolution/SKILL.md drifted from safety invariant '$($invariant.Id)'."
+        if (-not (Test-Contains $SkillText $invariant.Statement)) {
+            Add-Violation $Violations 'safety-drift' "issue-resolution/SKILL.md no longer states shared safety baseline '$($invariant.Id)'."
         }
     }
 }
@@ -732,12 +743,180 @@ function Get-SkillViolations {
         Test-ProhibitedActions -SkillText $skillText -Violations $violations
         Test-ResolutionCoverage -SkillText $skillText -Violations $violations
         Test-SecretScanContract -Root $Root -SkillText $skillText -Violations $violations
+        Test-BlockingContract -SkillText $skillText -Violations $violations
+        Test-PhaseZeroOrdering -SkillText $skillText -Violations $violations
+        Test-EvidenceFloor -SkillText $skillText -Violations $violations
         Test-SafetyDrift -Root $Root -SkillText $skillText -Violations $violations
     }
 
     Test-PhaseContracts -Root $Root -Violations $violations
+    Test-SkillIndependence -Root $Root -Violations $violations
     Test-Discovery -Root $Root -Violations $violations
     return , $violations
+}
+
+function Test-BlockingContract {
+    param([string] $SkillText, [System.Collections.Generic.List[string]] $Violations)
+
+    # A preflight blocker is only load-bearing if it is terminal. Wording that merely rules
+    # out alternative *session* strategies lets an agent read the rule, agree with it, and
+    # then do the work itself in the coordinator session.
+    $required = [ordered]@{
+        'preflight-runs-before-work' = 'they run after Step 2 and before evidence intake,\s+repository investigation, and any child creation'
+        'no-single-session'       = 'single-session'
+        'no-alternative-path'     = 'no alternative path for this defect'
+        'no-outside-skill-bypass' = 'outside this skill'
+        'no-out-of-skill-invitation' = 'never close by offering,\s+proposing, or inviting work outside this skill'
+        'no-silence-as-consent'   = 'Never treat silence as permission'
+        'no-work-while-blocked'   = 'Do not read, search, diagnose, or edit repository files'
+        'blocked-is-terminal'     = '`BLOCKED` is the final answer'
+        'evidence-listed-when-blocked' = 'Every reproduction evidence element the user has not yet supplied, drawn from the Phase 1\s+list \(environment, preconditions, actions, input, expected result, actual result,\s+reproducibility\)'
+        'telemetry-restated-when-blocked' = 'The reminder that telemetry never replaces usable reproduction steps'
+        'blocked-report-terminal-line' = 'End with the line `This run cannot continue until the missing capability\s+exists\.` and write nothing after it'
+        'evidence-never-deferred' = 'Never\s+defer this part or answer that evidence was not evaluated'
+    }
+
+    foreach ($id in $required.Keys) {
+        if (-not (Test-Contains $SkillText $required[$id])) {
+            Add-Violation $Violations 'blocking-contract' "issue-resolution/SKILL.md no longer makes the capability blocker terminal: missing '$id' (expected '$($required[$id])')."
+        }
+    }
+}
+
+function Test-EvidenceFloor {
+    param([string] $SkillText, [System.Collections.Generic.List[string]] $Violations)
+
+    foreach ($element in @(
+            'Environment',
+            'Preconditions',
+            'Actions',
+            'Input',
+            'Expected result',
+            'Actual result',
+            'Reproducibility')) {
+        if (-not (Test-Contains $SkillText ('\d\. ' + [regex]::Escape($element)))) {
+            Add-Violation $Violations 'evidence-floor' "issue-resolution/SKILL.md no longer enumerates reproduction evidence element '$element'."
+        }
+    }
+}
+
+function Get-AnchorIndex {
+    param([string] $Text, [string] $Pattern)
+
+    $match = [regex]::Match($Text, $Pattern)
+    if ($match.Success) { return $match.Index }
+    return -1
+}
+
+function Test-PhaseZeroOrdering {
+    param([string] $SkillText, [System.Collections.Generic.List[string]] $Violations)
+
+    # The capability gate must be reachable even when the defect report carries no
+    # reproduction evidence: a live probe skipped Phase 0 entirely and reported only
+    # needs_reproduction. Order is asserted positionally because prose alone cannot express
+    # an impossible sequence, and the gate contents are asserted per section so a tool cannot
+    # be named only in later prose.
+    $anchors = [ordered]@{
+        'capability gate'       = '### Step 1: capability gate'
+        'launch identity'       = '### Step 2: launch identity'
+        'target preflight'      = '### Step 3: target preflight'
+        'blocked contract'      = '### Blocked contract'
+        'evidence intake'       = '## Phase 1: evidence intake'
+        'child launch contract' = '## Child launch contract'
+    }
+
+    $index = [ordered]@{}
+    foreach ($name in $anchors.Keys) {
+        $found = Get-AnchorIndex $SkillText ([regex]::Escape($anchors[$name]))
+        if ($found -lt 0) {
+            Add-Violation $Violations 'phase-zero-ordering' "issue-resolution/SKILL.md is missing the '$name' section heading '$($anchors[$name])'."
+        }
+        $index[$name] = $found
+    }
+    if (@($index.Values | Where-Object { $_ -lt 0 }).Count -gt 0) { return }
+
+    $names = @($anchors.Keys)
+    $isOrdered = $true
+    for ($i = 1; $i -lt $names.Count; $i++) {
+        if ($index[$names[$i]] -lt $index[$names[$i - 1]]) {
+            $isOrdered = $false
+            Add-Violation $Violations 'phase-zero-ordering' "issue-resolution/SKILL.md places '$($names[$i])' before '$($names[$i - 1])'; the required order is $($names -join ' -> ')."
+        }
+    }
+    if (-not $isOrdered) { return }
+
+    $capabilityBlock = $SkillText.Substring($index['capability gate'], $index['launch identity'] - $index['capability gate'])
+    $identityBlock = $SkillText.Substring($index['launch identity'], $index['target preflight'] - $index['launch identity'])
+    $preflightBlock = $SkillText.Substring($index['target preflight'], $index['blocked contract'] - $index['target preflight'])
+    $phaseOneBlock = $SkillText.Substring($index['evidence intake'], $index['child launch contract'] - $index['evidence intake'])
+    $beforeCapability = $SkillText.Substring(0, $index['capability gate'])
+
+    # Every app tool the run depends on must be gated before the target is resolved.
+    foreach ($tool in @('list_projects', 'list_sessions_and_chats', 'create_session', 'get_session', 'send_session_message', 'ask_user')) {
+        if (-not (Test-Contains $capabilityBlock ([regex]::Escape($tool)))) {
+            Add-Violation $Violations 'phase-zero-ordering' "issue-resolution/SKILL.md capability gate does not require '$tool' before launch identity."
+        }
+    }
+
+    $identityRules = [ordered]@{
+        'project-discovery'  = 'list_projects'
+        'run-discovery'      = 'list_sessions_and_chats'
+        'no-code-inspection' = 'Do not inspect, search, or diagnose repository code'
+        'no-child-creation'  = 'do not create any child session here'
+    }
+    foreach ($id in $identityRules.Keys) {
+        if (-not (Test-Contains $identityBlock $identityRules[$id])) {
+            Add-Violation $Violations 'phase-zero-ordering' "issue-resolution/SKILL.md launch identity step is missing '$id' (expected '$($identityRules[$id])')."
+        }
+    }
+
+    # Target-specific checks must live in target preflight, which follows target resolution.
+    $targetSpecific = [ordered]@{
+        'local-project-path' = 'main_repo_path'
+        'gh-auth-for-target' = 'is installed and authenticated'
+    }
+    foreach ($id in $targetSpecific.Keys) {
+        if (-not (Test-Contains $preflightBlock $targetSpecific[$id])) {
+            Add-Violation $Violations 'phase-zero-ordering' "issue-resolution/SKILL.md target preflight no longer requires '$id' (expected '$($targetSpecific[$id])')."
+        }
+        if (Test-Contains $beforeCapability $targetSpecific[$id]) {
+            Add-Violation $Violations 'phase-zero-ordering' "issue-resolution/SKILL.md requires target-specific check '$id' before the capability gate."
+        }
+    }
+
+    if (-not (Test-Contains $preflightBlock 'they run after Step 2 and before evidence intake,\s+repository investigation, and any child creation')) {
+        Add-Violation $Violations 'phase-zero-ordering' 'issue-resolution/SKILL.md target preflight no longer states that it precedes evidence intake, repository investigation, and child creation.'
+    }
+
+    # Both gates must route to one canonical blocked contract rather than restating it.
+    foreach ($id in @('capability gate', 'target preflight')) {
+        $block = if ($id -eq 'capability gate') { $capabilityBlock } else { $preflightBlock }
+        if (-not (Test-Contains $block 'apply the blocked contract below')) {
+            Add-Violation $Violations 'phase-zero-ordering' "issue-resolution/SKILL.md $id does not route a missing capability to the canonical blocked contract."
+        }
+    }
+
+    # Missing evidence must never be treated as the earlier stop.
+    if (-not (Test-Contains $phaseOneBlock 'Enter Phase 1 only after both Phase 0 gates pass; missing evidence is not evaluated as an\s+earlier phase')) {
+        Add-Violation $Violations 'phase-zero-ordering' 'issue-resolution/SKILL.md Phase 1 is missing the entry guard that forbids evaluating missing evidence before the Phase 0 gates.'
+    }
+    if (-not (Test-Contains $beforeCapability 'capability gate, launch identity, target preflight, then Phase 1 evidence intake')) {
+        Add-Violation $Violations 'phase-zero-ordering' 'issue-resolution/SKILL.md does not state the mandatory Phase 0 order before the detailed phases.'
+    }
+    if (-not (Test-Contains $beforeCapability 'Missing reproduction evidence never permits skipping or delaying Phase 0')) {
+        Add-Violation $Violations 'phase-zero-ordering' 'issue-resolution/SKILL.md does not state that missing reproduction evidence never defers Phase 0.'
+    }
+
+    # The consolidated approval procedure must still name its phase numbers, otherwise
+    # Phase 5 and Phase 7 appear to follow undefined phases.
+    if (-not (Test-Contains $SkillText 'Phase 4 is RCA approval and Phase 6 is fix-plan approval')) {
+        Add-Violation $Violations 'phase-zero-ordering' 'issue-resolution/SKILL.md does not identify the approval gates as Phase 4 and Phase 6.'
+    }
+    foreach ($row in @('\| Phase 4 [^|]*RCA \|', '\| Phase 6 [^|]*fix plan \|')) {
+        if (-not (Test-Contains $SkillText $row)) {
+            Add-Violation $Violations 'phase-zero-ordering' "issue-resolution/SKILL.md approval gate table is missing a row matching '$row'."
+        }
+    }
 }
 
 function Invoke-SkillValidation {
@@ -793,10 +972,14 @@ function Edit-FixtureFile {
         [string] $ReplaceWith
     )
 
+    # $Find is literal source text, not a regex. Every run of whitespace matches any run of
+    # whitespace so a fixture keeps working when a paragraph is rewrapped; without this the
+    # self-test fails on line-break churn rather than on real contract loss.
+    $pattern = (($Find.Trim() -split '\s+' | ForEach-Object { [regex]::Escape($_) }) -join '\s+')
     $text = [System.IO.File]::ReadAllText($Path)
-    $updated = [regex]::Replace($text, $Find, { param($m) $ReplaceWith })
+    $updated = [regex]::Replace($text, $pattern, { param($m) $ReplaceWith })
     if ($updated -eq $text) {
-        throw "Self-test fixture mutation did not apply: pattern '$Find' not found in $Path."
+        throw "Self-test fixture mutation did not apply: text '$Find' not found in $Path."
     }
     [System.IO.File]::WriteAllText($Path, $updated)
 }
@@ -815,7 +998,7 @@ function Get-NegativeFixtures {
             Apply = {
                 param([string] $Dir)
                 Edit-FixtureFile -Path (Join-Path $Dir 'skills/engineering-loop/SKILL.md') `
-                    -Find 'Critique sessions are read-only\. They never edit, commit, push, or create PRs\.' `
+                    -Find 'Critique sessions are read-only. They never edit, commit, push, or create PRs.' `
                     -ReplaceWith 'Critique sessions may edit files.'
             }
         },
@@ -824,7 +1007,7 @@ function Get-NegativeFixtures {
             Apply = {
                 param([string] $Dir)
                 Edit-FixtureFile -Path (Join-Path $Dir 'skills/issue-resolution/SKILL.md') `
-                    -Find 'Never infer approval from autonomy settings\.' `
+                    -Find 'Never infer approval from autonomy settings.' `
                     -ReplaceWith 'Autonomy settings may imply approval.'
             }
         },
@@ -842,8 +1025,8 @@ function Get-NegativeFixtures {
             Apply = {
                 param([string] $Dir)
                 Edit-FixtureFile -Path (Join-Path $Dir 'skills/issue-resolution/SKILL.md') `
-                    -Find 'Question: `Approve fix plan\?`' `
-                    -ReplaceWith 'Question: `Approve fix plan?` Question: `Approve implementation?`'
+                    -Find '`Approve fix plan?`' `
+                    -ReplaceWith '`Approve fix plan?` `Approve implementation?`'
             }
         },
         @{
@@ -864,7 +1047,7 @@ function Get-NegativeFixtures {
                 $featureDescription = (Get-Frontmatter -Path $featurePath)['description']
                 $defectDescription = (Get-Frontmatter -Path $defectPath)['description']
                 Edit-FixtureFile -Path $defectPath `
-                    -Find ([regex]::Escape($defectDescription)) `
+                    -Find $defectDescription `
                     -ReplaceWith $featureDescription
             }
         },
@@ -891,7 +1074,7 @@ function Get-NegativeFixtures {
             Apply = {
                 param([string] $Dir)
                 Edit-FixtureFile -Path (Join-Path $Dir 'skills/issue-resolution/SKILL.md') `
-                    -Find 'Scanning only the final aggregate\s+diff is insufficient' `
+                    -Find 'Scanning only the final aggregate diff is insufficient' `
                     -ReplaceWith 'A clean final diff is sufficient'
             }
         },
@@ -914,6 +1097,139 @@ function Get-NegativeFixtures {
 
 "@
                 [System.IO.File]::WriteAllText($path, $text.Substring(0, $start) + $regressed + $text.Substring($end))
+            }
+        },
+        @{
+            Name  = 'cross-skill-reference'
+            Apply = {
+                param([string] $Dir)
+                $path = Join-Path $Dir 'skills/issue-resolution/SKILL.md'
+                $text = [System.IO.File]::ReadAllText($path)
+                [System.IO.File]::WriteAllText($path, $text + "`nSee ``skills/engineering-loop/SKILL.md`` for the shared rules.`n")
+            }
+        },
+        @{
+            Name  = 'soft-preflight-blocker'
+            Apply = {
+                param([string] $Dir)
+                # Regression to wording that only rules out alternative session strategies.
+                # Live probes showed an agent then bypasses the blocker and edits code.
+                Edit-FixtureFile -Path (Join-Path $Dir 'skills/issue-resolution/SKILL.md') `
+                    -Find 'There is no cloud, folder, single-session, or default-branch fallback, and no alternative path for this defect, including one described as direct, lighter-weight, manual, or outside this skill.' `
+                    -ReplaceWith 'There is no cloud, folder, or default-branch fallback.'
+            }
+        },
+        @{
+            Name  = 'missing-evidence-floor-element'
+            Apply = {
+                param([string] $Dir)
+                Edit-FixtureFile -Path (Join-Path $Dir 'skills/issue-resolution/SKILL.md') `
+                    -Find '7. Reproducibility:' `
+                    -ReplaceWith '7. Frequency:'
+            }
+        },
+        @{
+            Name  = 'blocked-report-invites-out-of-skill-work'
+            Apply = {
+                param([string] $Dir)
+                # A live probe blocked correctly, then closed with "just say the word" and
+                # offered to fix the defect outside the skill. Removing this sentence must
+                # fail, because the observed failure mode is the closing invitation itself.
+                Edit-FixtureFile -Path (Join-Path $Dir 'skills/issue-resolution/SKILL.md') `
+                    -Find 'Never treat silence as permission, and never close by offering, proposing, or inviting work outside this skill.' `
+                    -ReplaceWith ''
+            }
+        },
+        @{
+            Name  = 'blocked-report-defers-evidence'
+            Apply = {
+                param([string] $Dir)
+                # A live probe answered the evidence part with "not yet evaluated" because a
+                # capability gap blocks earlier; the report must still enumerate the gap.
+                Edit-FixtureFile -Path (Join-Path $Dir 'skills/issue-resolution/SKILL.md') `
+                    -Find 'Always list them from the message you already have, without investigating. Never defer this part or answer that evidence was not evaluated.' `
+                    -ReplaceWith 'List them when convenient.'
+            }
+        },
+        @{
+            Name  = 'blocked-report-drops-terminal-line'
+            Apply = {
+                param([string] $Dir)
+                # Without a mandated final line a live probe appended an offer to fix the
+                # defect outside the skill after an otherwise correct BLOCKED report.
+                Edit-FixtureFile -Path (Join-Path $Dir 'skills/issue-resolution/SKILL.md') `
+                    -Find 'End with the line `This run cannot continue until the missing capability exists.` and write nothing after it.' `
+                    -ReplaceWith 'Close however you see fit.'
+            }
+        },
+        @{
+            Name  = 'preflight-before-target-resolution'
+            Apply = {
+                param([string] $Dir)
+                # Swaps launch identity and target preflight so preflight validates
+                # main_repo_path and gh auth for a target that is not resolved yet.
+                $path = Join-Path $Dir 'skills/issue-resolution/SKILL.md'
+                $text = [System.IO.File]::ReadAllText($path)
+                $pattern = '(?s)(### Step 2: launch identity.*?)(### Step 3: target preflight.*?)(### Blocked contract)'
+                $updated = [regex]::Replace($text, $pattern, { param($m) $m.Groups[2].Value + $m.Groups[1].Value + $m.Groups[3].Value })
+                if ($updated -eq $text) {
+                    throw "Self-test fixture mutation did not apply: Phase 0 step blocks not found in $path."
+                }
+                [System.IO.File]::WriteAllText($path, $updated)
+            }
+        },
+        @{
+            Name  = 'evidence-intake-before-capability-gate'
+            Apply = {
+                param([string] $Dir)
+                # A live probe skipped Phase 0 and reported only needs_reproduction, so an
+                # ordering that lets evidence be judged before the tool gate must fail.
+                $path = Join-Path $Dir 'skills/issue-resolution/SKILL.md'
+                $text = [System.IO.File]::ReadAllText($path)
+                $pattern = '(?s)(## Phase 0: establish the run.*?)(## Phase 1: evidence intake.*?)(## Child launch contract)'
+                $updated = [regex]::Replace($text, $pattern, { param($m) $m.Groups[2].Value + $m.Groups[1].Value + $m.Groups[3].Value })
+                if ($updated -eq $text) {
+                    throw "Self-test fixture mutation did not apply: Phase 0 and Phase 1 blocks not found in $path."
+                }
+                [System.IO.File]::WriteAllText($path, $updated)
+            }
+        },
+        @{
+            Name  = 'phase-1-entry-guard-removed'
+            Apply = {
+                param([string] $Dir)
+                Edit-FixtureFile -Path (Join-Path $Dir 'skills/issue-resolution/SKILL.md') `
+                    -Find 'Enter Phase 1 only after both Phase 0 gates pass; missing evidence is not evaluated as an earlier phase.' `
+                    -ReplaceWith 'Evaluate reproduction evidence as soon as the defect is reported, before the Phase 0 gates.'
+            }
+        },
+        @{
+            Name  = 'capability-gate-missing-identity-tools'
+            Apply = {
+                param([string] $Dir)
+                # Dropping the discovery tools from the gate is what let a CLI agent decide
+                # the run could proceed far enough to judge evidence first.
+                Edit-FixtureFile -Path (Join-Path $Dir 'skills/issue-resolution/SKILL.md') `
+                    -Find 'require every one of these app tools to be available: `list_projects`, `list_sessions_and_chats`, `create_session`' `
+                    -ReplaceWith 'require every one of these app tools to be available: `create_session`'
+            }
+        },
+        @{
+            Name  = 'identity-step-allows-repository-inspection'
+            Apply = {
+                param([string] $Dir)
+                Edit-FixtureFile -Path (Join-Path $Dir 'skills/issue-resolution/SKILL.md') `
+                    -Find 'This step resolves identity only. Do not inspect, search, or diagnose repository code, do not collect reproduction evidence, and do not create any child session here.' `
+                    -ReplaceWith 'Investigate the repository as needed while resolving identity.'
+            }
+        },
+        @{
+            Name  = 'unnumbered-approval-gates'
+            Apply = {
+                param([string] $Dir)
+                Edit-FixtureFile -Path (Join-Path $Dir 'skills/issue-resolution/SKILL.md') `
+                    -Find 'Phase 4 is RCA approval and Phase 6 is fix-plan approval' `
+                    -ReplaceWith 'Both gates share one procedure'
             }
         },
         @{

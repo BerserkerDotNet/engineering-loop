@@ -1,46 +1,44 @@
 ---
 name: issue-resolution
-description: Investigate and fix a reproducible defect through evidence-backed root cause analysis, an independent RCA critique, RCA approval, a fix plan, an independent plan critique, plan approval, runtime-validated implementation, and one pull request. Use when the user reports a bug, regression, crash, outage, or incorrect behavior, asks to debug or diagnose an issue, asks for a root cause, or asks to fix a defect that already has or needs reproduction steps. Requires usable reproduction steps, keeps every phase in a separate coordinated app session, and never pushes before the fix plan is explicitly approved.
+description: Fix a reproducible defect through evidence-backed root cause analysis, an independent RCA critique, RCA approval, a fix plan, an independent plan critique, plan approval, runtime-validated implementation, and one pull request. Use when the user reports a bug, regression, crash, outage, or incorrect behavior, asks to debug or diagnose an issue, asks for a root cause, or asks to fix a defect. Requires usable reproduction steps, runs each phase in a separate coordinated app session, and never pushes before the fix plan is explicitly approved.
 ---
 
 # Issue Resolution
 
 Coordinate one reproducible defect from evidence intake to a pull request. Keep the user in
-this coordinator session. Delegate root cause analysis, critique, fix planning, and
-implementation to child project sessions.
+this coordinator session and delegate every phase to child project sessions. Use this skill
+when observed behavior is wrong and needs a root cause before any code change, not to design
+or build a new capability. It requires the GitHub Copilot app session tools.
 
-This workflow targets the GitHub Copilot app session tools. It is not a generic single-agent
-checklist, and it does not replace `engineering-loop`. Use `engineering-loop` for new
-capabilities; use this skill when observed behavior is wrong.
+## Mandatory order
 
-## Required supporting files
+Phase 0 gates run in this order and nothing may be skipped, reordered, or deferred:
+capability gate, launch identity, target preflight, then Phase 1 evidence intake.
 
-Resolve these paths relative to this skill directory and read each file before using its
-phase:
+Missing reproduction evidence never permits skipping or delaying Phase 0. Evidence is a
+Phase 1 concern and Phase 1 is unreachable until every Phase 0 gate passes, so a capability
+problem is always the earlier stop. When both a capability problem and an evidence problem
+exist, one terminal Phase 0 `BLOCKED` report names both.
 
-- `prompts/rca.md`
-- `prompts/artifact-critique.md`
-- `prompts/fix-plan.md`
-- `prompts/implementation.md`
-- `prompts/retro.md`
-- `templates/rca.md`
-- `templates/fix-plan.md`
+## Supporting files
 
-Do not improvise a phase prompt from memory when its supporting file is available. Replace
-every placeholder in a supporting prompt with run-specific content before sending it. A
-prompt that still contains an unreplaced `<PLACEHOLDER>` is not ready to send.
+Read each of these, relative to this skill directory, at the start of its phase and never
+improvise it from memory: `prompts/rca.md`, `prompts/artifact-critique.md`,
+`prompts/fix-plan.md`, `prompts/implementation.md`, `prompts/retro.md`, `templates/rca.md`,
+`templates/fix-plan.md`. Each carries that phase's full execution contract, so this file keeps
+only the decisions you make. Replace every placeholder with run-specific content before
+sending; a prompt still containing `<PLACEHOLDER>` is not ready.
 
-`skills/engineering-loop/SKILL.md` is the normative in-repository safety reference for the
-shared rubric, delivery, read-only, and history invariants restated below. Never edit it from
-this workflow.
+This file is self-contained: the invariants below are the complete normative safety rules for
+this workflow. Never edit another skill's files from this workflow.
 
 ## Non-negotiable invariants
 
-1. This coordinator session is the only user-facing control point. Child questions and
-   results are relayed through it, and every relay identifies the run and phase.
+1. This coordinator session is the only user-facing control point. Every relay identifies the
+   run and phase.
 2. Use separate app project sessions for RCA, each critique, fix planning, and
    implementation.
-3. Writable sessions form one stacked branch lineage:
+3. Writable sessions form one stacked lineage:
    `original-default -> rca -> fix-plan -> implementation/final PR`.
 4. RCA and fix-plan sessions commit locally. They never push or create PRs.
 5. Critique sessions are read-only. They never edit, commit, push, or create PRs.
@@ -58,49 +56,87 @@ this workflow.
     knowledge, or tooling.
 13. Never claim success after a blocked child, failed validation, failed push, or failed PR
     creation.
-14. Every coordinated child delivers each requested terminal envelope exactly once through
+14. Every child delivers each requested terminal envelope exactly once through
     `send_session_message` to this coordinator. Local-chat-only output is not delivery.
 15. No deployment, merge, issue closure, history rewrite, or session deletion is performed by
     this workflow.
+16. When a required capability is missing, `BLOCKED` is the final answer. Never offer,
+    propose, or assume permission to continue without it, by any route inside or outside this
+    skill, and change no file.
 
 ## Phase 0: establish the run
 
-### Gather only missing launch inputs
+### Step 1: capability gate
 
-Determine:
+Before resolving anything about the target, require every one of these app tools to be
+available: `list_projects`, `list_sessions_and_chats`, `create_session`, `get_session`,
+`send_session_message`, and `ask_user`. Launch identity needs the first two, and every later
+phase needs the rest, so one missing tool ends the run here.
 
-- The concrete defect and its user-visible symptom.
-- The configured target project and repository.
-- The repository default branch, captured once as the original default.
-- Whether another issue-resolution run already exists for the same defect.
+If any is missing, apply the blocked contract below in full and name each missing tool exactly.
 
-Use `list_projects` and `list_sessions_and_chats` before creating sessions. If the target
-project or defect is ambiguous, ask one focused question at a time with `ask_user`.
+### Step 2: launch identity
 
-Require a Git repository project. A folder without Git history cannot support the branch
-handoffs or final PR workflow.
+Resolve only what identifies the run: the defect and its user-visible symptom in enough detail
+to recognize a duplicate, the target project and repository, that repository's default branch
+recorded once as the original default, and whether a run already exists for the same defect.
+Use `list_projects` and `list_sessions_and_chats`, and ask one focused `ask_user` question at
+a time when ambiguous.
+
+This step resolves identity only. Do not inspect, search, or diagnose repository code, do not
+collect reproduction evidence, and do not create any child session here.
 
 The captured project default branch is the only pull-request base for the whole run. Never
-infer the base from the current branch, and never retarget a supporting branch.
+infer the base from the current branch and never retarget a supporting branch.
 
-Create a lowercase kebab-case issue slug from the tracker ID when one exists, otherwise from
-the symptom. Artifacts always live at:
+### Step 3: target preflight
 
-`docs/issue-resolution/<issue-id-and-slug>/rca.md`
-`docs/issue-resolution/<issue-id-and-slug>/fix-plan.md`
+These checks need a resolved target, so they run after Step 2 and before evidence intake,
+repository investigation, and any child creation.
 
-If that directory already exists, inspect it and existing sessions before deciding whether to
-resume. Never overwrite an unrelated run; when the slug collides with a different defect,
-extend the slug and record both.
+Require the resolved project to be a local Git repository project exposing `main_repo_path`;
+`create_session` accepting a local branch name in `base_branch`, because every handoff uses an
+unpushed branch; and that `gh` is installed and authenticated for the resolved target
+repository, because the same implementation session later creates the PR.
 
-Generate a stable run ID as `<issue-slug>-<UTC YYYYMMDD-HHmmss>`. Reuse it for every child
-prompt, ledger update, retry, approval token, and delivery attestation.
+If any is missing, apply the blocked contract below in full and name each missing capability
+exactly.
 
-### Classify complexity and select models
+### Blocked contract
 
-Score the defect before creating any child. Score each dimension `0`, `1`, or `2` from
-repository evidence and the reported symptom; document length is never a scoring input. When
-a defect falls between two descriptions, use the higher score.
+Both Phase 0 gates end the run this way and have no other ending. Stop, change no file, and
+report `BLOCKED`. Do not read, search, diagnose, or edit repository files. There is no cloud,
+folder, single-session, or default-branch fallback, and no alternative path for this defect,
+including one described as direct, lighter-weight, manual, or outside this skill.
+
+The `BLOCKED` report always contains, in this order:
+
+1. Every missing capability, named exactly.
+2. Every reproduction evidence element the user has not yet supplied, drawn from the Phase 1
+   list (environment, preconditions, actions, input, expected result, actual result,
+   reproducibility). Always list them from the message you already have, without
+   investigating. Never defer this part or answer that evidence was not evaluated.
+3. The reminder that telemetry never replaces usable reproduction steps.
+4. What the user must restore for the run to resume.
+
+Never treat silence as permission, and never close by offering, proposing, or inviting work
+outside this skill. End with the line `This run cannot continue until the missing capability
+exists.` and write nothing after it.
+
+### Step 4: run namespace
+
+Artifacts always live at `docs/issue-resolution/<issue-id-and-slug>/rca.md` and
+`.../fix-plan.md`, slug lowercase kebab-case from the tracker ID or symptom. If that directory
+exists, inspect it and existing sessions before resuming. Never overwrite an unrelated run;
+on a collision with a different defect, extend the slug and record both.
+
+Run ID is `<issue-slug>-<UTC YYYYMMDD-HHmmss>`, reused for every child prompt, ledger update,
+retry, approval token, and delivery attestation.
+
+### Complexity and models
+
+Score each dimension `0`, `1`, or `2` from repository evidence and the symptom before creating
+any child. Document length is never an input. Between two descriptions, take the higher score.
 
 | Dimension | 0 | 1 | 2 |
 |---|---|---|---|
@@ -111,11 +147,10 @@ a defect falls between two descriptions, use the higher score.
 | Concurrency/lifecycle | None | Existing async/lifecycle behavior | New or changed ordering, concurrency, retries, or recovery |
 | Runtime verification | Existing direct harness | Multiple harnesses or setup | Difficult platform/runtime evidence or missing harness work |
 
-Classify totals `0-3` as **simple**, `4-7` as **standard**, and `8-12` as **complex**.
-Escalate to complex regardless of total for a destructive or irreversible migration, a new
-authentication/security boundary, credible data-loss risk, or concurrency correctness whose
-failure is not safely recoverable. Record every score, the total, any override, and the
-rationale in the ledger.
+Total `0-3` is **simple**, `4-7` **standard**, `8-12` **complex**. Escalate to complex
+regardless of total for a destructive or irreversible migration, a new authentication or
+security boundary, credible data-loss risk, or concurrency correctness whose failure is not
+safely recoverable. Record every score, the total, any override, and the rationale.
 
 Use these exact currently supported model IDs:
 
@@ -127,69 +162,40 @@ Use these exact currently supported model IDs:
 
 Authors and critics always come from different model families so the critique is independent;
 complexity changes capability tier, not that independence. Pass every selection explicitly in
-`kickoff.model`; defaults and silent substitutions are forbidden. If any selected ID is
-unavailable, stop before creating that session and report `BLOCKED` with the exact missing
-ID.
+`kickoff.model`. If any selected ID is unavailable, stop before creating that session and
+report `BLOCKED` with the exact missing ID.
 
 ### Word caps
 
-The RCA default cap is **1,000 words** and the fix-plan default cap is **1,200 words**. Only
-a defect classified complex may use larger caps, at most **1,600 words** for the RCA and
-**1,800 words** for the fix plan, when the coordinator records before launch which evidence,
-entry points, failure modes, or verification steps require it. No unbounded exception is
-allowed. Prefer tables, evidence IDs, and repository references over restating context.
+RCA **1,000** words, fix plan **1,200**. Only a complex defect may use at most **1,600** and
+**1,800**, and only when the coordinator records before launch which evidence, entry points,
+failure modes, or verification steps require it. No unbounded exception. Prefer tables,
+evidence IDs, and repository references over restating context.
 
-### Keep a run ledger
+### Run ledger
 
-Use the session SQL database when available. Create one row per run and update it at every
-handoff. At minimum preserve:
-
-- Run ID, issue slug, tracker reference, and symptom
-- Project ID, repository, and captured original default branch
-- Complexity dimension scores, total, override/rationale, artifact word caps, and every
-  selected model ID
-- Current ledger state and blocker
-- Evidence IDs with source and collection time
-- RCA session ID, branch, artifact path, and each artifact commit
-- RCA critic session IDs, reviewed commits, and outcomes
-- Fix-plan session ID, branch, artifact path, and each artifact commit
-- Fix-plan critic session IDs, reviewed commits, and outcomes
-- RCA and fix-plan approval states with the exact approved commit
-- Authority epoch issued at plan approval and any revocation
-- Implementation session ID, branch, commits, and validation state
-- Superseded session IDs and the invalidation that superseded them
-- Final PR number and URL
-
-If SQL is unavailable, maintain the same ledger explicitly in coordinator context. Never rely
-on child-session names alone.
-
-### Preflight
-
-Before creating the first session, verify that these tools are available:
-
-- `create_session`
-- `get_session`
-- `send_session_message`
-- `ask_user`
-
-Then verify:
-
-- The project is a local Git repository project exposing `main_repo_path`.
-- `create_session` accepts a local branch name in `base_branch`, because every handoff uses
-  an unpushed branch.
-- `gh` is installed and authenticated for the target repository, because the same
-  implementation session must later create the pull request.
-
-If any capability is missing, stop before creating a child and report `BLOCKED` with the
-exact missing capability. There is no cloud, folder, or default-branch fallback.
+Use the session SQL database when available, one row per run, updated at every handoff; if SQL
+is unavailable keep the same ledger in coordinator context. Never rely on child session names.
+Preserve: run ID, slug, tracker reference, symptom, project ID, repository, original default;
+complexity scores, total, override rationale, word caps, every selected model ID; current
+ledger state, blocker, evidence IDs with source and collection time; per writer session (RCA,
+fix plan, implementation) the session ID, branch, artifact path, every commit, validation
+state; per critic the session ID, reviewed commit, outcome; both approval states with the exact
+approved commit; the authority epoch and any revocation; every superseded session ID with the
+invalidation that superseded it; and the final PR number and URL.
 
 ## Phase 1: evidence intake
 
-Evidence intake happens in this coordinator session, before any child exists.
+Enter Phase 1 only after both Phase 0 gates pass; missing evidence is not evaluated as an
+earlier phase.
 
-Usable reproduction evidence requires all of:
+Happens in this coordinator session, before any child exists. Usable reproduction evidence
+requires all of:
 
-1. Environment: build, version, platform, and configuration that exhibits the defect.
+1. Environment: the exact code under test, identified precisely enough to check out or
+   install — a release version when one exists, plus the commit SHA or build identifier when
+   the version alone is ambiguous — with the platform (OS, runtime, browser, or device) and
+   the configuration or feature flags in effect.
 2. Preconditions: starting state, data, and account or permission context.
 3. Actions: the ordered steps or request that triggers the defect.
 4. Input: concrete values used.
@@ -197,262 +203,181 @@ Usable reproduction evidence requires all of:
 6. Actual result, including the exact error, log line, or incorrect output.
 7. Reproducibility: always, intermittent with a rate, or observed once.
 
-If any element is missing, ask exactly one focused question with `ask_user`, record the
-ledger state `needs_reproduction`, and create no child. In the same question, encourage
-richer evidence the user can supply or that this environment can already access with existing
-authentication: logs, metrics, dashboards, traces, crash reports, profiles, or recordings.
-Telemetry never replaces usable reproduction steps; it only enriches them.
+If any element is missing, ask exactly one focused `ask_user` question, record the ledger state
+`needs_reproduction`, and create no child. In that question also encourage richer evidence the
+user can supply or that this environment can already reach with existing authentication: logs,
+metrics, dashboards, traces, crash reports, profiles, or recordings. Telemetry never replaces
+usable reproduction steps; it only enriches them. Ingest only user-supplied data or data
+reachable with credentials already authenticated here; never assume, request, or invent
+telemetry access.
 
-Ingest only user-supplied data or data reachable with credentials that are already
-authenticated in this environment. Never assume, request, or invent telemetry access.
+Give every accepted item a stable evidence ID with source and collection time, for example
+`EV1 | user-supplied stack trace | 2026-08-02T18:00Z`. Summarize; never paste raw dumps.
+Separate observations from inferences: an observation is what the evidence shows, an inference
+is what you conclude from it. Redact before recording anything — secrets, tokens,
+authorization headers, cookies, connection strings, personal or customer identifiers, and
+local filesystem paths — each replaced with a stable label such as `<REDACTED-TOKEN-1>`.
 
-Assign every accepted item a stable evidence ID with its source and collection time, for
-example `EV1 | user-supplied stack trace | 2026-08-02T18:00Z`. Summarize each item; never
-paste raw dumps into an artifact. Separate observations from inferences: an observation is
-what the evidence shows, an inference is what you conclude from it.
+Advance only when every element is present.
 
-Redact before recording anything: secrets, tokens, authorization headers, cookies, connection
-strings, personal or customer identifiers, and local filesystem paths. Replace each with a
-stable redacted label such as `<REDACTED-TOKEN-1>`.
+## Child launch contract
 
-Advance only when every element above is present. Record the ledger state `rca_review` when
-the RCA child is created.
+Every child is one coordinated local project session created with top-level `project_id`,
+`coordinate_with_creator: true`, `notify_on_idle: "always"`, and `base_branch` per the table,
+plus `kickoff` with `mode: "autopilot"`, `model` set to the exact ID recorded in Phase 0, and
+a complete tailored `prompt` carrying `COORDINATOR_SESSION_ID`, `RUN_ID`, `PHASE`, a
+monotonically increasing `SEQUENCE`, the original default branch, the phase file content, and
+the payload below. Children never ask the user directly.
+
+| Phase | `base_branch` | Model | Prompt payload adds |
+|---|---|---|---|
+| RCA | omit, so the original default is used | RCA author | Symptom, redacted evidence IDs and summaries, repository context, artifact path, `templates/rca.md`, word cap |
+| Critique | the artifact's branch | matching critic | `ARTIFACT_KIND`, exact `ARTIFACT_COMMIT`, artifact path, and a defect-specific review brief |
+| Fix plan | approved RCA branch | plan author | Symptom, approved RCA path/content/commit, evidence IDs, artifact path, `templates/fix-plan.md`, word cap |
+| Implementation | approved fix-plan branch | implementation | Symptom, reproduction flow, approved RCA and plan paths/content/commits, critique resolution summary, approved scope, and `FIX_PLAN_APPROVED:<run-id>:<plan-commit>:<authority-epoch>` |
+
+For any `NEEDS_INPUT`, ask the child's exact question with `ask_user`, relay the answer to the
+same child with `send_session_message`, and wait for its next report; one question at a time.
+
+Before advancing past any writer child, confirm the artifact exists and is committed locally
+and that the child reported `PUSHED: no`, `PR_CREATED: no`, `UPSTREAM: none` with command
+evidence of no upstream and no matching remote branch. Confirm the handoff branch with
+`get_session`.
 
 ## Phase 2: root cause analysis
 
-Read `prompts/rca.md` and `templates/rca.md`.
+Read `prompts/rca.md` and `templates/rca.md`, then launch the RCA child and record
+`rca_review`. It returns `NEEDS_INPUT`, `BLOCKED`, or `COMPLETE` with artifact path, branch,
+commit, cause summary, affected entry points, confidence, evidence IDs used, and local-only
+proof.
 
-Create one coordinated local project session with:
+## Phase 3: artifact critique
 
-- Top-level: `project_id`, `coordinate_with_creator: true`, `notify_on_idle: "always"`; omit
-  `base_branch` so the captured original default is used.
-- `kickoff`: `mode: "autopilot"`, `model` set to the exact RCA author ID recorded in Phase 0,
-  and a complete `prompt` containing the symptom, redacted evidence IDs and summaries, the
-  repository context, the artifact path, the RCA prompt, the RCA template, the original
-  default branch, the active word cap, and the run ID, coordinator session ID, phase, and
-  sequence.
+Read `prompts/artifact-critique.md`. This phase runs identically for the RCA and the fix plan;
+only `ARTIFACT_KIND`, the commit, and the critic model differ.
 
-The child must not ask the user directly. It returns one of:
+Build a defect-specific review brief from the symptom, evidence IDs, the artifact, the
+relevant repository paths, and the highest-risk correctness, security, data, and operational
+areas. Never send a generic "review this" prompt.
 
-- `NEEDS_INPUT` with exactly one investigation question and why the answer matters.
-- `COMPLETE` with the artifact path, branch, commit hash, cause summary, affected entry
-  points, confidence, evidence IDs used, and local-only proof.
-- `BLOCKED` with evidence and the needed resolution.
-
-For `NEEDS_INPUT`, ask the exact question with `ask_user`, send the answer to the same child
-with `send_session_message`, and wait for its next report. Repeat one question at a time.
-
-Continue to critique only when `rca.md` exists in the RCA worktree, is committed locally, and
-the child reports `PUSHED: no`, `PR_CREATED: no`, `UPSTREAM: none`, plus command evidence
-that the branch has no upstream and no matching remote branch. Confirm the handoff branch
-with `get_session`.
-
-## Phase 3: RCA critique
-
-Read `prompts/artifact-critique.md`.
-
-Build a defect-specific review brief from the symptom, the evidence IDs, the RCA artifact,
-the relevant repository paths, and the highest-risk correctness, security, data, and
-operational areas. Do not send a generic "review this" prompt. Replace every placeholder.
-
-Create one coordinated session with:
-
-- Top-level: `project_id`, `base_branch` set to the RCA branch, `coordinate_with_creator:
-  true`, `notify_on_idle: "always"`.
-- `kickoff`: `mode: "autopilot"`, `model` set to the exact RCA critic ID recorded in Phase 0,
-  and the fully tailored `prompt`, including `ARTIFACT_KIND` `rca`, the exact
-  `ARTIFACT_COMMIT`, and the coordinator session ID, phase, and sequence.
-
-The critic worktree is already positioned at the artifact commit. Critics must not check out
-another ref, rename a branch, edit files, commit, push, or create a PR. These read-only rules
-override generic session branch-rename or implementation instructions.
+The critic worktree is already at the artifact commit. Critics must not check out another ref,
+rename a branch, edit, commit, push, or create a PR; these read-only rules override generic
+session branch-rename or implementation instructions.
 
 Require `CRITIQUE_COMPLETE` with findings, strengths, `WORKTREE_CLEAN: yes`,
-`COMMITS_AHEAD_OF_ARTIFACT: 0`, `PUSHED: no`, and `PR_CREATED: no` before reconciling.
+`COMMITS_AHEAD_OF_ARTIFACT: 0`, `PUSHED: no`, and `PR_CREATED: no`.
 
 ### Critique recovery
 
-- Shallow or generic content: send one corrective retry to the same session.
-- Unrecoverable session with no repository mutation: create one replacement session from the
-  same artifact commit with the same required model, record the replacement, and retry once.
+- Shallow or generic content: one corrective retry to the same session.
+- Unrecoverable session with no repository mutation: one same-model replacement from the same
+  artifact commit, recorded, retried once.
 - Local mutation by the critic (edit, commit, or checkout): the critique is invalidated.
   Discard it, record the contaminated session, and create one same-model replacement from the
   exact artifact commit.
-- Remote mutation by the critic (push, PR, or tag): stop. Record `blocked` and report the
-  invariant violation for user remediation. Do not self-heal a remote effect.
+- Remote mutation by the critic (push, PR, or tag): stop, record `blocked`, and report the
+  invariant violation for user remediation. Never self-heal a remote effect.
 
 Never substitute the model. If the replacement also fails, mark the run `blocked` and stop.
 
 ### Reconcile
 
-Send the findings to the existing RCA session. Require it to evaluate every finding, update
-`rca.md` for accepted findings, justify rejections with evidence, return a
+Send the findings to the existing writer session. Require it to evaluate every finding, update
+the artifact for accepted findings, justify rejections with evidence, return a
 finding-to-resolution map, and commit locally without amending. Writer changes that only
-resolve that critic's accepted findings close through the resolution map and do not require a
-second critic.
+resolve that critic's accepted findings close through the resolution map and need no second
+critic. Inspect the updated artifact and the map before requesting approval; return any
+silently skipped finding to the writer.
 
-Inspect the updated RCA and the resolution map before requesting approval. If a finding was
-silently skipped, return it to the RCA session.
+## Phases 4 and 6: approval gates
 
-## Phase 4: RCA approval
+Phase 4 is RCA approval and Phase 6 is fix-plan approval. They share one procedure, described
+here once, and there are no other user gates.
 
-Record the ledger state `awaiting_rca_approval`.
+Present a short summary, a clickable link to the artifact in its worktree plus the
+repository-relative path, what it depends on, the key accepted and rejected critique findings
+with rationale, and any remaining material risk. Then ask with `ask_user`, offering exactly
+the choices `Approved` and `Needs refinement`.
 
-Present a short cause summary, a clickable link to `rca.md` in the RCA worktree plus its
-repository-relative path, the evidence IDs it relies on, the key accepted and rejected
-critique findings with rationale, the stated confidence, and any remaining material risk.
+| Gate | Ledger state | Question | Refinement question | Also state |
+|---|---|---|---|---|
+| Phase 4 — RCA | `awaiting_rca_approval` | `Approve RCA?` | `What should be refined in the RCA?` | The evidence IDs relied on and the stated confidence |
+| Phase 6 — fix plan | `awaiting_plan_approval` | `Approve fix plan?` | `What should be refined in the fix plan?` | That approving grants implementation, push, and pull-request authority with no further approval prompt |
 
-Ask with `ask_user`:
-
-Question: `Approve RCA?`
-
-Choices:
-
-- `Approved`
-- `Needs refinement`
-
-If `Needs refinement`:
-
-1. Ask one free-form question: `What should be refined in the RCA?`
-2. Send the feedback to the same RCA session.
-3. Require an updated artifact, a new local commit, and a concise change summary.
-4. Decide whether the change is material. A changed cause, changed evidence
-   interpretation, changed affected paths, or a new claim is material and requires one fresh
-   same-model critique from the new commit before approval. Non-mutating clarification that
-   changes no artifact content requires no new critique.
-5. Repeat this approval phase.
+On `Needs refinement`: ask the free-form refinement question, send the feedback to the same
+writer session, and require an updated artifact, a new local commit, and a change summary.
+A changed cause, changed evidence interpretation, changed affected paths, or a new claim is
+material and requires one fresh same-model critique from the new commit before approval.
+Non-mutating clarification that changes no artifact content requires no new critique. Then
+repeat the gate.
 
 Advance only when the returned choice is exactly `Approved`. If the user is unavailable,
-defers review, or returns any other response, keep the ledger state
-`awaiting_rca_approval` and pause. Never infer approval from autonomy settings.
+defers, or returns anything else, hold the ledger state and pause. Never infer approval from
+autonomy settings. On plan approval, mint an authority epoch as the UTC epoch seconds of the
+approval and record it with the approved plan commit. Fix-plan approval is the final user
+gate.
 
 ## Phase 5: fix plan
 
-Read `prompts/fix-plan.md` and `templates/fix-plan.md`.
-
-Create one coordinated local project session with:
-
-- Top-level: `project_id`, `base_branch` set to the approved RCA branch,
-  `coordinate_with_creator: true`, `notify_on_idle: "always"`.
-- `kickoff`: `mode: "autopilot"`, `model` set to the exact plan author ID recorded in
-  Phase 0, and a complete `prompt` containing the symptom, the approved RCA path, content,
-  and commit, the evidence IDs, the artifact path, the fix-plan prompt and template, the
-  original default branch, the active word cap, and the run ID, coordinator session ID,
-  phase, and sequence.
-
-Require `COMPLETE` with the artifact path, branch, commit hash, a per-entry-point change map
-traced to the approved cause, regression and compatibility handling, the runtime verification
-plan that re-executes the supplied reproduction flow, failure handling, `PUSHED: no`,
-`PR_CREATED: no`, `UPSTREAM: none`, and command evidence that the branch has no upstream and
-no matching remote branch.
-
-Record the ledger state `plan_review` and critique the plan with the same contract as
-Phase 3, using `ARTIFACT_KIND` `fix-plan`, the plan's exact `ARTIFACT_COMMIT`, and the plan
-critic ID recorded in Phase 0. Reconcile through the same resolution map rule.
-
-## Phase 6: fix-plan approval and delivery authority
-
-Record the ledger state `awaiting_plan_approval`.
-
-Present a short plan summary, a clickable link to `fix-plan.md` plus its repository-relative
-path, the traceability from the approved cause to each change, the runtime verification plan,
-the key accepted and rejected critique findings, and any remaining material risk. State
-plainly that approving grants implementation, push, and pull-request authority with no
-further approval prompt.
-
-Ask with `ask_user`:
-
-Question: `Approve fix plan?`
-
-Choices:
-
-- `Approved`
-- `Needs refinement`
-
-If `Needs refinement`, follow the same refinement rule as Phase 4 using the free-form
-question `What should be refined in the fix plan?`, and require one fresh same-model
-critique from the new commit whenever the change is material.
-
-Advance only when the returned choice is exactly `Approved`. If the user is unavailable,
-defers review, or returns any other response, keep the ledger state
-`awaiting_plan_approval` and pause. Never infer approval from autonomy settings.
-
-On `Approved`, mint an authority epoch as the UTC epoch seconds of the approval and record
-it with the approved plan commit. Fix-plan approval is the final user gate.
+Read `prompts/fix-plan.md` and `templates/fix-plan.md`, then launch the plan child. Require
+`COMPLETE` with artifact path, branch, commit, a per-entry-point change map traced to the
+approved cause, regression and compatibility handling, the runtime verification plan that
+re-executes the supplied reproduction flow, and failure handling. Record `plan_review` and
+critique it through Phase 3 with `ARTIFACT_KIND` `fix-plan`.
 
 ## Phase 7: implementation
 
-Read `prompts/implementation.md`.
+Read `prompts/implementation.md`, then launch the implementation child and record
+`implementing`. This implementation branch is the only final PR branch; never create another
+session to push or open the PR.
 
-Create one coordinated local project session with:
-
-- Top-level: `project_id`, `base_branch` set to the approved fix-plan branch,
-  `coordinate_with_creator: true`, `notify_on_idle: "always"`.
-- `kickoff`: `mode: "autopilot"`, `model` set to the exact implementation ID recorded in
-  Phase 0, and a complete `prompt` containing the symptom, the reproduction flow, the
-  approved RCA and fix-plan paths, content, and commit hashes, the critique resolution
-  summary, the approved scope, the original default branch, the implementation prompt, the
-  run ID, coordinator session ID, phase, sequence, and the exact authority token
-  `FIX_PLAN_APPROVED:<run-id>:<plan-commit>:<authority-epoch>`.
-
-Record the ledger state `implementing`. This implementation branch is the only final PR
-branch. Do not create another session to push or open the PR.
-
-Require the implementation child to implement the approved plan across every named entry
-point, update directly related documentation, add or update appropriate tests, run the
-repository-native build, unit, integration, and end-to-end checks that apply, execute the
-supplied reproduction flow against the final code and observe corrected production-facing
-behavior, commit locally with the required co-author trailer, and avoid every push and PR
-operation until authorized.
-
-If runtime validation is impossible, the child must return `BLOCKED` with the exact missing
-harness. Do not convert unavailable runtime evidence into a warning and continue.
+Require the child to implement the approved plan across every named entry point, add or update
+tests and directly related documentation, run the applicable repository-native checks, execute
+the supplied reproduction flow against the final code and observe corrected production-facing
+behavior, and commit locally with the required co-author trailer. It performs no push or PR
+operation until authorized. If runtime validation is impossible the child returns `BLOCKED`
+with the exact missing harness; never convert unavailable runtime evidence into a warning and
+continue.
 
 ## Phase 8: delivery authority handshake
 
-When the implementation child returns `IMPLEMENTATION_VALIDATED`, record the ledger state
-`validated` and mechanically verify all of:
+On `IMPLEMENTATION_VALIDATED`, record `validated` and mechanically verify that the run ID,
+phase, and sequence match the ledger; the envelope came from the recorded implementation
+session; the echoed plan commit and authority epoch match the approved plan commit and the
+epoch minted at plan approval; no invalidation was recorded after that epoch; and the reported
+branch is the recorded implementation branch whose ancestry contains the approved RCA and
+fix-plan commits. This handshake is mechanical. It is not a user gate; do not call `ask_user`
+here.
 
-- The run ID, phase, and sequence match the ledger.
-- The envelope came from the recorded implementation session.
-- The reported plan commit equals the approved plan commit.
-- The reported authority epoch equals the issued epoch.
-- No invalidation was recorded after that epoch.
-- The reported branch is the recorded implementation branch, and its ancestry contains the
-  approved RCA and fix-plan commits.
+If every check passes, send that session `AUTHORITY_CURRENT` and `PROCEED_DELIVERY` with the
+run ID, approved plan commit, authority epoch, and original default branch, then record
+`delivery_started`. If any check fails, send `REVOKE` with the failed check and return to the
+earliest affected gate.
 
-This handshake is mechanical. It is not a user gate; do not call `ask_user` here.
+The implementation session then repeats its freshness checks, runs the history-aware
+full-lineage secret/PII scan below, pushes only its own branch, checks for a duplicate pull
+request, creates exactly one pull request against the original default branch, and returns
+`PR_CREATED`. Move the ledger through `push_attempted`, `push_confirmed`, and `pr_confirmed`
+as each is proven.
 
-If every check passes, send the same session `AUTHORITY_CURRENT` and `PROCEED_DELIVERY` with
-the run ID, approved plan commit, authority epoch, and original default branch, then record
-the ledger state `delivery_started`.
+### History-aware secret and PII scan
 
-If any check fails, send `REVOKE` with the failed check, and return to the earliest affected
-gate.
-
-The implementation session then repeats its freshness checks, runs a history-aware
-full-lineage secret/PII scan across every commit it will publish, pushes only its own
-branch, checks for a duplicate pull request, creates exactly one pull request against the
-original default branch, and returns `PR_CREATED`. Move the ledger through
-`push_attempted`, `push_confirmed`, and `pr_confirmed` as each is proven.
-
-The full-lineage secret/PII scan must be history-aware. Scanning only the final aggregate
-diff is insufficient: a secret introduced in one commit and deleted in a later commit
-disappears from `git diff <original-default>...HEAD` while remaining permanently readable in
-the published history. Require the implementation session to scan every commit, patch, and
-tree in the range `<original-default>..HEAD`. Use a repository-native history-aware secret
-scanner when the repository already provides one. Otherwise require explicit commit
-enumeration with `git rev-list <original-default>..HEAD`, scanning each commit's own patch
-and its resulting tree, for example `git show --format=%H --patch <commit>` and
-`git grep -I -n -e <pattern> <commit>`. Scan for the same categories used for evidence
+Scanning only the final aggregate diff is insufficient: a secret introduced in one commit and
+deleted in a later commit disappears from `git diff <original-default>...HEAD` while remaining
+permanently readable in the published history. Require the implementation session to scan
+every commit, patch, and tree in the range `<original-default>..HEAD`. Use a repository-native
+history-aware secret scanner when the repository already provides one. Otherwise require
+explicit commit enumeration with `git rev-list <original-default>..HEAD`, scanning each
+commit's own patch and its resulting tree, for example `git show --format=%H --patch <commit>`
+and `git grep -I -n -e <pattern> <commit>`. Scan for the same categories used for evidence
 redaction: secrets, tokens, authorization headers, cookies, connection strings, personal or
-customer identifiers, and local filesystem paths. Require the returned scan attestation to
-name the scanned range and the number of commits actually scanned; a bare claim of a clean
-final diff is not acceptable evidence.
+customer identifiers, and local filesystem paths. Require the attestation to name the scanned
+range and the number of commits actually scanned; a bare claim of a clean final diff is not
+acceptable evidence.
 
-If the secret/PII scan finds a hit anywhere in unpushed lineage, block. Abandon that lineage,
-treat exposed credentials as compromised, and re-derive the work cleanly from the original
-default. Never rebase, force-push, reset, amend, or rewrite history to hide it.
+If the scan finds a hit anywhere in unpushed lineage, block. Abandon that lineage, treat
+exposed credentials as compromised, and re-derive the work cleanly from the original default.
+Never rebase, force-push, reset, amend, or rewrite history to hide it.
 
 ## Vocabulary
 
@@ -466,26 +391,20 @@ Child envelopes are produced by children. Coordinator commands and attestations 
 only by this session and are never user gates. Ledger states are coordinator bookkeeping and
 are never sent as an envelope status.
 
-### Child delivery contract
+### Delivery
 
-Include `COORDINATOR_SESSION_ID`, `RUN_ID`, `PHASE`, and a monotonically increasing
-`SEQUENCE` in every child prompt and message. A coordinated child must:
-
-1. Echo `RUN_ID`, `PHASE`, and `SEQUENCE` in every status envelope.
-2. Deliver each requested terminal envelope exactly once through `send_session_message` with
-   this coordinator's session ID.
-3. Treat successful tool return as delivery, then emit only
-   `Delivered <STATUS> to coordinator.` in its local chat.
-4. Never assume local chat, idle notification, or a produced-but-unsent envelope counts.
+Each child echoes `RUN_ID`, `PHASE`, and `SEQUENCE` in every envelope, delivers each requested
+terminal envelope exactly once through `send_session_message` to this coordinator, treats
+successful tool return as delivery, then emits only `Delivered <STATUS> to coordinator.`
+locally. Local chat, idle notification, and a produced-but-unsent envelope are never delivery.
 
 Accept an envelope only when run ID, phase, sequence, expected child session, and allowed
-status match the ledger; ignore older or mismatched envelopes as stale. Exactly one ledger
-key is accepted per transition, so a delayed duplicate changes nothing.
-
-When a child idles without delivery, ask it one precise question: whether the envelope was
-already produced but not delivered, in which case it must deliver that existing envelope
-once, or was not yet produced, in which case it must finish and deliver it. Never create a
-duplicate child merely because delivery was missed.
+status match the ledger; ignore older or mismatched envelopes as stale. Exactly one ledger key
+is accepted per transition, so a delayed duplicate changes nothing. When a child idles without
+delivery, ask it one precise question: whether the envelope was already produced but not
+delivered, in which case it delivers that existing envelope once, or was not yet produced, in
+which case it finishes and delivers it. Never create a duplicate child merely because delivery
+was missed.
 
 ## Invalidation
 
@@ -505,54 +424,42 @@ forbidden: the same implementation session resumes and corrects its own branch.
 
 - Before and after any interruption, query remote state with
   `git ls-remote --heads <remote> <implementation-branch>` and
-  `gh pr list --head <implementation-branch> --state all`. Use the unqualified branch name
+  `gh pr list --head <implementation-branch> --state all`, using the unqualified branch name
   for a same-repository head.
 - Distinguish a push failure from a PR failure using `delivery_started`, `push_attempted`,
   `push_confirmed`, and `pr_confirmed`.
 - If this coordinator session is lost, delivery is blocked. Reconstruct the run manually from
   the committed artifacts, branch ancestry, remote refs, and PR queries, then require a fresh
   authority handshake before any further remote write.
-- Reuse existing child sessions recorded in the ledger; do not create duplicates on retry.
-- If unexpected changes appear in a child worktree, the child must stop and report them.
+- Reuse existing child sessions recorded in the ledger; never create duplicates on retry.
+- If unexpected changes appear in a child worktree, the child stops and reports them.
 - If the branch lineage cannot be used as a local `base_branch`, stop and report it rather
   than cherry-picking silently.
 - Respect repository instructions and finalized tests. Never alter finalized tests to make an
   implementation pass without explicit authorization.
-
 ## Phase 9: report-only retrospective
 
-Read `prompts/retro.md`.
+Read `prompts/retro.md`. After the pull request exists, send it to every child session and
+wait for all `RETRO_COMPLETE` reports. Then challenge unsupported conclusions, deduplicate
+common root causes, separate repository knowledge, behavioral instructions, guardrails, tech
+debt, backlog, and tooling opportunities, propose the most specific durable destination for
+each instruction improvement, report exact failed and corrected tool invocations, and present
+the proposals in a concise table.
 
-After the pull request exists, send the retro prompt to every child session: RCA, each
-critique, fix plan, and implementation. Each child reviews its own complete conversation and
-returns `RETRO_COMPLETE` with evidence, not generic advice. Wait for all reports.
-
-The coordinator then challenges unsupported conclusions, deduplicates common root causes,
-separates repository knowledge, behavioral instructions, guardrails, tech debt, backlog, and
-tooling opportunities, proposes the most specific durable destination for each instruction
-improvement, and reports exact failed and corrected tool invocations where available.
-
-Present the proposals in a concise table. This phase reports proposals only; do not edit any
-destination.
-
-List all child sessions and identify superseded or read-only sessions that are safe for the
-user to delete. This coordinator session and the implementation session are never cleanup
-candidates before `pr_confirmed`. Do not delete sessions.
+This phase reports proposals only; do not edit any destination. List all child sessions and
+identify superseded or read-only sessions that are safe for the user to delete. This
+coordinator session and the implementation session are never cleanup candidates before
+`pr_confirmed`. Do not delete sessions.
 
 ## Completion
 
-The run is complete only when:
-
-- Usable reproduction evidence was recorded with evidence IDs.
-- The approved RCA and approved fix plan are in the final branch.
-- Each approved artifact revision had one successful independent critique that was
-  reconciled.
-- Both user approvals were explicit.
-- Runtime validation re-executed the reproduction flow and observed corrected behavior.
-- The same implementation session pushed and created exactly one PR against the original
-  default branch.
-- The PR URL was reported and the ledger reached `pr_confirmed`.
-- All child retro reports were aggregated.
+The run is complete only when usable reproduction evidence was recorded with evidence IDs;
+the approved RCA and approved fix plan are in the final branch; each approved artifact
+revision had one successful independent critique that was reconciled; both user approvals were
+explicit; runtime validation re-executed the reproduction flow and observed corrected
+behavior; the same implementation session pushed and created exactly one PR against the
+original default branch; the PR URL was reported and the ledger reached `pr_confirmed`; and
+all child retro reports were aggregated.
 
 If any item is missing, report the current ledger state and blocker instead of declaring
 completion.
