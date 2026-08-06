@@ -1,8 +1,8 @@
 # Pull Request Review Workflow — Technical Design
 
-**Status:** Proposed  
-**Task slug:** `pr-review-skill`  
-**PRD:** [Product requirements](./prd.md)  
+**Status:** Proposed
+**Task slug:** `pr-review-skill`
+**PRD:** [Product requirements](./prd.md)
 **Last updated:** `2026-08-05`
 
 ## Summary and decisions
