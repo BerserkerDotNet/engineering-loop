@@ -11,15 +11,14 @@ requests and publish only approved comments.
 
 ## Scope
 
-- G1. GitHub and ADO provide equivalent acquisition, analysis, exploration, approval, and
-  comment-posting flows.
+- G1. GitHub and ADO provide equivalent review and comment-posting flows.
 - G2. Initial reviews cover security, design, canonical approaches, and runtime performance.
-- G3. The coordinator remains the only user-facing control point while coordinated review
-  sessions provide independent analysis.
+- G3. The coordinator is the only user-facing control point; review sessions are independent.
 - G4. Only an approved, user-owned comment set is posted, with per-comment results.
 - NG1. The workflow does not change code or work items, push, approve/request changes, merge,
   close, or post before approval.
 - NG2. Existing capability and defect workflows remain unchanged.
+- NG3. This version does not provide cross-machine or distributed coordination.
 
 ## User flows and requirements
 
@@ -35,8 +34,7 @@ requests and publish only approved comments.
 4. After user confirmation, verify access with an explicit-organization read-only probe in
    that process.
 
-- FR1. Multiple capable active choices must be resolved explicitly, deterministically, and
-  visibly; failure must not cause a silent switch.
+- FR1. Resolve multiple active choices deterministically and visibly; never silently switch.
 - FR2. Access choice must not reduce either provider's review flow, safety, or output.
 - FR3. Authentication must succeed before PR acquisition or review sessions begin.
 - FR4. The PAT must be available only as process-scoped `AZURE_DEVOPS_EXT_PAT` to `az devops`
@@ -50,8 +48,8 @@ requests and publish only approved comments.
 
 - FR5. Every pass evaluates security; design (SOLID, coupling, debt, extensibility); canonical
   codebase/framework/library approaches; and performance where changed code executes.
-- FR6. Findings must cite affected code and impact, distinguish uncertainty, avoid duplicates,
-  and include a concrete correction when justified.
+- FR6. Findings cite code/impact, distinguish uncertainty, avoid duplicates, and propose
+  justified corrections.
 - FR7. The reviewed PR revision must remain identifiable throughout review and posting.
 
 ### Flow 3: Explore and compose the review
@@ -63,8 +61,8 @@ requests and publish only approved comments.
 - FR8. Session questions/results reach the user only through the coordinator and identify the
   run and review.
 - FR9. Only user-authored or adopted comments enter the pending set.
-- FR10. Approval must identify the exact comment text, target, and fix suggestion to be posted;
-  any subsequent change invalidates that approval and requires a new preview and approval.
+- FR10. Approval identifies exact text, target, and fix; any change requires a new preview and
+  approval.
 
 ### Flow 4: Post approved comments
 
@@ -74,14 +72,13 @@ requests and publish only approved comments.
 
 - FR11. Posting must create no external content beyond the approved comment set and must
   preserve comment text, targets, and applicable fix suggestions.
-- FR12. A successful run must end with every approved comment accounted for and posted exactly
-  once.
+- FR12. Runs sharing a local project/Git common directory must account for and post each
+  approved comment exactly once.
 
 ## Constraints and failure behavior
 
-- EF1. If access is absent or ambiguous, authentication fails, or organization/host cannot be
-  derived, the workflow must identify the blocker and stop before acquisition or child review;
-  it cannot install, use a hardcoded or configured default organization, or silently switch access.
+- EF1. Absent/ambiguous access, failed authentication, or an underived organization/host blocks
+  before acquisition/review; never install, use a default organization, or silently switch.
 - EF2. If a secure terminal or process-scoped injection is unavailable, or the PAT is wrong or
   insufficient, the workflow must block without persistent login or fallback.
 - EF3. A missing, unsupported, inaccessible, rate-limited, or unavailable PR/provider blocks
@@ -96,6 +93,9 @@ requests and publish only approved comments.
   confirmed/uncertain comments, and retry only proven-unposted comments after approval.
 - EF8. If the user declines or defers approval, the workflow must pause without posting or
   inferring approval from autonomy settings.
+- EF9. Before posting, a run that cannot prove another run shares its local project/Git common
+  directory must disclose that mutual exclusion and global exactly-once behavior are not
+  guaranteed.
 - C1. The PAT must never enter agent-controlled arguments or stdin, chat, prompts, tool
   payloads, logs, files, ledgers, shell history, persistent user/system environments, artifacts,
   or comments.
@@ -104,8 +104,9 @@ requests and publish only approved comments.
   Terminal close, cancellation, logout, timeout, adapter/version change, run end, or user
   request clears the process credential and requires fresh secure entry before further calls.
 - C3. Review content must not reach unrelated PRs, repositories, providers, or third parties.
-- C4. The workflow must be independently discoverable while preserving existing workflow
-  behavior, orchestration terminology, explicit handoffs, and resumability.
+- C4. The workflow must be discoverable while preserving existing workflows and resumability.
+- C5. Every run must preserve per-item provider baselines, read after write, uncertainty stop,
+  and no automatic retry for confirmed or uncertain outcomes, regardless of coordination scope.
 
 ## Acceptance criteria
 
@@ -123,8 +124,9 @@ requests and publish only approved comments.
   (G3, FR8, FR9)
 - AC4. Changed/deferred pending sets create nothing until the displayed exact set is approved.
   (G4, NG1, FR10, EF8)
-- AC5. With approval and no drift, provider results show each approved comment once at its
-  target and no other mutation. (G4, FR11, FR12, NG1)
+- AC5. With approval and no drift, shared-local-project/Git-common-directory runs coordinate
+  each approved comment exactly once; provider results show each at its target and no other
+  mutation. (G4, FR11, FR12, NG1)
 - AC6. Given provider, acquisition, or review failure, the coordinator identifies the gap and
   produces no completed review or posting approval.
   (EF3, EF4)
@@ -132,9 +134,11 @@ requests and publish only approved comments.
   or uncertain writes are not duplicated, and only proven-unposted comments may be approved
   for retry. (FR7, EF5-EF7)
 - AC8. Given concurrent or resumed use, review context and credentials remain scoped to the
-  intended run and PR, and the workflow remains separately discoverable without changing
-  existing workflows. Credential-ending events clear session access and require re-entry
-  before further ADO calls. (NG2, FR4, C1-C4)
+  intended run and PR. Exactly-once mutual exclusion applies only when runs prove they share
+  the same local project/Git common directory; otherwise the limitation is disclosed before
+  posting and no global claim is made. All runs retain provider baselines, read-after-write,
+  uncertainty stop, and retry safeguards. Credential-ending events require fresh ADO entry.
+  (NG2, NG3, FR4, FR12, EF9, C1-C5)
 
 ## Open questions
 
