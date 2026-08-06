@@ -10,11 +10,11 @@
 Add a separately routed `skills/pr-review/` coordinator with GitHub and Azure DevOps (ADO)
 adapters that expose the same acquire, review, compose, approve, post, and recover contract.
 Production remains declarative Markdown: `SKILL.md`, two child prompts, and a phase-read
-`reference/commands.md` containing uniquely tagged normative command/operation blocks. The
-PowerShell validator owns parsing and invariant algorithms, not duplicate product behavior.
-Run state and sealed snapshots live outside every repository. No adapter is installed or
-silently substituted, no credential reaches the agent, and no write occurs before exact
-semantic approval.
+`reference/commands.md` containing tagged normative contracts. PowerShell is structural
+reference validation only; it never proxies agent/provider behavior. Run state and
+tamper-evident snapshots stay outside working trees/tracked paths, except the deliberate shared
+Git-common-dir lease/journal. No adapter is installed/substituted, no credential reaches the
+agent, and no write precedes exact semantic approval.
 
 ## Requirements and current path
 
@@ -31,11 +31,15 @@ hard-codes published skills and must instead discover them.
 
 ## End-to-end flow and entry points
 
-Every skill match/explicit invocation, resume, retry, recovery, adapter reselection, reviewer
-or explorer follow-up/refresh, draft add/edit/adopt/remove/retarget, preview/defer/approve,
-pre-post revalidation, post, proven-unposted retry, partial/uncertain reconciliation, and
-coordinator/lease recovery first calls one `requireAccessContext`. It rejects absent, expired,
-or digest-mismatched context before provider, bundle, child, approval, or journal use.
+One tagged entry-kind table is exhaustive:
+
+| Kind | Entries | `requireProviderAccessContext(kind,state)` |
+|---|---|---|
+| `bootstrap` | match/explicit invocation; adapter reselection after invalidation | May lack context; only parse locator, inventory, confirm adapter, authenticate/probe, then atomically create context. |
+| `guarded` | resume; retry/recovery; reviewer/explorer follow-up/refresh; draft add/edit/adopt/remove/retarget; preview/defer/approve; pre-post/post; proven-unposted retry; partial/uncertain/lease/coordinator recovery | First action requires current state-compatible, digest-matching context. |
+
+Bootstrap cannot acquire, build/read a bundle, launch a child, approve, journal, or write.
+Every table row is validator-enumerated; missing/renamed rows fail.
 
 1. Parse the locator, resolve the matching configured local Git project, inventory access,
    authenticate/probe one chosen adapter, and verify provider-returned immutable project,
@@ -58,41 +62,61 @@ Accept only `https://github.com/<owner>/<repo>/pull/<positive-id>` (optional tra
 and `owner/repo#<positive-id>`; GitHub deep links are rejected. Accept only
 `https://dev.azure.com/<org>/<project>/_git/<repo>/pullrequest/<positive-id>` and
 `https://<org>.visualstudio.com/<project>/_git/<repo>/pullrequest/<positive-id>`, canonicalizing
-the latter to `dev.azure.com`. Reject userinfo, ports, non-HTTPS URLs, query/fragment, empty or
-extra segments, malformed escapes, decoded slash/backslash/control/dot segments, non-decimal
-IDs, IDNA/confusable hosts, and unsupported hosts. Provider reads replace names with immutable
-IDs and prove both aliases yield the same identity.
+the latter to `dev.azure.com`. Before provider use, host must already be ASCII lowercase and
+exactly `github.com`, `dev.azure.com`, or `<org>.visualstudio.com` where `<org>` matches
+`[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?`; reject Unicode/punycode/mixed-case, userinfo, ports, non-HTTPS,
+query/fragment, extra/empty segments, malformed escapes, decoded slash/backslash/control/dot
+segments, and non-decimal IDs. Provider reads replace names with immutable IDs and prove aliases
+identify the same PR.
 
 `AccessCandidateInventory` is rebuilt from the active tool registry and already-installed
 CLI/extensions only; dynamic extension installation is disabled. MCPs qualify pre-auth only
-by declaring every required operation and stable identity/endpoint. Every MCP choice, including
-one candidate, requires explicit user confirmation showing those fields. Otherwise use the
-installed `gh` or `az devops`; ambiguity is deterministically sorted and shown, and failure
-never falls back. Agent Finder/discoverable entries are not candidates. Post-auth probes read
-acting identity, PR/revision, one paged-change page,
-one pinned blob, and complete comment inventory through an adapter-neutral result table.
-`AccessContext` includes canonical provider/IDs, adapter/version/endpoint, operation set,
-identity, auth epoch, and digest; that digest appears in all state, envelopes, approval, and
-journal rows. Ambient GitHub token host, `gh` host, locator host, or identity mismatch blocks.
+by declaring stable adapter identity/version, transport endpoint, provider authority/org/host,
+acting-identity route, and operation-name→tool mapping for every read/write. Provider authority,
+not a local/stdio transport host, must match the locator. Every MCP choice, even one, requires
+confirmation showing these fields. Otherwise use installed `gh`/`az devops`; ambiguity is
+sorted/shown, Agent Finder results are excluded, and failure never falls back. Post-auth probes
+must return immutable IDs and semantic read-back for identity, PR/revision, paging, pinned blob,
+and complete comments. Missing operations or mapping/authority/identity/version drift
+disqualifies and invalidates approval. `AccessContext` and its digest bind all fields plus auth
+epoch and appear in all state/envelopes/approval/journal.
+
+A versioned release-owned certification ledger enables exactly current GitHub-`gh`, ADO-`az`,
+and one row per specifically advertised/selected MCP; no row means disabled. Certification runs additionally
+require an operator-approved, expiring, nonce/run-scoped fixture authorization manifest
+(immutable IDs, identity, allowed comment types/count, cleanup owner, no-other-mutation), bound
+into `AccessContext`, `ApprovedRequest`, journal, and the production pre-write guard. Normal runs cannot be
+represented as certification evidence.
 
 For ADO CLI, open one visible persistent PowerShell terminal at the derived organization.
-The phase-read bootstrap uses `Read-Host -AsSecureString`, converts only in process memory,
-sets process-scoped `AZURE_DEVOPS_EXT_PAT`, zeroes conversion memory, arms a terminal-owned
-expiry cleanup, and runs all `az` children in that same process. The agent neither supplies
-nor reads/snapshots the terminal while entry is pending. User completion plus a non-secret
-terminal handshake precedes an explicit-organization identity probe. `finally`, close,
-cancellation, timeout, logout, adapter/version change, run end, or user request removes the variable;
-a wrong PAT is cleared and securely re-entered. Never use `az devops login` or persistent
-configuration. The PAT never enters agent/tool arguments or stdin, chat, prompts, logs, files,
-history, durable state, or persistent user/system environments.
+Preflight Windows PowerShell secure prompt/process environment/ACL support or Unix equivalent;
+unsupported hosts block before ADO acquisition. Launch `-NoProfile` with history saving and
+transcription disabled. A tagged sent-command allowlist permits bootstrap, explicit-org
+non-debug `az`, handshake, and cleanup only; ban PAT/environment rendering, verbose/debug,
+full/screen scrollback reads, transcripts, and history export. `Read-Host -AsSecureString`
+converts only in memory, sets process `AZURE_DEVOPS_EXT_PAT`, zeroes conversion memory, and runs
+all `az` children there. During entry read/screenshot nothing; after the non-secret handshake
+only since-last-input terminal reads are allowed. A five-minute idle timeout, cancel/close/block/logout/run-end, adapter change,
+or request clears the variable and closes the terminal, entering blocked/retry; wrong PAT
+requires fresh secure entry. Never use `az devops login`. Windows ACL grants the user plus
+unavoidable Administrators/SYSTEM; Unix uses `0700` directories/`0600` files—neither claims
+protection from privileged OS principals.
 
-**Snapshot and sessions.** `SnapshotBundle v1` is a user-only ACL directory under run-scoped
-Copilot session/temp storage, never a checkout, Git common directory, or tracked tree. A
-canonical manifest names provider IDs/API, revisions/ADO iteration, change metadata, required
-unchanged context, content-addressed base/source blobs, relative paths, byte lengths and
-SHA-256 digests, and binary/LFS/truncated/omitted/unavailable states; its digest plus all file
-digests yields `bundle_digest`. Any unresolved entry sets `complete=false` and blocks. Seal
-read-only before launch; delete on report-only cleanup/run expiry after no recovery need.
+**Snapshot and sessions.** Admission blocks before child launch above 3,000 changed files,
+250,000 changed lines, 16 MiB per text blob, 256 MiB changed text, or 512 MiB total bundle;
+never truncate. `SnapshotBundle v1` lives under run-scoped session/temp storage, outside
+checkout/common-dir. Manifest entries bind provider/API/IDs/revisions/iteration, change/path,
+base/source content-addressed blobs, byte/line counts, and binary/LFS metadata. Intentionally
+unavailable binary/LFS content is resolved metadata, not missing; unresolved text/base is
+`complete=false`. Use exact local blob only when SHA matches; otherwise read immutable provider
+content or block—never local HEAD or fetch.
+
+Unchanged context is direct imported/called definitions plus nearest tests/config referenced by
+changed symbols. A child requests more through the coordinator; approved additions produce
+resealed bundle `v(n+1)` and supersede affected review digests. Producer hashes the manifest and
+entries, gives each child an isolated content-addressed copy, and independently rehashes/rejects
+addition/deletion/rename/hash drift before and after each child. Child checkout/credentials and
+attestations are untrusted; each finding must cite bundle path plus blob SHA-256.
 
 Children use exact target `project_id`, top-level `execution_location: "local"`, and read only
 the bundle path. Envelopes attest `bundle_digest`, `access_digest`, and role-specific
@@ -106,15 +130,16 @@ and refreshed on drift. Each role reuses one session; one recorded same-model re
 allowed, then failure blocks. `review_digest` hashes role, model, prompt version, bundle, and
 access digests.
 
-**ADO/GitHub provider contract.** `reference/commands.md` tags each exact operation with adapter,
-host/API version, Accept header, method, area/resource or route, paging, and input mode. GitHub
-templates use explicit hostname, REST version, method, `per_page=100`/pagination, exact input
-bytes for writes, and no verbose/debug. ADO templates cover identity, PR, iterations, changes,
-items/blobs, thread inventory, and thread create with explicit organization, `--detect false`,
-API `7.1`, method, route/query parameters, `--encoding utf-8`, and no defaults/debug. Their exact resources are
-`profile/profiles` with `id=me`, then `git/pullRequests`,
-`git/pullRequestIterations`, `git/pullRequestIterationChanges`, `git/items`, `git/blobs`,
-and `git/pullRequestThreads`.
+**Tagged reference grammar.** Repository-wide unique fenced blocks use
+`contract:<kind>:<adapter-or-local-area>:v<n>` and required `operation`, method/command,
+route/resource, API version, Accept, paging, input mode, and output fields. Blocks cover
+GitHub/ADO and local terminal, bundle/ACL/hash/temp cleanup, lease/journal commands. Validator
+requires set equality/bijection between skill operation names and blocks.
+
+GitHub blocks specify host, REST version, Accept, method, `per_page=100`, paging, exact write
+bytes, and no verbose/debug. ADO blocks specify organization, `--detect false`, API `7.1`,
+method/routes, `--encoding utf-8`, and profile/git resources for identity, PR, iterations,
+changes, items/blobs, inventory/create.
 
 ADO iteration paging follows service-returned `nextSkip`/`nextTop` until both are zero, requiring
 monotonic progress and unique change IDs. Inventory consumes response `value`, every thread and
@@ -122,31 +147,53 @@ comment including deletion, type, author, content, top-level `threadContext`, an
 `pullRequestThreadContext.{changeTrackingId,iterationContext}`. Neutral anchors project as:
 add/edit/copy -> current path/right lines; delete -> original path/left lines; rename ->
 original-left or current-right as approved; each includes start/end line+offset, change ID,
-and `iterationContext.{firstComparingIteration,secondComparingIteration}`. The ADO body is a BOM-free LF temporary file with user-only ACL;
-hash before/after invoke, securely delete, then validate semantic read-back because CLI parsing
-may reserialize it.
+and `iterationContext.{firstComparingIteration,secondComparingIteration}`. The ADO body is a
+BOM-free LF temporary file with the platform ACL/mode above; hash before/after invoke, securely
+delete, then validate semantic read-back because CLI parsing may reserialize it.
 
-**Approval, drift, and posting.** `ApprovedRequest` contains exact Unicode body/suggestion,
-placement, neutral/projected anchor, immutable destination/identity, route, order,
-adapter/version, and revision. RFC-8785-style canonical-object SHA-256 binds each request and
-ordered set; preview derives only from this semantic object. GitHub additionally freezes exact
-wire bytes. The approval view displays acting identity and provider-specific suggestion
-rendering; GitHub uses an exact fenced suggestion in standalone review-comment content, while
-ADO places the exact approved suggestion text in the thread comment. Any
-field/set/access/identity/revision mutation revokes approval.
+**Anchors and approval.** Side is immutable from the pinned diff and pre-write validated
+in-diff; never infer its opposite:
+
+| Change | GitHub | ADO |
+|---|---|---|
+| add/copy/edit added/context | `RIGHT`, current path/new line | right/current path+coordinates |
+| delete/edit removed | `LEFT`, original path/original line | left/original path+coordinates |
+| rename | separately approved left-original or right-current | same |
+| range/file | `start_line/start_side`; `subject_type=file` | start/end line+offset |
+
+GitHub binds exact approved `commit_id` and bans deprecated `position`; ADO binds exact
+`changeTrackingId` and iteration pair. Invalid-anchor fallback to provider-specific general
+comment occurs only when separately previewed/approved.
+
+`ApprovedRequest` contains exact Unicode body/suggestion, placement, neutral/projected anchor,
+destination/author, route/order, adapter/version/access digest, revision, and tagged serializer
+version. Canonical semantic SHA-256 binds request/set; preview derives only from it. GitHub also
+freezes wire bytes; ADO may reserialize. Per-provider inverse response projection compares
+decoded body/suggestion, destination, author, path/side/range, commit/revision,
+iteration/change ID, and provider immutable IDs; journal stores projection/equality evidence.
+GitHub renders the exact fenced suggestion; ADO preserves exact approved suggestion text. Any
+mutation revokes approval.
 
 Lease key is canonical host plus provider-returned repository/PR IDs, so ADO aliases collide,
 and its atomic file/journal reside under the target project's `git rev-parse --git-common-dir`.
-Mutual exclusion is claimed only after proving contenders share that directory; otherwise
-disclose the limitation before posting. All runs still baseline complete inventories, write
-once, read back, journal digests/evidence, stop on uncertainty, and retry only proven-unposted
-items after fresh approval. Revalidate acting identity immediately pre-write and compare it
-with the displayed approved identity; ADO performs this in the credential-holding terminal and
-blocks for fresh secure entry if the process credential is absent. GitHub's final baseline-relative predicate proves this
-run created/changed no submitted/decision review or pending review and left preexisting pending
-reviews untouched. Writes are never batched. Preview reports current rate/write budget and
-warns when unknown, insufficient, or over five items; posting honors provider retry headers
-and GitHub mutative pacing.
+Exclusive create stores owner run/session/PID/access digest, monotonic epoch, heartbeat/expiry;
+atomic replace+flush persists journal-before-send and read-back before the next item. Release
+checks ownership; cleanup owner/retention are recorded; unwritable common-dir blocks. Stale
+takeover proves prior PID/session inactive, atomically claims higher epoch, inventories and
+reconciles every `attempt_started`, and blocks ambiguity. Scope unconditionally covers only
+contenders writing that same lease, never another clone/machine/global exactly-once; disclose
+different/unproven directories.
+
+Each item takes complete before/after inventories. Exactly one new matching immutable object
+confirms; multiple/delayed/ambiguous is uncertain. Zero is proven-unposted only after an
+authoritative pre-acceptance rejection or a certified consistency polling window; otherwise
+uncertain. Invalid-anchor `422` is proven-unposted and may return to separately approved
+fallback; `403`, rate limit, transport/unknown stop according to evidence. Retry only
+proven-unposted after fresh approval. Revalidate displayed acting identity immediately
+pre-write; ADO does so in its credential terminal. GitHub uses standalone comments paced at
+least one second and honors `Retry-After`/secondary-limit guidance; its baseline-relative final
+predicate proves no submitted/decision/pending review changed and preexisting pending reviews
+remain untouched.
 
 Run states are `access`, `acquiring`, `reviewing`, `reconciling`, `composing`, `previewed`,
 `deferred`, `approved`, `revalidating`, `posting`, `complete`, `blocked`, and `stale`; item
@@ -159,31 +206,32 @@ user but execute none of it.
 | Slice | Changed areas | Guardrail |
 |---|---|---|
 | Discovery/access | manifests, README, `SKILL.md`, command reference | Unique routing; first guard; no install/fallback/secret surface. |
-| Acquire/review/explore | coordinator, two prompts | Sealed bundle and local digest-attested consumers. |
+| Acquire/review/explore | coordinator, two prompts | Tamper-evident isolated bundle copies and local digest-attested consumers. |
 | Compose/post/recover | semantic contracts, lease/journal | Mutation invalidation and scoped exactly-once claim. |
-| Validation | dynamic `tests/validate-skills.ps1` | Parse unique production tags; generate negative fixtures; test all ordered skill-pair routing/independence. |
+| Validation | dynamic `tests/validate-skills.ps1` | Closed rule lists; tagged-block set equality/bijection; generated negatives; all ordered skill-pair routing/independence. |
 
 Rollback removes only sibling discovery files; provider content and reusable cap fixtures are
 never deleted automatically.
 
 ## Verification
 
-Structural/self-tests invoke production parsing/constructors, own only schema/invariant logic,
-and mutate generated copies of model, operation, and entry-guard/state blocks. They cover every
-locator rejection, operation probe, route uniqueness, digest/mutation, ADO anchor/paging/thread,
-lease scope, GitHub final predicate, budgets, and missing-adapter guidance; self-tests write to
-no provider.
+Structural/self-tests parse Markdown only. Closed rule lists and set equality/bijection fail on
+deleted/renamed rule/tag/entry/operation/model/state and generated negatives cover locators,
+terminal allowlist, budgets, hostile bundle mutation, wrong-checkout citations, binary-only,
+over-budget/missing-base/context reseal, anchors, serializers, lease, and final predicates.
+They prove contract structure, never runtime behavior.
 
-An AC1-AC8 matrix runs against GitHub-`gh`, every qualified MCP, and ADO-`az`. Operator-owned
-disposable fixtures require a machine-readable authorization manifest naming immutable IDs,
-identity, allowed comment types/count, expiry, cleanup owner, and no-other-mutation rule.
-Each provider suite executes four reviewers, explorer, author/adopt/edit/retarget/remove,
-defer, invalidation/reapproval, real general/inline write, and recovery. GitHub faults include
-lost response/no repost, second-coordinator lease denial, and head drift after approval; ADO
-adds equivalents, 1999/2000/2001 paging, and deleted/system/text/context thread cases.
-Persistent large-cap fixtures may be reused only with IDs, proof date and observed provider
-limit; refresh after limit or adapter/version change. Certification remains blocked without
-real cap/paging proof and recorded before/after provider objects.
+Only the live AC1-AC8 matrix proves agent/provider behavior, against mandatory current
+GitHub-`gh`, ADO-`az`, and each enabled certification-ledger MCP. Authorized disposable runs
+dry-run every tagged bootstrap/guarded entry, then exercise four reviewers/explorer, full
+draft/defer/invalidation/reapproval/write/recovery;
+Unicode/normalization/CRLF/quoting/fences, duplicate identical comments, delayed visibility,
+zero/one/multiple candidates, both sides, and lost response; hostile child mutation; and
+two-process/crash-at-every-transition, stale takeover, different/read-only common-dir.
+GitHub adds lease denial/head drift; ADO adds thread variants and 1999/2000/2001 paging.
+Paging mechanics use small fixtures with certification-only top override; the authoritative
+2,000 ceiling gets a recorded spot check refreshed on API-version change. Persistent cap
+fixtures record IDs/date/limit; absent real proof blocks certification.
 
 ## Open design questions
 
