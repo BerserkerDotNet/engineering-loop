@@ -145,8 +145,8 @@ ADO iteration paging follows service-returned `nextSkip`/`nextTop` until both ar
 monotonic progress and unique change IDs. Inventory consumes response `value`, every thread and
 comment including deletion, type, author, content, top-level `threadContext`, and nested
 `pullRequestThreadContext.{changeTrackingId,iterationContext}`. Neutral anchors project as:
-add/edit/copy -> current path/right lines; delete -> original path/left lines; rename ->
-original-left or current-right as approved; each includes start/end line+offset, change ID,
+add/copy/edit-added-or-context -> right/current; delete/edit-removed -> left/original; rename ->
+the separately approved side; each includes start/end line+offset, change ID,
 and `iterationContext.{firstComparingIteration,secondComparingIteration}`. The ADO body is a
 BOM-free LF temporary file with the platform ACL/mode above; hash before/after invoke, securely
 delete, then validate semantic read-back because CLI parsing may reserialize it.
@@ -176,13 +176,18 @@ mutation revokes approval.
 
 Lease key is canonical host plus provider-returned repository/PR IDs, so ADO aliases collide,
 and its atomic file/journal reside under the target project's `git rev-parse --git-common-dir`.
-Exclusive create stores owner run/session/PID/access digest, monotonic epoch, heartbeat/expiry;
-atomic replace+flush persists journal-before-send and read-back before the next item. Release
-checks ownership; cleanup owner/retention are recorded; unwritable common-dir blocks. Stale
-takeover proves prior PID/session inactive, atomically claims higher epoch, inventories and
-reconciles every `attempt_started`, and blocks ambiguity. Scope unconditionally covers only
-contenders writing that same lease, never another clone/machine/global exactly-once; disclose
-different/unproven directories.
+Exclusive create stores owner run/session/PID+process-start, OS boot ID, access digest, and
+monotonic epoch. Heartbeat every 10 seconds records monotonic ticks; six missed heartbeats
+(60 seconds) expire it. Same-boot takeover additionally requires the exact process-start absent
+and app session non-running. Wall-clock changes never prove liveness; reboot/monotonic loss
+forbids automatic takeover. Recovery must
+prove the prior boot ended and app session is inactive, else block. The winner atomically claims
+a higher epoch, freshly inventories/reconciles every `attempt_started`, and blocks ambiguity.
+Atomic replace+flush persists journal-before-send and read-back before the next item.
+Only the matching owner token releases the lease. The recorded same-run cleanup coordinator may
+remove only terminal rows 30 days after `complete`, `deferred`, or explicit abandonment and no
+`attempt_started`; unwritable common-dir blocks. Scope covers only contenders writing this
+lease, never another clone/machine/global exactly-once; disclose different/unproven directories.
 
 Each item takes complete before/after inventories. Exactly one new matching immutable object
 confirms; multiple/delayed/ambiguous is uncertain. Zero is proven-unposted only after an
