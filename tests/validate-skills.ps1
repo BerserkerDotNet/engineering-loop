@@ -9,12 +9,21 @@
     skill must state the shared safety baseline in its own SKILL.md, and no skill
     may resolve its rules against another skill.
 
+    Published skills are discovered from disk rather than hard-coded, so a new skill
+    directory is validated the moment it ships and an existing one cannot be dropped
+    silently. Each discovered skill must have a release-owned catalog entry declaring
+    its required resources and routing tokens.
+
     The validator never writes into the inspected repository. -SelfTest copies the
     repository into throwaway fixtures under the temporary directory, mutates the
     copies, and requires the validator to reject every negative fixture.
 
-    The contract checks are structural: they prove the skills state their rules, not
-    that an agent obeys them at run time. The one executable exception is the
+    The contract checks are structural: they parse Markdown and prove that the skills
+    state their rules. They do not execute any agent, provider adapter, terminal,
+    lease, or network operation, and they therefore prove nothing about run-time
+    agent or provider behavior. Claiming provider behavior requires live
+    certification against explicitly authorized disposable fixtures, which this
+    script neither performs nor simulates. The one executable exception is the
     history-aware secret-scan proof in -SelfTest, which builds a throwaway Git
     repository whose earlier commit contains a synthetic token that a later commit
     removes, then demonstrates that the final aggregate diff misses that token while
@@ -51,40 +60,59 @@ $ErrorActionPreference = 'Stop'
 
 $script:FeatureSkill = 'engineering-loop'
 $script:DefectSkill = 'issue-resolution'
+$script:ReviewSkill = 'pr-review'
 
-$script:RequiredFiles = @(
+# Repository-level files that exist regardless of which skills are published.
+$script:RepositoryFiles = @(
     'plugin.json',
     '.github/plugin/marketplace.json',
     'README.md',
-    'tests/validate-skills.ps1',
-    'skills/engineering-loop/SKILL.md',
-    'skills/engineering-loop/prompts/requirements.md',
-    'skills/engineering-loop/prompts/design.md',
-    'skills/engineering-loop/prompts/critique.md',
-    'skills/engineering-loop/prompts/implementation.md',
-    'skills/engineering-loop/prompts/retro.md',
-    'skills/engineering-loop/templates/prd.md',
-    'skills/engineering-loop/templates/design.md',
-    'skills/issue-resolution/SKILL.md',
-    'skills/issue-resolution/prompts/rca.md',
-    'skills/issue-resolution/prompts/artifact-critique.md',
-    'skills/issue-resolution/prompts/fix-plan.md',
-    'skills/issue-resolution/prompts/implementation.md',
-    'skills/issue-resolution/prompts/retro.md',
-    'skills/issue-resolution/templates/rca.md',
-    'skills/issue-resolution/templates/fix-plan.md'
+    'tests/validate-skills.ps1'
 )
 
-# Resources the defect coordinator must reference before running a phase.
-$script:DefectResources = @(
-    'prompts/rca.md',
-    'prompts/artifact-critique.md',
-    'prompts/fix-plan.md',
-    'prompts/implementation.md',
-    'prompts/retro.md',
-    'templates/rca.md',
-    'templates/fix-plan.md'
-)
+# Published skills are discovered from disk, never assumed. The catalog is the release-owned
+# closed rule list for each discovered skill: its required resources, the routing tokens its
+# description must carry, and the sibling phrasing it must not copy. A skill directory with no
+# catalog entry, or a catalog entry with no skill directory, is a violation, so a new skill
+# cannot ship without declaring its contract and an existing one cannot be silently dropped.
+$script:SkillCatalog = [ordered]@{
+    'engineering-loop' = @{
+        Resources                  = @(
+            'prompts/requirements.md',
+            'prompts/design.md',
+            'prompts/critique.md',
+            'prompts/implementation.md',
+            'prompts/retro.md',
+            'templates/prd.md',
+            'templates/design.md'
+        )
+        RequiredDescriptionTokens  = @('product requirements', 'design')
+        ForbiddenDescriptionTokens = @('root cause', 'Azure DevOps')
+    }
+    'issue-resolution' = @{
+        Resources                  = @(
+            'prompts/rca.md',
+            'prompts/artifact-critique.md',
+            'prompts/fix-plan.md',
+            'prompts/implementation.md',
+            'prompts/retro.md',
+            'templates/rca.md',
+            'templates/fix-plan.md'
+        )
+        RequiredDescriptionTokens  = @('bug', 'defect', 'root cause', 'reproduc')
+        ForbiddenDescriptionTokens = @('product requirements through design', 'Azure DevOps')
+    }
+    'pr-review'        = @{
+        Resources                  = @(
+            'prompts/area-review.md',
+            'prompts/exploration.md',
+            'reference/commands.md',
+            'reference/certification.md'
+        )
+        RequiredDescriptionTokens  = @('pull request', 'review', 'GitHub', 'Azure DevOps', 'comment')
+        ForbiddenDescriptionTokens = @('product requirements', 'root cause', 'reproduc')
+    }
+}
 
 # Exact model table. Column order: tier, RCA author, RCA critic, plan author,
 # plan critic, implementation.
@@ -115,60 +143,185 @@ $script:LedgerStates = @(
     'push_attempted', 'push_confirmed', 'pr_confirmed', 'blocked', 'superseded'
 )
 
-# Shared safety baseline. Each published skill must state every one of these statements in
-# its own SKILL.md. Neither skill is normative over the other and neither may reference the
-# other; this is a repository-level parity check so a rule cannot be silently dropped from
-# one skill while the repository still ships the other.
+# Shared safety baseline. Every published skill must state each universal statement in its own
+# SKILL.md. No skill is normative over another and none may reference another; this is a
+# repository-level parity check so a rule cannot be silently dropped from one skill while the
+# repository still ships the others.
+#
+# A skill that delivers a pull request, proven by declaring the `PR_CREATED` envelope, must
+# additionally state the delivery statements. A skill that declares no such envelope must
+# instead state the stricter non-delivery prohibitions, so dropping `PR_CREATED` buys tighter
+# rules rather than an exemption.
 $script:SafetyInvariants = @(
     @{
         Id        = 'single-control-point'
+        Scope     = 'universal'
         Statement = 'is the only user-facing control point'
     },
     @{
         Id        = 'separate-sessions'
+        Scope     = 'universal'
         Statement = 'separate app project sessions'
     },
     @{
         Id        = 'writer-never-pushes'
+        Scope     = 'universal'
         Statement = 'They never push or create PRs\.'
     },
     @{
         Id        = 'critique-read-only'
+        Scope     = 'universal'
         Statement = 'read-only\. They never edit, commit, push, or create PRs\.'
     },
     @{
         Id        = 'no-model-substitution'
+        Scope     = 'universal'
         Statement = 'silently substitute a selected model'
     },
     @{
-        Id        = 'same-session-delivers-pr'
-        Statement = 'The same implementation session that wrote the code pushes and creates the PR\.'
-    },
-    @{
-        Id        = 'no-critique-artifact'
-        Statement = 'persist raw critique output in the repository'
-    },
-    @{
-        Id        = 'retro-report-only'
-        Statement = 'reports proposals only'
-    },
-    @{
-        Id        = 'no-success-after-blocker'
-        Statement = 'Never claim success after a blocked child, failed validation, failed push, or failed PR creation\.'
-    },
-    @{
         Id        = 'envelope-delivered-once'
+        Scope     = 'universal'
         Statement = 'exactly once through `send_session_message`'
     },
     @{
         Id        = 'no-history-rewrite'
+        Scope     = 'universal'
         Statement = 'Never rebase, force-push, reset, amend, or rewrite history'
     },
     @{
         Id        = 'never-infer-approval'
+        Scope     = 'universal'
         Statement = 'Never infer approval from autonomy settings\.'
+    },
+    @{
+        Id        = 'same-session-delivers-pr'
+        Scope     = 'delivery'
+        Statement = 'The same implementation session that wrote the code pushes and creates the PR\.'
+    },
+    @{
+        Id        = 'no-critique-artifact'
+        Scope     = 'delivery'
+        Statement = 'persist raw critique output in the repository'
+    },
+    @{
+        Id        = 'retro-report-only'
+        Scope     = 'delivery'
+        Statement = 'reports proposals only'
+    },
+    @{
+        Id        = 'no-success-after-blocker'
+        Scope     = 'delivery'
+        Statement = 'Never claim success after a blocked child, failed validation, failed push, or failed PR creation\.'
+    },
+    @{
+        Id        = 'no-repository-write'
+        Scope     = 'non-delivery'
+        Statement = 'never changes code, work items, or repository files'
+    },
+    @{
+        Id        = 'no-merge-or-decision'
+        Scope     = 'non-delivery'
+        Statement = 'never merges, approves, requests changes, or closes'
+    },
+    @{
+        Id        = 'no-write-before-approval'
+        Scope     = 'non-delivery'
+        Statement = 'No provider write happens before explicit approval of the exact displayed set'
+    },
+    @{
+        Id        = 'no-success-after-failure'
+        Scope     = 'non-delivery'
+        Statement = 'Never claim success after a blocked child, a failed probe, a failed verification, or an uncertain write\.'
     }
 )
+
+# ---------------------------------------------------------------------------
+# Review workflow contract constants
+# ---------------------------------------------------------------------------
+
+# Exhaustive entry guard. Every entry into the review workflow is one tagged row.
+$script:ReviewEntryTags = @(
+    'entry:bootstrap:skill-match',
+    'entry:bootstrap:explicit-invocation',
+    'entry:bootstrap:adapter-reselection',
+    'entry:guarded:resume',
+    'entry:guarded:retry-recovery',
+    'entry:guarded:reviewer-followup',
+    'entry:guarded:explorer-followup',
+    'entry:guarded:review-refresh',
+    'entry:guarded:draft-add',
+    'entry:guarded:draft-edit',
+    'entry:guarded:draft-adopt',
+    'entry:guarded:draft-remove',
+    'entry:guarded:draft-retarget',
+    'entry:guarded:preview',
+    'entry:guarded:defer',
+    'entry:guarded:approve',
+    'entry:guarded:pre-post-revalidation',
+    'entry:guarded:post',
+    'entry:guarded:proven-unposted-retry',
+    'entry:guarded:partial-recovery',
+    'entry:guarded:uncertain-recovery',
+    'entry:guarded:lease-recovery',
+    'entry:guarded:coordinator-recovery'
+)
+
+# Exhaustive credential-terminal command allowlist.
+$script:ReviewTerminalAllowTags = @(
+    'terminal-allow:bootstrap',
+    'terminal-allow:secret-entry',
+    'terminal-allow:az-explicit-org',
+    'terminal-allow:handshake',
+    'terminal-allow:cleanup'
+)
+
+$script:ReviewRunStates = @(
+    'access', 'acquiring', 'reviewing', 'reconciling', 'composing', 'previewed', 'deferred',
+    'approved', 'revalidating', 'posting', 'complete', 'blocked', 'stale'
+)
+
+$script:ReviewItemStates = @(
+    'baseline_complete', 'attempt_started', 'confirmed', 'proven_unposted', 'uncertain'
+)
+
+$script:ReviewChildEnvelopes = @(
+    'REVIEW_COMPLETE', 'EXPLORATION_COMPLETE', 'NEEDS_CONTEXT', 'BLOCKED'
+)
+
+$script:ReviewCoordinatorCommands = @(
+    'CONTEXT_GRANTED', 'CONTEXT_DENIED', 'REFRESH_REVIEW', 'SUPERSEDE', 'SET_APPROVED'
+)
+
+# Exact fixed-model block. Column order: role, area tag, model.
+$script:ReviewModelTable = @(
+    @{ Role = 'Security'; Area = '`[Security]`'; Model = '`gpt-5.6-sol`' },
+    @{ Role = 'Design'; Area = '`[Design]`'; Model = '`claude-opus-5`' },
+    @{ Role = 'Canonical'; Area = '`[Canonical]`'; Model = '`gemini-3.1-pro-preview`' },
+    @{ Role = 'Performance'; Area = '`[Performance]`'; Model = '`gpt-5.6-sol`' },
+    @{ Role = 'Explorer'; Area = 'not an area'; Model = '`claude-opus-5`' }
+)
+
+$script:AllowedReviewModelIds = @('gpt-5.6-sol', 'claude-opus-5', 'gemini-3.1-pro-preview')
+
+$script:ReviewUserGates = @(
+    'Approve posting this exact comment set?',
+    'Approve the general-comment fallback for this comment?'
+)
+
+# Required fields, in order, of every tagged contract block.
+$script:ContractFields = @(
+    'operation', 'adapter', 'capability', 'method', 'resource', 'api-version', 'accept',
+    'paging', 'input', 'output'
+)
+
+# Parity capabilities every provider adapter must cover, so neither provider offers a reduced
+# acquisition, review, approval, posting, or recovery flow.
+$script:ContractCapabilities = @(
+    'identity', 'repository', 'pull-request', 'changes', 'blob', 'inventory', 'inline-create',
+    'general-create'
+)
+
+$script:ContractProviderAdapters = @('github', 'ado')
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -232,13 +385,98 @@ function Get-Frontmatter {
 # Checks
 # ---------------------------------------------------------------------------
 
+function Get-DiscoveredSkills {
+    param([string] $Root)
+
+    $skillsDir = Join-Path $Root 'skills'
+    if (-not (Test-Path -LiteralPath $skillsDir -PathType Container)) { return @() }
+
+    return @(
+        Get-ChildItem -LiteralPath $skillsDir -Directory |
+            Where-Object { Test-Path -LiteralPath (Join-Path $_.FullName 'SKILL.md') -PathType Leaf } |
+            ForEach-Object { $_.Name } |
+            Sort-Object
+    )
+}
+
+function Get-ExpectedResourceCount {
+    param([string] $Root)
+
+    $count = $script:RepositoryFiles.Count
+    foreach ($skill in @(Get-DiscoveredSkills -Root $Root)) {
+        $count += 1
+        if ($script:SkillCatalog.Contains($skill)) {
+            $count += @($script:SkillCatalog[$skill].Resources).Count
+        }
+    }
+    return $count
+}
+
 function Test-RequiredFiles {
     param([string] $Root, [System.Collections.Generic.List[string]] $Violations)
 
-    foreach ($relative in $script:RequiredFiles) {
+    foreach ($relative in $script:RepositoryFiles) {
         $full = Join-Path $Root $relative
         if (-not (Test-Path -LiteralPath $full -PathType Leaf)) {
             Add-Violation $Violations 'required-resource' "Missing required file '$relative'."
+        }
+    }
+
+    $discovered = @(Get-DiscoveredSkills -Root $Root)
+    if ($discovered.Count -eq 0) {
+        Add-Violation $Violations 'required-resource' 'No skill directory containing a SKILL.md was discovered under skills/.'
+    }
+
+    foreach ($skill in $discovered) {
+        if (-not $script:SkillCatalog.Contains($skill)) {
+            Add-Violation $Violations 'required-resource' "Discovered skill '$skill' has no catalog entry; every published skill must declare its required resources and routing tokens."
+            continue
+        }
+        foreach ($resource in $script:SkillCatalog[$skill].Resources) {
+            $full = Join-Path $Root "skills/$skill/$resource"
+            if (-not (Test-Path -LiteralPath $full -PathType Leaf)) {
+                Add-Violation $Violations 'required-resource' "Missing required file 'skills/$skill/$resource'."
+            }
+        }
+    }
+
+    foreach ($catalogued in $script:SkillCatalog.Keys) {
+        if ($discovered -notcontains $catalogued) {
+            Add-Violation $Violations 'required-resource' "Catalogued skill '$catalogued' has no discoverable 'skills/$catalogued/SKILL.md'."
+        }
+    }
+}
+
+function Test-SkillResourceReferences {
+    param([string] $Root, [System.Collections.Generic.List[string]] $Violations)
+
+    foreach ($skill in @(Get-DiscoveredSkills -Root $Root)) {
+        if (-not $script:SkillCatalog.Contains($skill)) { continue }
+        $path = Join-Path $Root "skills/$skill/SKILL.md"
+        if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { continue }
+        $text = Get-NormalizedText -Path $path
+
+        foreach ($resource in $script:SkillCatalog[$skill].Resources) {
+            if (-not (Test-Contains $text ([regex]::Escape($resource)))) {
+                Add-Violation $Violations 'required-resource' "skills/$skill/SKILL.md never references '$resource'."
+            }
+        }
+        if (-not (Test-Contains $text 'Replace every placeholder')) {
+            Add-Violation $Violations 'placeholder' "skills/$skill/SKILL.md does not require replacing every prompt placeholder."
+        }
+
+        # Contract placeholders use <UPPER_SNAKE_CASE> so an unreplaced value is visible.
+        $promptDir = Join-Path $Root "skills/$skill/prompts"
+        if (-not (Test-Path -LiteralPath $promptDir -PathType Container)) { continue }
+        foreach ($file in Get-ChildItem -LiteralPath $promptDir -Filter '*.md' -File) {
+            $promptText = [System.IO.File]::ReadAllText($file.FullName)
+            foreach ($match in [regex]::Matches($promptText, '<(?<token>[A-Za-z0-9_]+)>')) {
+                $token = $match.Groups['token'].Value
+                if ($token -notmatch '_') { continue }
+                if ($token -cne $token.ToUpperInvariant()) {
+                    Add-Violation $Violations 'placeholder' "skills/$skill/prompts/$($file.Name) uses non-conforming placeholder '<$token>'."
+                }
+            }
         }
     }
 }
@@ -246,10 +484,9 @@ function Test-RequiredFiles {
 function Test-Frontmatter {
     param([string] $Root, [System.Collections.Generic.List[string]] $Violations)
 
-    $descriptions = @{}
-    foreach ($skill in @($script:FeatureSkill, $script:DefectSkill)) {
+    $descriptions = [ordered]@{}
+    foreach ($skill in @(Get-DiscoveredSkills -Root $Root)) {
         $path = Join-Path $Root "skills/$skill/SKILL.md"
-        if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { continue }
 
         $frontmatter = Get-Frontmatter -Path $path
         if ($null -eq $frontmatter) {
@@ -269,56 +506,33 @@ function Test-Frontmatter {
         $descriptions[$skill] = $frontmatter['description']
     }
 
-    if ($descriptions.Count -ne 2) { return }
+    $names = @($descriptions.Keys)
+    for ($i = 0; $i -lt $names.Count; $i++) {
+        $skill = $names[$i]
+        $description = $descriptions[$skill]
 
-    $feature = $descriptions[$script:FeatureSkill]
-    $defect = $descriptions[$script:DefectSkill]
+        for ($j = $i + 1; $j -lt $names.Count; $j++) {
+            if ($description -eq $descriptions[$names[$j]]) {
+                Add-Violation $Violations 'frontmatter' "Skills '$skill' and '$($names[$j])' share an identical description; routing cannot distinguish them."
+            }
+        }
 
-    if ($feature -eq $defect) {
-        Add-Violation $Violations 'frontmatter' 'Both skills share an identical description; routing cannot distinguish them.'
-    }
-    foreach ($token in @('bug', 'defect', 'root cause', 'reproduc')) {
-        if ($defect -notmatch [regex]::Escape($token)) {
-            Add-Violation $Violations 'frontmatter' "issue-resolution description omits defect routing token '$token'."
+        if (-not $script:SkillCatalog.Contains($skill)) { continue }
+        foreach ($token in $script:SkillCatalog[$skill].RequiredDescriptionTokens) {
+            if ($description -notmatch [regex]::Escape($token)) {
+                Add-Violation $Violations 'frontmatter' "$skill description omits routing token '$token'."
+            }
         }
-    }
-    foreach ($token in @('product requirements', 'design')) {
-        if ($feature -notmatch [regex]::Escape($token)) {
-            Add-Violation $Violations 'frontmatter' "engineering-loop description omits feature routing token '$token'."
+        foreach ($token in $script:SkillCatalog[$skill].ForbiddenDescriptionTokens) {
+            if ($description -match [regex]::Escape($token)) {
+                Add-Violation $Violations 'frontmatter' "$skill description copies sibling routing phrasing '$token'."
+            }
         }
-    }
-    if ($defect -match 'product requirements through design') {
-        Add-Violation $Violations 'frontmatter' 'issue-resolution description copies engineering-loop feature phrasing.'
     }
 }
 
 function Test-DefectResources {
     param([string] $Root, [string] $SkillText, [System.Collections.Generic.List[string]] $Violations)
-
-    foreach ($resource in $script:DefectResources) {
-        if (-not (Test-Contains $SkillText ([regex]::Escape($resource)))) {
-            Add-Violation $Violations 'required-resource' "issue-resolution/SKILL.md never references '$resource'."
-        }
-    }
-
-    if (-not (Test-Contains $SkillText 'Replace every placeholder')) {
-        Add-Violation $Violations 'placeholder' 'issue-resolution/SKILL.md does not require replacing every prompt placeholder.'
-    }
-
-    # Contract placeholders use <UPPER_SNAKE_CASE> so an unreplaced value is visible.
-    $promptDir = Join-Path $Root 'skills/issue-resolution/prompts'
-    if (Test-Path -LiteralPath $promptDir -PathType Container) {
-        foreach ($file in Get-ChildItem -LiteralPath $promptDir -Filter '*.md' -File) {
-            $text = [System.IO.File]::ReadAllText($file.FullName)
-            foreach ($match in [regex]::Matches($text, '<(?<token>[A-Za-z0-9_]+)>')) {
-                $token = $match.Groups['token'].Value
-                if ($token -notmatch '_') { continue }
-                if ($token -cne $token.ToUpperInvariant()) {
-                    Add-Violation $Violations 'placeholder' "skills/issue-resolution/prompts/$($file.Name) uses non-conforming placeholder '<$token>'."
-                }
-            }
-        }
-    }
 
     $critiquePath = Join-Path $Root 'skills/issue-resolution/prompts/artifact-critique.md'
     if (Test-Path -LiteralPath $critiquePath -PathType Leaf) {
@@ -600,37 +814,46 @@ function Test-SecretScanContract {
 function Test-SkillIndependence {
     param([string] $Root, [System.Collections.Generic.List[string]] $Violations)
 
-    $pairs = @(
-        @{ Owner = $script:DefectSkill; Foreign = $script:FeatureSkill },
-        @{ Owner = $script:FeatureSkill; Foreign = $script:DefectSkill }
-    )
+    $discovered = @(Get-DiscoveredSkills -Root $Root)
 
-    foreach ($pair in $pairs) {
-        $skillDir = Join-Path $Root ('skills/' + $pair.Owner)
+    foreach ($owner in $discovered) {
+        $skillDir = Join-Path $Root ('skills/' + $owner)
         if (-not (Test-Path -LiteralPath $skillDir -PathType Container)) { continue }
 
-        foreach ($file in Get-ChildItem -LiteralPath $skillDir -Recurse -File -Filter '*.md') {
-            $text = [System.IO.File]::ReadAllText($file.FullName)
-            if ($text.Contains($pair.Foreign)) {
-                $relative = $file.FullName.Substring($Root.Length).TrimStart('\', '/') -replace '\\', '/'
-                Add-Violation $Violations 'skill-independence' "$relative references the sibling skill '$($pair.Foreign)'. Published skills must be self-contained and must not resolve their rules against, or route the user to, another skill."
+        foreach ($foreign in $discovered) {
+            if ($foreign -eq $owner) { continue }
+
+            foreach ($file in Get-ChildItem -LiteralPath $skillDir -Recurse -File -Filter '*.md') {
+                $text = [System.IO.File]::ReadAllText($file.FullName)
+                if ($text.Contains($foreign)) {
+                    $relative = $file.FullName.Substring($Root.Length).TrimStart('\', '/') -replace '\\', '/'
+                    Add-Violation $Violations 'skill-independence' "$relative references the sibling skill '$foreign'. Published skills must be self-contained and must not resolve their rules against, or route the user to, another skill."
+                }
             }
         }
     }
 }
 
-function Test-SafetyDrift {    param([string] $Root, [string] $SkillText, [System.Collections.Generic.List[string]] $Violations)
+function Test-SafetyDrift {
+    param([string] $Root, [System.Collections.Generic.List[string]] $Violations)
 
-    $peerPath = Join-Path $Root 'skills/engineering-loop/SKILL.md'
-    if (-not (Test-Path -LiteralPath $peerPath -PathType Leaf)) { return }
+    foreach ($skill in @(Get-DiscoveredSkills -Root $Root)) {
+        $path = Join-Path $Root "skills/$skill/SKILL.md"
+        if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { continue }
 
-    $peer = Get-NormalizedText -Path $peerPath
-    foreach ($invariant in $script:SafetyInvariants) {
-        if (-not (Test-Contains $peer $invariant.Statement)) {
-            Add-Violation $Violations 'safety-drift' "skills/engineering-loop/SKILL.md no longer states shared safety baseline '$($invariant.Id)'; each published skill must state it independently."
-        }
-        if (-not (Test-Contains $SkillText $invariant.Statement)) {
-            Add-Violation $Violations 'safety-drift' "issue-resolution/SKILL.md no longer states shared safety baseline '$($invariant.Id)'."
+        $text = Get-NormalizedText -Path $path
+
+        # A skill that declares the PR_CREATED envelope delivers a pull request and owes the
+        # delivery statements. A skill that declares no such envelope owes the stricter
+        # non-delivery prohibitions instead, so dropping the envelope never buys an exemption.
+        $deliversPullRequest = Test-Contains $text 'PR_CREATED'
+        $requiredScope = if ($deliversPullRequest) { 'delivery' } else { 'non-delivery' }
+
+        foreach ($invariant in $script:SafetyInvariants) {
+            if ($invariant.Scope -ne 'universal' -and $invariant.Scope -ne $requiredScope) { continue }
+            if (-not (Test-Contains $text $invariant.Statement)) {
+                Add-Violation $Violations 'safety-drift' "skills/$skill/SKILL.md no longer states $($invariant.Scope) safety baseline '$($invariant.Id)'; each published skill must state it independently."
+            }
         }
     }
 }
@@ -712,12 +935,752 @@ function Test-Discovery {
     $readmePath = Join-Path $Root 'README.md'
     if (Test-Path -LiteralPath $readmePath -PathType Leaf) {
         $readme = Get-NormalizedText -Path $readmePath
-        foreach ($required in @('skills/engineering-loop/', 'skills/issue-resolution/', 'tests/validate-skills.ps1')) {
-            if (-not (Test-Contains $readme ([regex]::Escape($required)))) {
-                Add-Violation $Violations 'discovery' "README.md does not document '$required'."
+        foreach ($skill in @(Get-DiscoveredSkills -Root $Root)) {
+            if (-not (Test-Contains $readme ([regex]::Escape("skills/$skill/")))) {
+                Add-Violation $Violations 'discovery' "README.md does not document 'skills/$skill/'."
+            }
+        }
+        if (-not (Test-Contains $readme ([regex]::Escape('tests/validate-skills.ps1')))) {
+            Add-Violation $Violations 'discovery' "README.md does not document 'tests/validate-skills.ps1'."
+        }
+    }
+}
+
+function Get-ReviewSkillText {
+    param([string] $Root)
+
+    $path = Join-Path $Root "skills/$($script:ReviewSkill)/SKILL.md"
+    if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { return $null }
+    return Get-NormalizedText -Path $path
+}
+
+function Get-ReviewContractBlocks {
+    param([string] $Root)
+
+    $path = Join-Path $Root "skills/$($script:ReviewSkill)/reference/commands.md"
+    if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { return @() }
+
+    $blocks = [System.Collections.Generic.List[object]]::new()
+    $current = $null
+    foreach ($line in [System.IO.File]::ReadAllLines($path)) {
+        if ($null -eq $current) {
+            if ($line -match '^```(?<tag>contract:[^`\s]+)\s*$') {
+                $current = [ordered]@{
+                    Tag    = $Matches['tag']
+                    Fields = [ordered]@{}
+                    Order  = [System.Collections.Generic.List[string]]::new()
+                    Body   = [System.Collections.Generic.List[string]]::new()
+                    Closed = $false
+                }
+            }
+            continue
+        }
+
+        if ($line -match '^```\s*$') {
+            $current.Closed = $true
+            $blocks.Add($current) | Out-Null
+            $current = $null
+            continue
+        }
+
+        $current.Body.Add($line) | Out-Null
+        if ($line -match '^(?<key>[a-z][a-z-]*):\s*(?<value>.*)$') {
+            $key = $Matches['key']
+            if (-not $current.Fields.Contains($key)) {
+                $current.Fields[$key] = $Matches['value']
+                $current.Order.Add($key) | Out-Null
+            }
+            else {
+                $current.Order.Add($key) | Out-Null
             }
         }
     }
+
+    if ($null -ne $current) { $blocks.Add($current) | Out-Null }
+    return @($blocks)
+}
+
+function Get-ReviewRegisteredOperations {
+    param([string] $Root)
+
+    $path = Join-Path $Root "skills/$($script:ReviewSkill)/SKILL.md"
+    if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { return @() }
+
+    $operations = [System.Collections.Generic.List[string]]::new()
+    $inRegistry = $false
+    foreach ($line in [System.IO.File]::ReadAllLines($path)) {
+        if ($line -match '^##\s') {
+            $inRegistry = ($line.Trim() -eq '## Operation registry')
+            continue
+        }
+        if (-not $inRegistry) { continue }
+        if (-not $line.TrimStart().StartsWith('|')) { continue }
+        foreach ($match in [regex]::Matches($line, '`(?<op>[a-z][a-z0-9-]*\.[a-z][a-z0-9-]*)`')) {
+            $operations.Add($match.Groups['op'].Value) | Out-Null
+        }
+    }
+    return @($operations)
+}
+
+function Test-ReviewStatements {
+    param(
+        [string] $SkillText,
+        [string] $Check,
+        $Required,
+        [System.Collections.Generic.List[string]] $Violations
+    )
+
+    foreach ($id in $Required.Keys) {
+        if (-not (Test-Contains $SkillText $Required[$id])) {
+            Add-Violation $Violations $Check "skills/$($script:ReviewSkill)/SKILL.md no longer states '$id' (expected /$($Required[$id])/)."
+        }
+    }
+}
+
+function Test-ReviewTokenSet {
+    param(
+        [string] $SkillText,
+        [string] $Check,
+        [string] $Label,
+        [string] $Pattern,
+        [string[]] $Expected,
+        [System.Collections.Generic.List[string]] $Violations
+    )
+
+    $found = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::Ordinal)
+    foreach ($match in [regex]::Matches($SkillText, $Pattern)) {
+        $found.Add($match.Groups['token'].Value) | Out-Null
+    }
+
+    foreach ($token in $Expected) {
+        if (-not $found.Contains($token)) {
+            Add-Violation $Violations $Check "$Label is missing '$token'; the list is exhaustive and closed."
+        }
+    }
+    foreach ($token in $found) {
+        if ($Expected -notcontains $token) {
+            Add-Violation $Violations $Check "$Label declares undeclared member '$token'; the list is exhaustive and closed."
+        }
+    }
+}
+
+function Test-ReviewEntryGuard {
+    param([string] $SkillText, [System.Collections.Generic.List[string]] $Violations)
+
+    Test-ReviewTokenSet -SkillText $SkillText -Check 'review-entry-guard' -Label 'The review entry guard' `
+        -Pattern '`(?<token>entry:[a-z-]+:[a-z-]+)`' -Expected $script:ReviewEntryTags -Violations $Violations
+
+    $required = [ordered]@{
+        'guard-is-exhaustive'      = 'The table is exhaustive: an interaction that matches no row is not a valid entry and blocks\.'
+        'guard-decides-first-action' = 'takes the entry kind and the current run state and decides what the first action may be'
+        'bootstrap-may-lack-context' = '\| `bootstrap` \| [^|]+ \| May lack `AccessContext` \|'
+        'guarded-requires-context'   = '\| `guarded` \| [^|]+ \| Requires a state-compatible, digest-matching `AccessContext` \|'
+        'bootstrap-scope'            = 'A `bootstrap` entry may only parse the locator, inventory candidates, confirm one adapter,\s*authenticate and probe it, and then atomically create `AccessContext`\.'
+        'bootstrap-prohibitions'     = 'Bootstrap must not acquire a pull request, build or read a bundle, launch a child, preview,\s*approve, journal, or write\.'
+        'guarded-first-action'       = 'Every other entry is `guarded` and its first action is the `AccessContext` check\.'
+        'stale-routing'              = 'records `stale` and routes to `entry:bootstrap:adapter-reselection`'
+        'never-proceeds-on-old-context' = 'It never proceeds on the old context\.'
+    }
+    Test-ReviewStatements -SkillText $SkillText -Check 'review-entry-guard' -Required $required -Violations $Violations
+
+    # Every declared entry tag must actually appear as a table row, not merely as prose.
+    foreach ($tag in $script:ReviewEntryTags) {
+        $kind = if ($tag -like 'entry:bootstrap:*') { 'bootstrap' } else { 'guarded' }
+        if (-not (Test-Contains $SkillText ('\| `' + [regex]::Escape($tag) + '` \| `' + $kind + '` \|'))) {
+            Add-Violation $Violations 'review-entry-guard' "Entry '$tag' has no '$kind' row in the entry guard table."
+        }
+    }
+}
+
+function Test-ReviewLocatorGrammar {
+    param([string] $SkillText, [System.Collections.Generic.List[string]] $Violations)
+
+    $required = [ordered]@{
+        'single-decoding-pass' = 'Split the locator lexically before applying exactly one strict UTF-8 percent decoding pass\.'
+        'github-url-form'      = '`https://github\.com/<owner>/<repo>/pull/<positive-id>`'
+        'github-short-form'    = '`<owner>/<repo>#<positive-id>`'
+        'ado-url-form'         = '`https://dev\.azure\.com/<org>/<project>/_git/<repo>/pullrequest/<positive-id>`'
+        'ado-legacy-form'      = '`https://<org>\.visualstudio\.com/<project>/_git/<repo>/pullrequest/<positive-id>`'
+        'ascii-host-rule'      = 'the host must already be ASCII lowercase and exactly `github\.com`,\s*`dev\.azure\.com`, or `<org>\.visualstudio\.com`'
+        'org-label-grammar'    = '`\[a-z0-9\]\(\?:\[a-z0-9-\]\{0,61\}\[a-z0-9\]\)\?`'
+        'legacy-canonical'     = 'Canonicalize the legacy `<org>\.visualstudio\.com` alias\s*to `dev\.azure\.com` and record both\.'
+        'rejection-terminal'   = 'Rejection is terminal for that locator; ask for a valid one\.'
+        'immutable-ids'        = 'replace every name with the provider''s immutable IDs and prove\s*that any alias identifies the same pull request'
+        'local-project-match'  = 'No matching configured local\s*project, or an unverifiable identity, blocks\.'
+    }
+    Test-ReviewStatements -SkillText $SkillText -Check 'review-locator' -Required $required -Violations $Violations
+
+    $rejections = @(
+        'Unicode or punycode host', 'mixed-case host', 'userinfo', 'a port', 'a non-HTTPS scheme',
+        'a query string', 'a fragment', 'extra or\s*empty path segments', 'an unsupported depth',
+        'a GitHub deep link below the pull-request page', 'a\s*malformed percent escape',
+        'a decoded slash, backslash, control character, or dot segment',
+        'non-decimal identifier'
+    )
+    foreach ($rejection in $rejections) {
+        if (-not (Test-Contains $SkillText $rejection)) {
+            Add-Violation $Violations 'review-locator' "The locator rejection list no longer rejects '$rejection'."
+        }
+    }
+}
+
+function Test-ReviewAccessSelection {
+    param([string] $SkillText, [System.Collections.Generic.List[string]] $Violations)
+
+    $required = [ordered]@{
+        'capability-gate'        = 'require every one of these app tools to be\s*available: `list_projects`, `list_sessions_and_chats`, `create_session`, `get_session`,\s*`send_session_message`, and `ask_user`'
+        'inventory-source'       = 'Rebuild `AccessCandidateInventory` from the active tool registry and already-installed CLI and\s*extensions only\.'
+        'discoverable-not-active' = 'Discoverable is not active, dynamic extension installation is disabled, and\s*Agent Finder results are excluded\.'
+        'mcp-qualification'      = 'a stable adapter identity\s*and version, its transport endpoint, the provider authority with organization and host it acts\s*against, its acting-identity route, and a complete operation-name to tool mapping for every\s*read and write operation'
+        'mcp-authority-match'    = 'The declared provider authority, never a local\s*or stdio transport host, must match the locator\.'
+        'mcp-confirmed'          = 'Every MCP choice is confirmed by the user\s*after displaying those fields, even when it is the only candidate\.'
+        'cli-fallback-scope'     = 'Otherwise use installed `gh` for GitHub or installed `az devops` for Azure DevOps\.'
+        'no-silent-switch'       = 'never switch silently'
+        'no-cross-candidate-fallback' = 'A failure never falls back to\s*another candidate\.'
+        'probe-read-back'        = 'probe the chosen adapter for immutable IDs and semantic read-back of\s*acting identity, pull request and revision, paging, one pinned blob, and the complete comment\s*inventory'
+        'drift-disqualifies'     = 'A missing operation, or drift in mapping, provider authority, acting identity, or\s*adapter version, disqualifies the adapter and invalidates any approval bound to it\.'
+        'never-installs'         = 'reports the exact install, enable, or authentication action the user must\s*perform, and executes none of it'
+        'ledger-shape'           = 'Read `reference/certification\.md`\. A versioned, release-owned certification ledger enables\s*exactly the current GitHub `gh` row, the current Azure DevOps `az` row, and one row per\s*specifically advertised and selected MCP\.'
+        'no-row-disabled'        = 'No row means the adapter is disabled\.'
+        'uncertified-not-claimed' = 'An adapter whose\s*row is `enabled-uncertified` may be used, but no report may claim certified provider behavior\.'
+        'normal-run-not-evidence' = 'A\s*normal run is never represented as certification evidence\.'
+        'fixture-manifest'       = 'A live certification write additionally requires an operator-approved, expiring, nonce and\s*run-scoped fixture authorization manifest'
+        'fixture-manifest-fields' = 'naming the immutable fixture IDs, the acting\s*identity, the allowed comment types and count, the cleanup owner, and an explicit\s*no-other-mutation clause'
+        'fixture-manifest-bound' = 'bound into `AccessContext`, into every\s*`ApprovedRequest`, into the journal, and into the pre-write guard'
+        'fixture-missing-blocks' = 'Without it, no certification\s*write may happen and the run reports `BLOCKED` with the exact missing fixture or evidence\.'
+        'access-context-binding' = '`AccessContext` binds the canonical host, provider, immutable project, repository,\s*pull-request, and acting-identity IDs, the adapter identity and version, the operation mapping,\s*the certification ledger row, any fixture authorization manifest, and the authentication epoch\.'
+        'access-digest-flow'     = 'Its `access_digest` is a SHA-256 over that canonical object and appears in every run state\s*record, every child envelope, every `ApprovedRequest`, and every journal row\.'
+        'access-context-atomic'  = 'Create it\s*atomically at the end of bootstrap; nothing earlier may use it\.'
+    }
+    Test-ReviewStatements -SkillText $SkillText -Check 'review-access' -Required $required -Violations $Violations
+}
+
+function Test-ReviewTerminalContract {
+    param([string] $SkillText, [System.Collections.Generic.List[string]] $Violations)
+
+    Test-ReviewTokenSet -SkillText $SkillText -Check 'review-terminal' -Label 'The credential-terminal command allowlist' `
+        -Pattern '`(?<token>terminal-allow:[a-z-]+)`' -Expected $script:ReviewTerminalAllowTags -Violations $Violations
+
+    foreach ($tag in $script:ReviewTerminalAllowTags) {
+        if (-not (Test-Contains $SkillText ('\| `' + [regex]::Escape($tag) + '` \| [^|]+ \|'))) {
+            Add-Violation $Violations 'review-terminal' "Allowlist tag '$tag' has no row in the credential-terminal table."
+        }
+    }
+
+    $required = [ordered]@{
+        'cli-only-scope'      = 'Used only when the chosen Azure DevOps adapter is `az devops`\.'
+        'host-preflight'      = 'it must support a non-echoing secure prompt, process-scoped\s*environment injection, and the platform access controls in `acl\.apply`'
+        'unsupported-blocks'  = 'An unsupported host\s*blocks before Azure DevOps acquisition, with no persistent login and no fallback\.'
+        'single-terminal'     = 'Open exactly one visible persistent terminal at the derived organization, launched with\s*`-NoProfile` and with history saving and transcription disabled\.'
+        'process-scoped-only' = 'the secret exists\s*only in that process for this run'
+        'allowlist-closed'    = 'Only these tagged commands may be sent'
+        'prohibitions'        = 'Anything else is prohibited, including rendering the PAT or the environment, `--verbose`,\s*`--debug`, full or screen scrollback reads, transcripts, and history export\.'
+        'no-read-while-pending' = 'Read nothing while\s*entry is pending; after the non-secret handshake, read only output produced since the last\s*command this workflow sent\.'
+        'credential-ending-events' = 'a five-minute idle timeout, cancellation, terminal close, a block, logout, run end,\s*adapter or version change, an invalid or insufficient PAT, or a user request'
+        'clear-and-block'     = 'Clear the variable and close the terminal, then enter `blocked` and require fresh secure entry'
+        'acl-residual'        = 'Windows access\s*control grants the current user plus the unavoidable `Administrators` and `SYSTEM` principals,\s*and Unix uses `0700` directories and `0600` files\.'
+        'residual-disclosed'  = 'Neither claims protection from privileged operating-system principals; state that residual\s*explicitly\.'
+        'no-az-devops-login'  = '`az devops login` is never used'
+        'process-scoped-env'  = 'process-scoped `AZURE_DEVOPS_EXT_PAT`'
+        'secret-never-leaks'  = 'never enters agent-controlled arguments, stdin, chat, prompts, tool\s*payloads, logs, files, ledgers, shell history, persistent environments, artifacts, or\s*comments'
+    }
+    Test-ReviewStatements -SkillText $SkillText -Check 'review-terminal' -Required $required -Violations $Violations
+}
+
+function Test-ReviewBundleContract {
+    param([string] $SkillText, [System.Collections.Generic.List[string]] $Violations)
+
+    $thresholds = [ordered]@{
+        'Changed files'      = '3,000'
+        'Changed lines'      = '250,000'
+        'Text blob size'     = '16 MiB'
+        'Changed text total' = '256 MiB'
+        'Bundle total'       = '512 MiB'
+    }
+    foreach ($limit in $thresholds.Keys) {
+        $pattern = '\| ' + [regex]::Escape($limit) + ' \| ' + [regex]::Escape($thresholds[$limit]) + ' \|'
+        if (-not (Test-Contains $SkillText $pattern)) {
+            Add-Violation $Violations 'review-bundle' "The admission table no longer blocks '$limit' at '$($thresholds[$limit])'."
+        }
+    }
+
+    $required = [ordered]@{
+        'admission-before-children' = 'Block before launching any child, and never truncate, when the pull request exceeds any of'
+        'bundle-location'      = '`SnapshotBundle v1` lives in run-scoped session or temporary storage, outside every checkout\s*and outside the Git common directory\.'
+        'manifest-binding'     = 'Each manifest entry binds the provider, API version,\s*immutable IDs, revision, iteration, change kind, path, the exact content-addressed base and\s*source blobs, byte and line counts, and binary or Git LFS metadata\.'
+        'incomplete-blocks'    = 'unresolved text or a missing exact base\s*sets `complete=false`, which blocks'
+        'exact-local-blob'     = 'Use a local blob only when its SHA matches the pinned object exactly\.'
+        'no-head-no-fetch'     = 'Never substitute local `HEAD`, never fetch, and never\s*reconstruct content from a working tree\.'
+        'unchanged-context'    = 'Unchanged context is the directly imported or called definitions plus the nearest tests and\s*configuration referenced by the changed symbols\.'
+        'reseal-supersedes'    = 'an approved addition reseals the bundle as `v\(n\+1\)` and supersedes every affected\s*review digest'
+        'isolated-copies'      = 'give each child an isolated content-addressed copy'
+        'rehash-both-sides'    = 'independently rehash before and after every child, rejecting any added, deleted, renamed, or\s*hash-drifted entry'
+        'child-untrusted'      = 'A child''s own checkout, ambient credentials, and self-attestations are\s*untrusted evidence\.'
+        'citation-required'    = 'Every finding must cite a bundle path plus that entry''s blob SHA-256\.'
+    }
+    Test-ReviewStatements -SkillText $SkillText -Check 'review-bundle' -Required $required -Violations $Violations
+}
+
+function Test-ReviewModelContract {
+    param([string] $SkillText, [System.Collections.Generic.List[string]] $Violations)
+
+    foreach ($row in $script:ReviewModelTable) {
+        $pattern = '\| ' + [regex]::Escape($row.Role) + ' \| ' + [regex]::Escape($row.Area) + ' \| ' + [regex]::Escape($row.Model) + ' \|'
+        if (-not (Test-Contains $SkillText $pattern)) {
+            Add-Violation $Violations 'review-model-table' "The fixed-model table no longer binds role '$($row.Role)' to area '$($row.Area)' and model '$($row.Model)'."
+        }
+    }
+
+    foreach ($row in $script:ReviewModelTable) {
+        $id = $row.Model.Trim('`')
+        if ($script:AllowedReviewModelIds -notcontains $id) {
+            Add-Violation $Violations 'review-model-table' "Role '$($row.Role)' names model '$id', which is not in the certified review model set."
+        }
+    }
+
+    $required = [ordered]@{
+        'explicit-kickoff-model' = 'Pass every selection explicitly in `kickoff\.model`\.'
+        'missing-model-blocks'   = 'stop\s*before creating that session and report `BLOCKED` with the exact missing ID'
+        'rotation-recertifies'   = 'Rotating a model\s*requires a versioned change to this table and full recertification\.'
+        'one-replacement'        = 'exactly one recorded same-model replacement is allowed, after which the run blocks'
+        'child-launch-shape'     = '`project_id`, top-level `execution_location: "local"`, `coordinate_with_creator: true`,\s*`notify_on_idle: "always"`, plus `kickoff` with `mode: "autopilot"`'
+        'child-prompt-binding'   = 'carrying `COORDINATOR_SESSION_ID`, `RUN_ID`, `PHASE`, a\s*monotonically increasing `SEQUENCE`, the isolated bundle path, `bundle_digest`, `access_digest`,\s*and `review_digest`'
+        'children-never-ask'     = 'Children read only the bundle path and never ask the user directly\.'
+        'review-digest'          = '`review_digest` hashes the role, the model, the prompt version, `bundle_digest`, and\s*`access_digest`\.'
+        'budgets'                = 'Prompts are capped at 16 KiB, envelopes at 64 KiB, a single finding at 4 KiB, and findings at\s*100 per role\.'
+        'overflow-blocks'        = 'Overflow blocks rather than truncates\.'
+        'finding-format'         = 'findings formatted\s*`\[<Area>\] <Text>` with a bundle path and blob SHA-256 citation'
+        'no-area-downgrade'      = 'name the gap and never\s*omit, substitute, or downgrade an area'
+        'explorer-advisory'      = 'is advisory only\. It cannot\s*add, edit, or remove findings or drafts, and it routes any new area claim to the owning\s*reviewer instead of asserting it\.'
+        'adoption-only'          = 'Only user-authored or explicitly adopted comments enter the\s*pending set; a finding that the user did not adopt is never pending\.'
+    }
+    Test-ReviewStatements -SkillText $SkillText -Check 'review-model-table' -Required $required -Violations $Violations
+}
+
+function Test-ReviewAnchorContract {
+    param([string] $SkillText, [System.Collections.Generic.List[string]] $Violations)
+
+    $required = [ordered]@{
+        'side-immutable'    = 'Side is immutable from the pinned diff and is validated in-diff immediately before the write\.'
+        'never-infer-side'  = 'Never infer the opposite side\.'
+        'right-side-row'    = '\| add, copy, edited added, or context \| `RIGHT` with the current path and new line \| right or current path with line and offset \|'
+        'left-side-row'     = '\| delete or edited removed \| `LEFT` with the original path and original line \| left or original path with line and offset \|'
+        'rename-row'        = '\| rename \| the separately approved left-original or right-current side \| the separately approved left-original or right-current side \|'
+        'range-row'         = '\| range or whole file \| `start_line` with `start_side`, or `subject_type=file` \| start and end line with offsets \|'
+        'github-commit-id'  = 'GitHub binds the exact approved `commit_id` and never sends the deprecated `position` field\.'
+        'ado-change-tracking' = 'Azure DevOps binds the exact `changeTrackingId` and the iteration pair\s*`firstComparingIteration` and `secondComparingIteration`\.'
+    }
+    Test-ReviewStatements -SkillText $SkillText -Check 'review-anchors' -Required $required -Violations $Violations
+}
+
+function Test-ReviewApprovalContract {
+    param([string] $SkillText, [System.Collections.Generic.List[string]] $Violations)
+
+    Test-ReviewTokenSet -SkillText $SkillText -Check 'review-user-gates' -Label 'The review user-gate set' `
+        -Pattern '`(?<token>Approve [^`]+\?)`' -Expected $script:ReviewUserGates -Violations $Violations
+
+    $required = [ordered]@{
+        'preview-derives-from-request' = 'Display the exact pending set derived only from the `ApprovedRequest`\s*objects'
+        'preview-fields'      = 'for each comment its exact body, its suggestion, its placement, its neutral and\s*projected anchor, its destination and author, and its route and order, plus the adapter,\s*adapter version, `access_digest`, revision, serializer version, and the canonical semantic\s*digest of each request and of the whole set'
+        'request-fields'      = '`ApprovedRequest` contains the exact Unicode body and suggestion, the placement, the neutral and\s*projected anchor, the destination and author, the route and order, the adapter, adapter version\s*and `access_digest`, the revision, and the tagged serializer version\.'
+        'canonical-digest'    = 'A canonical SHA-256 binds\s*each request and the whole set\.'
+        'github-wire-bytes'   = 'GitHub additionally freezes the exact wire bytes\.'
+        'ado-inverse-projection' = 'Azure DevOps\s*may reserialize, so its read-back is accepted only when inverse projection proves exact meaning\.'
+        'suggestion-fidelity' = 'GitHub renders the exact approved fenced suggestion; Azure DevOps preserves the exact approved\s*suggestion text\.'
+        'mutation-revokes'    = 'Any mutation of any bound field revokes approval\.'
+        'mutation-invalidates-set' = 'Any mutation of text, target, suggestion, identity, adapter, revision, order, or set\s*membership revokes approval and requires a new preview and a new approval\.'
+        'gate-choices'        = 'Ask with `ask_user`, offering exactly the choices `Approved` and `Needs refinement`\.'
+        'gate-set-row'        = '\| Comment set \| `previewed` \| `Approve posting this exact comment set\?` \|'
+        'gate-fallback-row'   = '\| Invalid-anchor fallback \| `previewed` \| `Approve the general-comment fallback for this comment\?` \|'
+        'advance-on-approved' = 'Advance only on exactly `Approved`, then record `approved` and mint\s*`SET_APPROVED:<run-id>:<set-digest>`\.'
+        'defer-creates-nothing' = 'record `deferred`, create nothing, and pause'
+        'draft-mutation-digest' = 'Every draft mutation\s*produces a new semantic set with a new set digest\.'
+    }
+    Test-ReviewStatements -SkillText $SkillText -Check 'review-approval' -Required $required -Violations $Violations
+}
+
+function Test-ReviewPostingContract {
+    param([string] $SkillText, [System.Collections.Generic.List[string]] $Violations)
+
+    $itemRows = [ordered]@{
+        'confirmed'      = '\| Exactly one new matching immutable object \| `confirmed` \|'
+        'uncertain-many' = '\| Multiple, delayed, or ambiguous matches \| `uncertain` \|'
+        'proven-unposted' = '\| Zero matches after an authoritative pre-acceptance rejection or a certified consistency polling window \| `proven_unposted` \|'
+        'uncertain-zero' = '\| Zero matches otherwise \| `uncertain` \|'
+    }
+    foreach ($id in $itemRows.Keys) {
+        if (-not (Test-Contains $SkillText $itemRows[$id])) {
+            Add-Violation $Violations 'review-posting' "The write-outcome table no longer classifies '$id'."
+        }
+    }
+
+    $required = [ordered]@{
+        'revalidation'      = 'Immediately before the first write, revalidate the adapter and version, `access_digest`, the\s*displayed acting identity, the pinned revision, and every target''s in-diff side\.'
+        'ado-identity-in-terminal' = 'Azure DevOps\s*revalidates identity inside its credential terminal\.'
+        'drift-requires-reapproval' = 'Any drift pauses posting, refreshes the\s*affected review and targets, and requires approval of a new exact set\.'
+        'lease-before-write' = 'Acquire the lease before the first write and release it only with the matching owner token\.'
+        'heartbeat'         = 'Heartbeat every 10 seconds; six missed heartbeats, that is 60 seconds, expire it\.'
+        'same-boot-takeover' = 'A same-boot\s*takeover additionally requires proof that the recorded process start is absent and the recorded\s*app session is not running\.'
+        'wall-clock-never-proves' = 'A wall-clock change never proves liveness, and a boot-ID change or\s*monotonic loss forbids automatic takeover until the prior boot is proven ended and the prior\s*session proven inactive\.'
+        'higher-epoch'      = 'The winner claims a strictly higher epoch, freshly inventories and\s*reconciles every `attempt_started` row, and blocks on ambiguity\.'
+        'unwritable-blocks' = 'An unwritable Git common\s*directory blocks\.'
+        'scope-disclosure'  = 'Before posting, always disclose that mutual exclusion and exactly-once behavior cover only runs\s*that write this same Git common-directory lease, and never other clones, other machines, or any\s*global scope\.'
+        'scope-unconditional' = 'Disclose it unconditionally, including when no other run is known\.'
+        'write-loop'        = 'take a complete before inventory, append the\s*journal row before sending, send exactly one write, read the journal back before starting the\s*next item, then take a complete after inventory'
+        'invalid-anchor-422' = 'A GitHub invalid-anchor `422` is `proven_unposted` and may return only to the separately\s*approved general-comment fallback\.'
+        'stop-on-403'       = 'A `403`, a rate-limit response, and any transport or unknown\s*failure stop according to the evidence\.'
+        'never-auto-repost' = 'Never automatically repost a `confirmed` or `uncertain`\s*comment\.'
+        'retry-needs-approval' = 'Retry only `proven_unposted` comments, and only after fresh approval of a new exact\s*set\.'
+        'github-pacing'     = 'GitHub writes are standalone comments paced at least one second apart and honor `Retry-After`\s*and secondary-rate-limit guidance\.'
+        'final-predicate'   = 'final predicate must prove that no\s*submitted review, no review decision, and no pending review changed, and that preexisting\s*pending reviews remain untouched'
+        'body-file-hygiene' = 'Hash every frozen body file before and after invocation, then securely delete it\.'
+        'per-item-evidence' = 'Report every comment as posted, not posted, or uncertain, each with provider evidence and its\s*immutable IDs'
+        'no-uncertain-completion' = 'Record\s*`complete` only when every item is terminal and no item is `uncertain`'
+        'no-false-posted'   = 'If posting fails before any confirmed write, no comment may be reported as posted\.'
+    }
+    Test-ReviewStatements -SkillText $SkillText -Check 'review-posting' -Required $required -Violations $Violations
+}
+
+function Test-ReviewVocabulary {
+    param([string] $SkillText, [System.Collections.Generic.List[string]] $Violations)
+
+    $rows = [ordered]@{
+        'Child envelopes'      = $script:ReviewChildEnvelopes
+        'Coordinator commands' = $script:ReviewCoordinatorCommands
+        'Run states'           = $script:ReviewRunStates
+        'Item states'          = $script:ReviewItemStates
+    }
+
+    foreach ($label in $rows.Keys) {
+        $expected = ($rows[$label] | ForEach-Object { '`' + $_ + '`' }) -join ', '
+        $pattern = '\| ' + [regex]::Escape($label) + ' \| ' + [regex]::Escape($expected) + ' \|'
+        if (-not (Test-Contains $SkillText $pattern)) {
+            Add-Violation $Violations 'review-vocabulary' "The vocabulary table row '$label' is not exactly '$expected'."
+        }
+    }
+
+    $required = [ordered]@{
+        'envelope-ownership' = 'Child envelopes are produced by children\. Coordinator commands are produced only by this\s*session and are never user gates\.'
+        'states-not-envelopes' = 'Run and item states are coordinator bookkeeping and are never\s*sent as an envelope status\.'
+        'delivery-contract'  = 'delivers each requested\s*terminal envelope exactly once through `send_session_message` to this coordinator'
+        'stale-envelope'     = 'Accept an envelope only when the run, phase, sequence, expected child session, allowed\s*status, and every attested digest match the run record; ignore anything else as stale\.'
+        'reconciliation'     = 'Verify each envelope''s `bundle_digest`, `access_digest`, and\s*`review_digest` against the run record, re-verify the bundle, and reject any envelope from an\s*unexpected session, sequence, or digest as stale\.'
+        'presentation'       = 'the pinned revision, a short change summary, how the\s*change fits the codebase, and every `\[<Area>\] <Text>` finding with its citation'
+        'dedup'              = 'Deduplicate across areas without dropping a distinct claim, and attribute every retained\s*finding to its owning area\.'
+        'completion'         = 'The run is complete only when access was proven against immutable IDs, admission passed, the\s*bundle sealed and verified'
+    }
+    Test-ReviewStatements -SkillText $SkillText -Check 'review-vocabulary' -Required $required -Violations $Violations
+}
+
+function Test-ReviewContractBlocks {
+    param([string] $Root, [System.Collections.Generic.List[string]] $Violations)
+
+    $relative = "skills/$($script:ReviewSkill)/reference/commands.md"
+    $path = Join-Path $Root $relative
+    if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { return }
+
+    $blocks = Get-ReviewContractBlocks -Root $Root
+    if ($blocks.Count -eq 0) {
+        Add-Violation $Violations 'review-contract-blocks' "$relative declares no tagged contract block."
+        return
+    }
+
+    $reference = Get-NormalizedText -Path $path
+    $referenceRules = [ordered]@{
+        'grammar-stated'   = 'Every contract is one fenced block whose info string is\s*`contract:<kind>:<adapter-or-local-area>:v<n>`\.'
+        'tag-unique'       = 'The pair `<kind>:<adapter-or-local-area>` is\s*unique across this repository'
+        'version-bumped'   = '`<n>` is bumped whenever a block''s meaning changes'
+        'capability-set'   = 'The parity capability set is `identity`, `repository`, `pull-request`, `changes`, `blob`,\s*`inventory`, `inline-create`, and `general-create`\.'
+        'parity-stated'    = 'Both provider adapters cover all eight, so\s*neither provider offers a reduced flow\.'
+        'no-verbose-debug' = 'No block may pass `--verbose` or `--debug`\.'
+        'ado-explicit'     = 'Every ADO command passes the derived organization explicitly, disables detection, and pins the\s*API version\.'
+        'ado-no-login'     = '`az devops login` is never used'
+        'lease-location'   = 'They live\s*under the target project''s `git rev-parse --git-common-dir`, in `pr-review/`, keyed by the\s*canonical host plus the provider-returned repository and pull-request IDs'
+        'lease-alias-collision' = 'so Azure DevOps\s*aliases of one pull request collide onto the same key'
+    }
+    foreach ($id in $referenceRules.Keys) {
+        if (-not (Test-Contains $reference $referenceRules[$id])) {
+            Add-Violation $Violations 'review-contract-blocks' "$relative no longer states '$id'."
+        }
+    }
+
+    $seenPairs = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::Ordinal)
+    $capabilityByAdapter = @{}
+    foreach ($adapter in $script:ContractProviderAdapters) {
+        $capabilityByAdapter[$adapter] = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::Ordinal)
+    }
+
+    foreach ($block in $blocks) {
+        $tag = $block.Tag
+
+        if (-not $block.Closed) {
+            Add-Violation $Violations 'review-contract-blocks' "Contract block '$tag' is never closed."
+            continue
+        }
+
+        if ($tag -notmatch '^contract:(?<kind>[a-z][a-z0-9-]*):(?<area>[a-z][a-z0-9-]*):v(?<version>[1-9][0-9]*)$') {
+            Add-Violation $Violations 'review-contract-blocks' "Contract tag '$tag' does not match 'contract:<kind>:<adapter-or-local-area>:v<n>'."
+            continue
+        }
+        $kind = $Matches['kind']
+        $area = $Matches['area']
+
+        $pair = "$kind`:$area"
+        if (-not $seenPairs.Add($pair)) {
+            Add-Violation $Violations 'review-contract-blocks' "Contract pair '$pair' is declared more than once; the pair must be unique."
+        }
+
+        $declaredOrder = @($block.Order)
+        if (($declaredOrder -join ',') -ne ($script:ContractFields -join ',')) {
+            Add-Violation $Violations 'review-contract-blocks' "Contract block '$tag' declares fields '$($declaredOrder -join ', ')' but must declare exactly '$($script:ContractFields -join ', ')' in that order."
+            continue
+        }
+
+        $expectedOperation = "$area.$kind"
+        if ($block.Fields['operation'] -ne $expectedOperation) {
+            Add-Violation $Violations 'review-contract-blocks' "Contract block '$tag' names operation '$($block.Fields['operation'])' but its tag requires '$expectedOperation'."
+        }
+
+        $adapter = $block.Fields['adapter']
+        $capability = $block.Fields['capability']
+        $body = ($block.Body -join ' ')
+
+        if ($body -match '--verbose' -or $body -match '--debug') {
+            Add-Violation $Violations 'review-contract-blocks' "Contract block '$tag' passes '--verbose' or '--debug', which can render request bodies, headers, and environment values."
+        }
+        if ($body -match 'az devops login') {
+            Add-Violation $Violations 'review-contract-blocks' "Contract block '$tag' uses 'az devops login', which persists the credential."
+        }
+
+        if ($script:ContractProviderAdapters -contains $area) {
+            if ($adapter -ne $area) {
+                Add-Violation $Violations 'review-contract-blocks' "Contract block '$tag' declares adapter '$adapter' but its tag area is '$area'."
+            }
+            if ($script:ContractCapabilities -notcontains $capability) {
+                Add-Violation $Violations 'review-contract-blocks' "Contract block '$tag' declares capability '$capability', which is not a parity capability."
+            }
+            else {
+                $capabilityByAdapter[$area].Add($capability) | Out-Null
+            }
+            if ($block.Fields['api-version'] -eq 'n/a') {
+                Add-Violation $Violations 'review-contract-blocks' "Provider contract block '$tag' must pin an explicit API version."
+            }
+            if ($block.Fields['accept'] -eq 'n/a') {
+                Add-Violation $Violations 'review-contract-blocks' "Provider contract block '$tag' must declare an explicit Accept media type."
+            }
+        }
+        else {
+            if ($adapter -ne 'local') {
+                Add-Violation $Violations 'review-contract-blocks' "Local contract block '$tag' must declare adapter 'local', not '$adapter'."
+            }
+            if ($capability -ne 'n/a') {
+                Add-Violation $Violations 'review-contract-blocks' "Local contract block '$tag' must declare capability 'n/a', not '$capability'."
+            }
+        }
+
+        if ($area -eq 'github') {
+            if ($block.Fields['method'] -notmatch '--hostname github\.com') {
+                Add-Violation $Violations 'review-contract-blocks' "GitHub contract block '$tag' does not pass an explicit '--hostname github.com'."
+            }
+            if ($block.Fields['api-version'] -ne '2022-11-28') {
+                Add-Violation $Violations 'review-contract-blocks' "GitHub contract block '$tag' pins API version '$($block.Fields['api-version'])' instead of '2022-11-28'."
+            }
+            if ($block.Fields['paging'] -ne 'n/a' -and $block.Fields['paging'] -notmatch 'per_page=100') {
+                Add-Violation $Violations 'review-contract-blocks' "GitHub contract block '$tag' pages without 'per_page=100'."
+            }
+            if ($capability -in @('inline-create', 'general-create')) {
+                if ($block.Fields['input'] -notmatch 'frozen wire bytes') {
+                    Add-Violation $Violations 'review-contract-blocks' "GitHub write block '$tag' does not send the exact frozen wire bytes of the approved request."
+                }
+                if ($block.Fields['method'] -notmatch '--input') {
+                    Add-Violation $Violations 'review-contract-blocks' "GitHub write block '$tag' does not send its body from a file with '--input'."
+                }
+            }
+            if ($capability -eq 'inline-create' -and $block.Fields['input'] -notmatch 'the deprecated `position` field is prohibited') {
+                Add-Violation $Violations 'review-contract-blocks' "GitHub inline-create block '$tag' does not prohibit the deprecated 'position' field."
+            }
+        }
+
+        if ($area -eq 'ado') {
+            foreach ($flag in @('--organization', '--detect false', '--api-version 7\.1', '--encoding utf-8')) {
+                if ($block.Fields['method'] -notmatch $flag) {
+                    Add-Violation $Violations 'review-contract-blocks' "Azure DevOps contract block '$tag' does not pass '$($flag -replace '\\', '')'."
+                }
+            }
+            if ($block.Fields['api-version'] -ne '7.1') {
+                Add-Violation $Violations 'review-contract-blocks' "Azure DevOps contract block '$tag' pins API version '$($block.Fields['api-version'])' instead of '7.1'."
+            }
+            if ($capability -in @('inline-create', 'general-create')) {
+                if ($block.Fields['input'] -notmatch 'BOM-free LF UTF-8 JSON file') {
+                    Add-Violation $Violations 'review-contract-blocks' "Azure DevOps write block '$tag' does not send a BOM-free LF UTF-8 JSON file."
+                }
+                if ($block.Fields['input'] -notmatch 'hash the file before and after invocation, then securely delete it') {
+                    Add-Violation $Violations 'review-contract-blocks' "Azure DevOps write block '$tag' does not hash the body file before and after invocation and securely delete it."
+                }
+            }
+        }
+    }
+
+    if ((Test-Contains $reference 'nextTop') -eq $false -or (Test-Contains $reference 'nextSkip') -eq $false) {
+        Add-Violation $Violations 'review-contract-blocks' "$relative no longer follows the Azure DevOps service-returned 'nextTop' and 'nextSkip' paging cursors."
+    }
+
+    foreach ($adapter in $script:ContractProviderAdapters) {
+        foreach ($capability in $script:ContractCapabilities) {
+            if (-not $capabilityByAdapter[$adapter].Contains($capability)) {
+                Add-Violation $Violations 'review-contract-blocks' "Adapter '$adapter' has no contract block for parity capability '$capability'; the providers would offer different flows."
+            }
+        }
+    }
+}
+
+function Test-ReviewOperationBijection {
+    param([string] $Root, [System.Collections.Generic.List[string]] $Violations)
+
+    $registered = @(Get-ReviewRegisteredOperations -Root $Root)
+    if ($registered.Count -eq 0) { return }
+
+    $blocks = @(Get-ReviewContractBlocks -Root $Root)
+    $blockOperations = [System.Collections.Generic.List[string]]::new()
+    foreach ($block in $blocks) {
+        if ($block.Fields.Contains('operation')) { $blockOperations.Add($block.Fields['operation']) | Out-Null }
+    }
+
+    $seen = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::Ordinal)
+    foreach ($operation in $registered) {
+        if (-not $seen.Add($operation)) {
+            Add-Violation $Violations 'review-operation-registry' "Operation '$operation' is registered more than once in SKILL.md."
+        }
+    }
+
+    $blockSeen = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::Ordinal)
+    foreach ($operation in $blockOperations) {
+        if (-not $blockSeen.Add($operation)) {
+            Add-Violation $Violations 'review-operation-registry' "Operation '$operation' has more than one contract block."
+        }
+    }
+
+    foreach ($operation in $seen) {
+        if (-not $blockSeen.Contains($operation)) {
+            Add-Violation $Violations 'review-operation-registry' "Registered operation '$operation' has no contract block in reference/commands.md."
+        }
+    }
+    foreach ($operation in $blockSeen) {
+        if (-not $seen.Contains($operation)) {
+            Add-Violation $Violations 'review-operation-registry' "Contract block operation '$operation' is not in the SKILL.md operation registry."
+        }
+    }
+
+    $required = [ordered]@{
+        'bijection-stated' = 'Every provider and local operation this workflow performs is named here and has exactly one\s*matching contract block in `reference/commands\.md`\.'
+        'both-directions'  = 'The two sets are equal, and the mapping is\s*one to one in both directions\.'
+        'defect-stated'    = 'An operation without a block, or a block without an operation, is\s*a defect\.'
+    }
+    $skillText = Get-ReviewSkillText -Root $Root
+    if ($null -ne $skillText) {
+        Test-ReviewStatements -SkillText $skillText -Check 'review-operation-registry' -Required $required -Violations $Violations
+    }
+}
+
+function Test-ReviewPromptContracts {
+    param([string] $Root, [System.Collections.Generic.List[string]] $Violations)
+
+    $expectations = [ordered]@{
+        "skills/$($script:ReviewSkill)/prompts/area-review.md" = @(
+            'STATUS: REVIEW_COMPLETE', 'send_session_message', 'EDITED: no', 'PUSHED: no', 'PR_CREATED: no',
+            'Read only `<BUNDLE_PATH>`', 'blob SHA-256', 'STATUS: NEEDS_CONTEXT', 'STATUS: BLOCKED',
+            'at most 100 findings, each at most 4 KiB, and the whole envelope at most 64 KiB',
+            'never substitute it', 'Your findings are advisory'
+        )
+        "skills/$($script:ReviewSkill)/prompts/exploration.md"  = @(
+            'STATUS: EXPLORATION_COMPLETE', 'send_session_message', 'FINDINGS_MUTATED: no', 'DRAFTS_MUTATED: no',
+            'PUSHED: no', 'PR_CREATED: no', 'ROUTED_CLAIMS', 'Read only `<BUNDLE_PATH>`',
+            'You may not create, edit, merge, reword, re-rank, or remove any finding',
+            'the whole envelope is at most 64 KiB', 'never substitute it'
+        )
+    }
+
+    foreach ($relative in $expectations.Keys) {
+        $path = Join-Path $Root $relative
+        if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { continue }
+        $text = Get-NormalizedText -Path $path
+        foreach ($required in $expectations[$relative]) {
+            if (-not (Test-Contains $text ([regex]::Escape($required)))) {
+                Add-Violation $Violations 'review-prompt-contract' "$relative is missing required element '$required'."
+            }
+        }
+    }
+}
+
+function Test-ReviewCertificationLedger {
+    param([string] $Root, [System.Collections.Generic.List[string]] $Violations)
+
+    $relative = "skills/$($script:ReviewSkill)/reference/certification.md"
+    $path = Join-Path $Root $relative
+    if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { return }
+
+    $text = Get-NormalizedText -Path $path
+
+    $required = [ordered]@{
+        'release-owned'      = 'Release-owned\. This file, not a run, decides which adapters this workflow may use and which\s*provider behavior may be claimed\.'
+        'never-infer-row'    = 'Read it during Phase 1 Step 4 and never infer a row\.'
+        'no-row-disabled'    = 'An adapter with no row is disabled\. Selecting it is a `BLOCKED` outcome, not a fallback\.'
+        'github-row'         = '\| `gh` \| `github` \| [^|]+ \| [^|]+ \| [^|]+ \| `enabled-uncertified` \|'
+        'ado-row'            = '\| `az devops` \| `ado` \| [^|]+ \| [^|]+ \| [^|]+ \| `enabled-uncertified` \|'
+        'no-mcp-row'         = 'No MCP row exists\.'
+        'mcp-disabled'       = 'every MCP candidate is disabled, however capable it appears at run time'
+        'uncertified-meaning' = 'no report, summary, or envelope may state that this workflow''s provider behavior is certified'
+        'normal-run-not-evidence' = 'A normal run\s*is never certification evidence\.'
+        'manifest-required'  = 'A live certification write requires an operator-approved manifest\.'
+        'manifest-missing-blocks' = 'no\s*certification write may happen and the run reports `BLOCKED` naming the exact missing field'
+        'pre-write-guard'    = 'The pre-write guard compares the manifest nonce, expiry, run, fixture IDs, acting identity, type,\s*and remaining count before every certification write, and blocks on the first mismatch\.'
+        'never-real-target'  = 'A\s*manifest never authorizes a write against a real, shared, or production pull request\.'
+        'matrix-mandatory'   = 'Every row must pass on current `gh`, on current `az devops`, and on each MCP row this release\s*enables, before that adapter''s row may move to `enabled`\. A skipped row is a failed row\.'
+        'top-override'       = 'Paging mechanics may use a small fixture with a certification-only `\$top` override\.'
+        'cap-spot-check'     = 'The\s*authoritative 2,000 ceiling gets a separately recorded spot check, refreshed whenever the API\s*version changes\.'
+        'cap-fixture-record' = 'without that\s*recorded proof, the paging criterion fails'
+        'status-uncertified' = 'No live AC1-AC8 matrix has been executed for any adapter in this release, because no\s*operator-approved fixture authorization manifest exists\.'
+        'status-no-claim'    = 'Do not claim certified provider behavior, and do not perform a\s*certification write, until an operator supplies the manifest and this file records the result\.'
+    }
+    foreach ($id in $required.Keys) {
+        if (-not (Test-Contains $text $required[$id])) {
+            Add-Violation $Violations 'review-certification' "$relative no longer states '$id'."
+        }
+    }
+
+    foreach ($field in @('manifest-id', 'nonce', 'expires-at', 'run-id', 'fixture-ids', 'acting-identity', 'comment-types', 'comment-count', 'cleanup-owner', 'no-other-mutation')) {
+        if (-not (Test-Contains $text ('\| `' + [regex]::Escape($field) + '` \| [^|]+ \|'))) {
+            Add-Violation $Violations 'review-certification' "$relative no longer requires fixture authorization field '$field'."
+        }
+    }
+
+    foreach ($criterion in @('AC1', 'AC2', 'AC3', 'AC4', 'AC5', 'AC6', 'AC7', 'AC8')) {
+        if (-not (Test-Contains $text ('\| ' + $criterion + ' \| [^|]+ \| [^|]+ \|'))) {
+            Add-Violation $Violations 'review-certification' "$relative has no live certification row for '$criterion'."
+        }
+    }
+}
+
+function Test-ReviewSkill {
+    param([string] $Root, [System.Collections.Generic.List[string]] $Violations)
+
+    $skillText = Get-ReviewSkillText -Root $Root
+    if ($null -eq $skillText) { return }
+
+    Test-ReviewEntryGuard -SkillText $skillText -Violations $Violations
+    Test-ReviewLocatorGrammar -SkillText $skillText -Violations $Violations
+    Test-ReviewAccessSelection -SkillText $skillText -Violations $Violations
+    Test-ReviewTerminalContract -SkillText $skillText -Violations $Violations
+    Test-ReviewBundleContract -SkillText $skillText -Violations $Violations
+    Test-ReviewModelContract -SkillText $skillText -Violations $Violations
+    Test-ReviewAnchorContract -SkillText $skillText -Violations $Violations
+    Test-ReviewApprovalContract -SkillText $skillText -Violations $Violations
+    Test-ReviewPostingContract -SkillText $skillText -Violations $Violations
+    Test-ReviewVocabulary -SkillText $skillText -Violations $Violations
+    Test-ReviewContractBlocks -Root $Root -Violations $Violations
+    Test-ReviewCertificationLedger -Root $Root -Violations $Violations
+    Test-ReviewOperationBijection -Root $Root -Violations $Violations
+    Test-ReviewPromptContracts -Root $Root -Violations $Violations
 }
 
 # ---------------------------------------------------------------------------
@@ -746,12 +1709,14 @@ function Get-SkillViolations {
         Test-BlockingContract -SkillText $skillText -Violations $violations
         Test-PhaseZeroOrdering -SkillText $skillText -Violations $violations
         Test-EvidenceFloor -SkillText $skillText -Violations $violations
-        Test-SafetyDrift -Root $Root -SkillText $skillText -Violations $violations
     }
 
+    Test-SkillResourceReferences -Root $Root -Violations $violations
+    Test-SafetyDrift -Root $Root -Violations $violations
     Test-PhaseContracts -Root $Root -Violations $violations
     Test-SkillIndependence -Root $Root -Violations $violations
     Test-Discovery -Root $Root -Violations $violations
+    Test-ReviewSkill -Root $Root -Violations $violations
     return , $violations
 }
 
@@ -931,7 +1896,7 @@ function Invoke-SkillValidation {
     if (-not $Quiet) {
         Write-Host "Validating skills in $resolved"
         if ($violations.Count -eq 0) {
-            Write-Host "PASS: $($script:RequiredFiles.Count) required resources present and every skill contract holds."
+            Write-Host "PASS: $(Get-ExpectedResourceCount -Root $resolved) required resources present and every skill contract holds."
         }
         else {
             Write-Host "FAIL: $($violations.Count) violation(s)."
@@ -1240,6 +2205,311 @@ function Get-NegativeFixtures {
                     -Find '"root-cause"' `
                     -ReplaceWith '"unrelated"'
             }
+        },
+        @{
+            Name  = 'undeclared-skill-directory'
+            Apply = {
+                param([string] $Dir)
+                # Dynamic discovery must reject a skill that ships without a catalog entry,
+                # otherwise a new skill escapes every contract check by simply existing.
+                $new = Join-Path $Dir 'skills/undeclared-skill'
+                New-Item -ItemType Directory -Path $new -Force | Out-Null
+                Set-Content -LiteralPath (Join-Path $new 'SKILL.md') -Value @(
+                    '---', 'name: undeclared-skill', 'description: Does something.', '---', '', '# Undeclared'
+                )
+            }
+        },
+        @{
+            Name  = 'dropped-skill-directory'
+            Apply = {
+                param([string] $Dir)
+                Remove-Item -LiteralPath (Join-Path $Dir 'skills/pr-review') -Recurse -Force
+            }
+        },
+        @{
+            Name  = 'review-missing-required-resource'
+            Apply = {
+                param([string] $Dir)
+                Remove-Item -LiteralPath (Join-Path $Dir 'skills/pr-review/reference/commands.md') -Force
+            }
+        },
+        @{
+            Name  = 'review-safety-drift'
+            Apply = {
+                param([string] $Dir)
+                Edit-FixtureFile -Path (Join-Path $Dir 'skills/pr-review/SKILL.md') `
+                    -Find 'No provider write happens before explicit approval of the exact displayed set' `
+                    -ReplaceWith 'Provider writes may happen once a comment looks ready'
+            }
+        },
+        @{
+            Name  = 'review-entry-guard-row-removed'
+            Apply = {
+                param([string] $Dir)
+                # Removing a guarded entry is how an unguarded path back into posting appears.
+                Edit-FixtureFile -Path (Join-Path $Dir 'skills/pr-review/SKILL.md') `
+                    -Find '| `entry:guarded:pre-post-revalidation` | `guarded` | Pre-post revalidation | Requires a state-compatible, digest-matching `AccessContext` |' `
+                    -ReplaceWith ''
+            }
+        },
+        @{
+            Name  = 'review-bootstrap-may-write'
+            Apply = {
+                param([string] $Dir)
+                Edit-FixtureFile -Path (Join-Path $Dir 'skills/pr-review/SKILL.md') `
+                    -Find 'Bootstrap must not acquire a pull request, build or read a bundle, launch a child, preview, approve, journal, or write.' `
+                    -ReplaceWith 'Bootstrap may continue into acquisition when the locator is obvious.'
+            }
+        },
+        @{
+            Name  = 'review-locator-accepts-unicode-host'
+            Apply = {
+                param([string] $Dir)
+                Edit-FixtureFile -Path (Join-Path $Dir 'skills/pr-review/SKILL.md') `
+                    -Find 'the host must already be ASCII lowercase and exactly `github.com`, `dev.azure.com`, or `<org>.visualstudio.com`' `
+                    -ReplaceWith 'normalize the host to `github.com`, `dev.azure.com`, or `<org>.visualstudio.com`'
+            }
+        },
+        @{
+            Name  = 'review-terminal-allowlist-widened'
+            Apply = {
+                param([string] $Dir)
+                Edit-FixtureFile -Path (Join-Path $Dir 'skills/pr-review/SKILL.md') `
+                    -Find '| `terminal-allow:cleanup` | The credential clear and terminal close |' `
+                    -ReplaceWith '| `terminal-allow:cleanup` | The credential clear and terminal close | | `terminal-allow:diagnostics` | Any command needed to diagnose the terminal |'
+            }
+        },
+        @{
+            Name  = 'review-terminal-secret-persisted'
+            Apply = {
+                param([string] $Dir)
+                Edit-FixtureFile -Path (Join-Path $Dir 'skills/pr-review/SKILL.md') `
+                    -Find 'a five-minute idle timeout, cancellation, terminal close, a block, logout, run end, adapter or version change, an invalid or insufficient PAT, or a user request' `
+                    -ReplaceWith 'the end of the run'
+            }
+        },
+        @{
+            Name  = 'review-bundle-admission-relaxed'
+            Apply = {
+                param([string] $Dir)
+                Edit-FixtureFile -Path (Join-Path $Dir 'skills/pr-review/SKILL.md') `
+                    -Find '| Changed files | 3,000 |' `
+                    -ReplaceWith '| Changed files | unlimited, truncate instead |'
+            }
+        },
+        @{
+            Name  = 'review-citation-requirement-dropped'
+            Apply = {
+                param([string] $Dir)
+                Edit-FixtureFile -Path (Join-Path $Dir 'skills/pr-review/SKILL.md') `
+                    -Find "Every finding must cite a bundle path plus that entry's blob SHA-256." `
+                    -ReplaceWith 'Findings should reference the file they concern.'
+            }
+        },
+        @{
+            Name  = 'review-model-substitution'
+            Apply = {
+                param([string] $Dir)
+                Edit-FixtureFile -Path (Join-Path $Dir 'skills/pr-review/SKILL.md') `
+                    -Find '| Canonical | `[Canonical]` | `gemini-3.1-pro-preview` |' `
+                    -ReplaceWith '| Canonical | `[Canonical]` | `claude-sonnet-4.6` |'
+            }
+        },
+        @{
+            Name  = 'review-budget-removed'
+            Apply = {
+                param([string] $Dir)
+                Edit-FixtureFile -Path (Join-Path $Dir 'skills/pr-review/SKILL.md') `
+                    -Find 'Prompts are capped at 16 KiB, envelopes at 64 KiB, a single finding at 4 KiB, and findings at 100 per role.' `
+                    -ReplaceWith 'Keep prompts and envelopes reasonably small.'
+            }
+        },
+        @{
+            Name  = 'review-anchor-side-inferred'
+            Apply = {
+                param([string] $Dir)
+                Edit-FixtureFile -Path (Join-Path $Dir 'skills/pr-review/SKILL.md') `
+                    -Find 'Never infer the opposite side.' `
+                    -ReplaceWith 'Infer the opposite side when the target is not found.'
+            }
+        },
+        @{
+            Name  = 'review-github-position-allowed'
+            Apply = {
+                param([string] $Dir)
+                Edit-FixtureFile -Path (Join-Path $Dir 'skills/pr-review/SKILL.md') `
+                    -Find 'GitHub binds the exact approved `commit_id` and never sends the deprecated `position` field.' `
+                    -ReplaceWith 'GitHub may send `position` when a line anchor fails.'
+            }
+        },
+        @{
+            Name  = 'review-serializer-mutation-allowed'
+            Apply = {
+                param([string] $Dir)
+                Edit-FixtureFile -Path (Join-Path $Dir 'skills/pr-review/SKILL.md') `
+                    -Find 'Any mutation of any bound field revokes approval.' `
+                    -ReplaceWith 'Minor edits keep the existing approval.'
+            }
+        },
+        @{
+            Name  = 'review-extra-user-gate'
+            Apply = {
+                param([string] $Dir)
+                Edit-FixtureFile -Path (Join-Path $Dir 'skills/pr-review/SKILL.md') `
+                    -Find '| Invalid-anchor fallback | `previewed` | `Approve the general-comment fallback for this comment?` |' `
+                    -ReplaceWith '| Invalid-anchor fallback | `previewed` | `Approve the general-comment fallback for this comment?` | | Retry | `posting` | `Approve retrying every failed comment?` |'
+            }
+        },
+        @{
+            Name  = 'review-lease-heartbeat-weakened'
+            Apply = {
+                param([string] $Dir)
+                Edit-FixtureFile -Path (Join-Path $Dir 'skills/pr-review/SKILL.md') `
+                    -Find 'A wall-clock change never proves liveness, and a boot-ID change or monotonic loss forbids automatic takeover until the prior boot is proven ended and the prior session proven inactive.' `
+                    -ReplaceWith 'Take over the lease when its timestamp looks old.'
+            }
+        },
+        @{
+            Name  = 'review-exactly-once-overclaimed'
+            Apply = {
+                param([string] $Dir)
+                Edit-FixtureFile -Path (Join-Path $Dir 'skills/pr-review/SKILL.md') `
+                    -Find 'Disclose it unconditionally, including when no other run is known.' `
+                    -ReplaceWith 'Mention it when another run is known to exist.'
+            }
+        },
+        @{
+            Name  = 'review-uncertain-retried'
+            Apply = {
+                param([string] $Dir)
+                Edit-FixtureFile -Path (Join-Path $Dir 'skills/pr-review/SKILL.md') `
+                    -Find 'Never automatically repost a `confirmed` or `uncertain` comment.' `
+                    -ReplaceWith 'Repost any comment that is not confirmed.'
+            }
+        },
+        @{
+            Name  = 'review-final-predicate-dropped'
+            Apply = {
+                param([string] $Dir)
+                Edit-FixtureFile -Path (Join-Path $Dir 'skills/pr-review/SKILL.md') `
+                    -Find 'final predicate must prove that no submitted review, no review decision, and no pending review changed, and that preexisting pending reviews remain untouched' `
+                    -ReplaceWith 'final check confirms the comment appears'
+            }
+        },
+        @{
+            Name  = 'review-item-state-vocabulary-drift'
+            Apply = {
+                param([string] $Dir)
+                Edit-FixtureFile -Path (Join-Path $Dir 'skills/pr-review/SKILL.md') `
+                    -Find '| Item states | `baseline_complete`, `attempt_started`, `confirmed`, `proven_unposted`, `uncertain` |' `
+                    -ReplaceWith '| Item states | `attempt_started`, `confirmed`, `failed` |'
+            }
+        },
+        @{
+            Name  = 'review-operation-without-contract-block'
+            Apply = {
+                param([string] $Dir)
+                Edit-FixtureFile -Path (Join-Path $Dir 'skills/pr-review/SKILL.md') `
+                    -Find '`github.issue-comment-create` |' `
+                    -ReplaceWith '`github.issue-comment-create`, `github.review-submit` |'
+            }
+        },
+        @{
+            Name  = 'review-contract-block-verbose-output'
+            Apply = {
+                param([string] $Dir)
+                Edit-FixtureFile -Path (Join-Path $Dir 'skills/pr-review/reference/commands.md') `
+                    -Find 'method: gh api --hostname github.com --method GET
+resource: /user' `
+                    -ReplaceWith "method: gh api --hostname github.com --method GET --verbose`nresource: /user"
+            }
+        },
+        @{
+            Name  = 'review-contract-block-ado-detects'
+            Apply = {
+                param([string] $Dir)
+                Edit-FixtureFile -Path (Join-Path $Dir 'skills/pr-review/reference/commands.md') `
+                    -Find '--organization https://dev.azure.com/<org> --detect false --api-version 7.1 --area profile' `
+                    -ReplaceWith '--api-version 7.1 --area profile'
+            }
+        },
+        @{
+            Name  = 'review-contract-block-field-order'
+            Apply = {
+                param([string] $Dir)
+                Edit-FixtureFile -Path (Join-Path $Dir 'skills/pr-review/reference/commands.md') `
+                    -Find 'operation: hash.compute
+adapter: local
+capability: n/a' `
+                    -ReplaceWith "adapter: local`noperation: hash.compute`ncapability: n/a"
+            }
+        },
+        @{
+            Name  = 'review-contract-block-parity-gap'
+            Apply = {
+                param([string] $Dir)
+                # Downgrading one adapter's capability is how a provider silently loses a flow.
+                Edit-FixtureFile -Path (Join-Path $Dir 'skills/pr-review/reference/commands.md') `
+                    -Find 'operation: ado.general-thread-create
+adapter: ado
+capability: general-create' `
+                    -ReplaceWith "operation: ado.general-thread-create`nadapter: ado`ncapability: inline-create"
+            }
+        },
+        @{
+            Name  = 'review-certification-mcp-row-added'
+            Apply = {
+                param([string] $Dir)
+                # An unadvertised MCP row is how an uncertified adapter becomes selectable.
+                Edit-FixtureFile -Path (Join-Path $Dir 'skills/pr-review/reference/certification.md') `
+                    -Find 'No MCP row exists.' `
+                    -ReplaceWith 'Any MCP that declares a mapping is treated as an implicit row.'
+            }
+        },
+        @{
+            Name  = 'review-certification-status-overclaimed'
+            Apply = {
+                param([string] $Dir)
+                Edit-FixtureFile -Path (Join-Path $Dir 'skills/pr-review/reference/certification.md') `
+                    -Find '| `gh` | `github` | `>= 2.40.0` | `none` | `never` | `enabled-uncertified` |' `
+                    -ReplaceWith '| `gh` | `github` | `>= 2.40.0` | `all` | `2026-01-01` | `enabled` |'
+            }
+        },
+        @{
+            Name  = 'review-certification-manifest-field-dropped'
+            Apply = {
+                param([string] $Dir)
+                Edit-FixtureFile -Path (Join-Path $Dir 'skills/pr-review/reference/certification.md') `
+                    -Find '| `no-other-mutation` | An explicit clause that nothing outside `fixture-ids` may be mutated |' `
+                    -ReplaceWith ''
+            }
+        },
+        @{
+            Name  = 'review-certification-criterion-dropped'
+            Apply = {
+                param([string] $Dir)
+                Edit-FixtureFile -Path (Join-Path $Dir 'skills/pr-review/reference/certification.md') `
+                    -Find '| AC7 |' `
+                    -ReplaceWith '| AC7-optional |'
+            }
+        },
+        @{
+            Name  = 'review-prompt-allows-mutation'
+            Apply = {
+                param([string] $Dir)
+                Edit-FixtureFile -Path (Join-Path $Dir 'skills/pr-review/prompts/exploration.md') `
+                    -Find 'FINDINGS_MUTATED: no' `
+                    -ReplaceWith 'FINDINGS_MUTATED: as needed'
+            }
+        },
+        @{
+            Name  = 'review-prompt-loses-delivery'
+            Apply = {
+                param([string] $Dir)
+                Edit-FixtureFile -Path (Join-Path $Dir 'skills/pr-review/prompts/area-review.md') `
+                    -Find 'STATUS: REVIEW_COMPLETE' `
+                    -ReplaceWith 'STATUS: DONE'
+            }
         }
     )
 }
@@ -1393,3 +2663,4 @@ if ($SelfTest) {
 }
 
 exit (Invoke-SkillValidation -Root $RepoRoot)
+
