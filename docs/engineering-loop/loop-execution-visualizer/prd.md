@@ -18,7 +18,7 @@ the orchestrator's authority.
   dependency-connected, pipeline-style session blocks with live, understandable state.
 - G2. Let authorized users inspect material run/session details and send a message to the
   orchestrator or an active child while preserving workflow safeguards.
-- G3. Show transparent total wall-clock elapsed time and cumulative execution cost.
+- G3. Show total wall-clock elapsed time and cumulative execution cost.
 - NG1. The visualizer does not define how sessions report state, replace skill orchestration,
   alter approval rules, or infer approval from a message.
 - NG2. It does not add cancel, retry, resume, delete, push, merge, or PR controls; or
