@@ -156,6 +156,10 @@ The coordinator enforces every child model by passing the exact selected ID in
 If a model cannot be selected, stop before that phase and report the exact missing model.
 Do not substitute.
 
+Then probe the run visualizer once, at `LOOPVIZ:el.p0.declare` in
+[Loop visibility](#loop-visibility). Its result decides visibility for the whole run and
+is never a reason to stop.
+
 ### Child delivery contract
 
 Include `COORDINATOR_SESSION_ID`, `PHASE`, and a monotonically increasing
@@ -535,3 +539,40 @@ The engineering loop is complete only when:
 - All child retro reports were aggregated.
 
 If any item is missing, report the current phase instead of declaring completion.
+
+Either way, close the run once at `LOOPVIZ:el.outcome`.
+
+## Loop visibility
+
+Report this run to the loop execution visualizer so the user can watch it as a
+pipeline. The full contract — probe-once behaviour, ordering, enrollment, and the rule
+that a visibility call can never grant approval, authority, or completion — is
+[`extensions/loop-execution-visualizer/REPORTING.md`](../../extensions/loop-execution-visualizer/REPORTING.md).
+Read it before making the first call; do not restate its rules here.
+
+Make each call at the site below. If `loopviz_run_declare` is unavailable, record
+`reporter-absent` in the run ledger once and omit every other row for this run.
+
+| Marker | Site | Tool |
+| --- | --- | --- |
+| `LOOPVIZ:el.p0.declare` | Phase 0 preflight, immediately after the run ledger row is created. Declare the run with one node per planned stage: requirements, design, the three critiques, design approval, implementation, implementation approval, delivery, retro. | `loopviz_run_declare` |
+| `LOOPVIZ:el.p0.controller` | Immediately after declaring, and at every later phase transition of the orchestration session itself. | `loopviz_controller_state` |
+| `LOOPVIZ:el.p1.dispatch` | Before `create_session` for requirements. Put the returned enrollment line in the kickoff prompt. | `loopviz_attempt_start` |
+| `LOOPVIZ:el.p1.result` | On the requirements terminal envelope, reporting the outcome the envelope declared. | `loopviz_node_state` |
+| `LOOPVIZ:el.p2.dispatch` | Before `create_session` for design. Enrollment line into the kickoff prompt. | `loopviz_attempt_start` |
+| `LOOPVIZ:el.p2.result` | On the design terminal envelope. | `loopviz_node_state` |
+| `LOOPVIZ:el.p3.dispatch` | Before creating each of the three critique sessions, once per critique node. | `loopviz_attempt_start` |
+| `LOOPVIZ:el.p3.result` | On each critique terminal envelope. | `loopviz_node_state` |
+| `LOOPVIZ:el.p3.replacement` | When a critique is retried or its session replaced. Reuse the same critique node id so the attempts stay on one stage. | `loopviz_attempt_start` |
+| `LOOPVIZ:el.p3.reconcile` | When consolidated findings go back to the design session, as a new attempt on the design node. | `loopviz_attempt_start` |
+| `LOOPVIZ:el.p4.gate` | Design approval loop: once when the question is asked, once when the user answers. Report the gate state only — the approval itself is the user's answer. | `loopviz_controller_state` |
+| `LOOPVIZ:el.p5.dispatch` | Before `create_session` for implementation. Enrollment line into the kickoff prompt. | `loopviz_attempt_start` |
+| `LOOPVIZ:el.p5.recovery` | When implementation reveals a design-invalidating gap that adds an unplanned stage, before dispatching it. | `loopviz_node_add` |
+| `LOOPVIZ:el.p5.result` | On the implementation terminal envelope. | `loopviz_node_state` |
+| `LOOPVIZ:el.p6.gate` | Implementation approval loop: once when asked, once when answered. | `loopviz_controller_state` |
+| `LOOPVIZ:el.p7.delivery` | When PR authorization is sent, and again when the PR URL is confirmed. | `loopviz_node_state` |
+| `LOOPVIZ:el.p8.retro` | Retro fan-out, adding one node per child session being asked for a retro report. | `loopviz_node_add` |
+| `LOOPVIZ:el.outcome` | Completion or terminal blocker, exactly once. | `loopviz_run_outcome` |
+| `LOOPVIZ:el.incidents` | Whenever the orchestration session resumes, is woken by a message it did not expect, or begins waiting on children. Respond using the failure and resume rules above. | `loopviz_incidents` |
+
+Optionally attach model, plan, or progress detail to any stage with `loopviz_report`.

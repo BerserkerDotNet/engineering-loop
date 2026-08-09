@@ -5,14 +5,14 @@
     "email": "noreply@example.com"
   },
   "metadata": {
-    "description": "Plugin marketplace for the engineering-loop and issue-resolution skills.",
-    "version": "1.1.0"
+    "description": "Plugin marketplace for the engineering-loop and issue-resolution skills and the loop execution visualizer extension.",
+    "version": "1.2.0"
   },
   "plugins": [
     {
       "name": "engineering-loop",
-      "description": "Coordinated engineering workflows: engineering-loop takes a new capability from requirements, design, independent critique, and approval to a pull request, while issue-resolution takes a reproducible defect from evidence to root cause, an approved fix plan, and a runtime-validated pull request.",
-      "version": "1.1.0",
+      "description": "Coordinated engineering workflows: engineering-loop takes a new capability from requirements, design, independent critique, and approval to a pull request, while issue-resolution takes a reproducible defect from evidence to root cause, an approved fix plan, and a runtime-validated pull request. Both are visualized live as a multi-session pipeline.",
+      "version": "1.2.0",
       "source": "."
     }
   ]

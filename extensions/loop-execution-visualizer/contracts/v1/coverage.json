@@ -1,0 +1,98 @@
+{
+  "$id": "loop-execution-visualizer/v1/coverage",
+  "version": "1",
+  "description": "Normative wiring coverage. Every shipped multi-session skill must declare a visibility section whose table contains one LOOPVIZ marker per required entry point. The PowerShell validator enforces this file against the skills, so adding a skill or an entry point fails validation until the wiring exists.",
+
+  "markerPrefix": "LOOPVIZ:",
+  "sharedContractPath": "extensions/loop-execution-visualizer/REPORTING.md",
+  "sharedContractReference": "../../extensions/loop-execution-visualizer/REPORTING.md",
+  "reporterProbeTool": "loopviz_run_declare",
+  "absenceRule": "Probe once at the run-declaration entry point. If the reporter tools are absent, record reporter-absent once, omit every remaining visibility call for the run, and never retry a missing tool.",
+
+  "duplicationGuard": {
+    "description": "Invariant text lives only in the shared contract. A skill that restates these normative rules instead of referencing the shared contract fails validation.",
+    "forbiddenPhrasesInSkills": [
+      "connection_lost",
+      "recovery_pending",
+      "dag.node_added",
+      "heartbeat",
+      "quarantine"
+    ]
+  },
+
+  "tools": [
+    "loopviz_run_declare",
+    "loopviz_node_add",
+    "loopviz_attempt_start",
+    "loopviz_attempt_state",
+    "loopviz_node_state",
+    "loopviz_controller_state",
+    "loopviz_run_outcome",
+    "loopviz_report",
+    "loopviz_incidents",
+    "loopviz_status"
+  ],
+
+  "skills": {
+    "engineering-loop": {
+      "path": "skills/engineering-loop/SKILL.md",
+      "role": "orchestrator",
+      "phases": ["0", "1", "2", "3", "4", "5", "6", "7", "8"],
+      "entryPoints": [
+        { "id": "el.p0.declare", "phase": "0", "site": "Phase 0 preflight, immediately after the run ledger is created", "tool": "loopviz_run_declare", "required": true },
+        { "id": "el.p0.controller", "phase": "0", "site": "Phase 0 after declaration", "tool": "loopviz_controller_state", "required": true },
+        { "id": "el.p1.dispatch", "phase": "1", "site": "Before creating the requirements session", "tool": "loopviz_attempt_start", "required": true },
+        { "id": "el.p1.result", "phase": "1", "site": "On the requirements terminal envelope", "tool": "loopviz_node_state", "required": true },
+        { "id": "el.p2.dispatch", "phase": "2", "site": "Before creating the design session", "tool": "loopviz_attempt_start", "required": true },
+        { "id": "el.p2.result", "phase": "2", "site": "On the design terminal envelope", "tool": "loopviz_node_state", "required": true },
+        { "id": "el.p3.dispatch", "phase": "3", "site": "Before creating each of the three critique sessions", "tool": "loopviz_attempt_start", "required": true },
+        { "id": "el.p3.result", "phase": "3", "site": "On each critique terminal envelope", "tool": "loopviz_node_state", "required": true },
+        { "id": "el.p3.replacement", "phase": "3", "site": "When a critique session is replaced or retried", "tool": "loopviz_attempt_start", "required": true },
+        { "id": "el.p3.reconcile", "phase": "3", "site": "When consolidated findings are sent back to the design session", "tool": "loopviz_attempt_start", "required": true },
+        { "id": "el.p4.gate", "phase": "4", "site": "Design approval gate, before and after the user answer", "tool": "loopviz_controller_state", "required": true },
+        { "id": "el.p5.dispatch", "phase": "5", "site": "Before creating the implementation session", "tool": "loopviz_attempt_start", "required": true },
+        { "id": "el.p5.recovery", "phase": "5", "site": "Design-invalidating discovery that adds an unplanned stage", "tool": "loopviz_node_add", "required": true },
+        { "id": "el.p5.result", "phase": "5", "site": "On the implementation terminal envelope", "tool": "loopviz_node_state", "required": true },
+        { "id": "el.p6.gate", "phase": "6", "site": "Implementation approval gate, before and after the user answer", "tool": "loopviz_controller_state", "required": true },
+        { "id": "el.p7.delivery", "phase": "7", "site": "When PR authorization is sent and when the PR is confirmed", "tool": "loopviz_node_state", "required": true },
+        { "id": "el.p8.retro", "phase": "8", "site": "Retro fan-out to every child session", "tool": "loopviz_node_add", "required": true },
+        { "id": "el.outcome", "phase": "8", "site": "Run completion or terminal blocker", "tool": "loopviz_run_outcome", "required": true },
+        { "id": "el.incidents", "phase": "0", "site": "Whenever the coordinator resumes, is woken, or waits on children", "tool": "loopviz_incidents", "required": true }
+      ]
+    },
+
+    "issue-resolution": {
+      "path": "skills/issue-resolution/SKILL.md",
+      "role": "orchestrator",
+      "phases": ["0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "recovery"],
+      "entryPoints": [
+        { "id": "ir.p0.declare", "phase": "0", "site": "Phase 0 Step 4 run namespace, after the ledger row exists", "tool": "loopviz_run_declare", "required": true },
+        { "id": "ir.p0.controller", "phase": "0", "site": "Phase 0 after declaration", "tool": "loopviz_controller_state", "required": true },
+        { "id": "ir.p1.evidence", "phase": "1", "site": "Evidence intake state changes, including needs_reproduction", "tool": "loopviz_controller_state", "required": true },
+        { "id": "ir.p2.dispatch", "phase": "2", "site": "Before creating the RCA session", "tool": "loopviz_attempt_start", "required": true },
+        { "id": "ir.p2.result", "phase": "2", "site": "On the RCA terminal envelope", "tool": "loopviz_node_state", "required": true },
+        { "id": "ir.p3.dispatch", "phase": "3", "site": "Before creating each artifact critique session", "tool": "loopviz_attempt_start", "required": true },
+        { "id": "ir.p3.result", "phase": "3", "site": "On each critique terminal envelope", "tool": "loopviz_node_state", "required": true },
+        { "id": "ir.p3.recovery", "phase": "3", "site": "Critique retry, replacement, or contamination recovery", "tool": "loopviz_attempt_start", "required": true },
+        { "id": "ir.p4.gate", "phase": "4", "site": "RCA approval gate, before and after the user answer", "tool": "loopviz_controller_state", "required": true },
+        { "id": "ir.p5.dispatch", "phase": "5", "site": "Before creating the fix-plan session", "tool": "loopviz_attempt_start", "required": true },
+        { "id": "ir.p5.result", "phase": "5", "site": "On the fix-plan terminal envelope", "tool": "loopviz_node_state", "required": true },
+        { "id": "ir.p6.gate", "phase": "6", "site": "Fix-plan approval gate, before and after the user answer", "tool": "loopviz_controller_state", "required": true },
+        { "id": "ir.p7.dispatch", "phase": "7", "site": "Before creating the implementation session", "tool": "loopviz_attempt_start", "required": true },
+        { "id": "ir.p7.result", "phase": "7", "site": "On the implementation terminal envelope", "tool": "loopviz_node_state", "required": true },
+        { "id": "ir.p8.handshake", "phase": "8", "site": "Delivery authority handshake outcome", "tool": "loopviz_controller_state", "required": true },
+        { "id": "ir.p8.delivery", "phase": "8", "site": "push_attempted, push_confirmed and pr_confirmed transitions", "tool": "loopviz_node_state", "required": true },
+        { "id": "ir.p9.retro", "phase": "9", "site": "Retro fan-out to every child session", "tool": "loopviz_node_add", "required": true },
+        { "id": "ir.invalidation", "phase": "recovery", "site": "Invalidation that supersedes a session and adds a replacement stage", "tool": "loopviz_node_add", "required": true },
+        { "id": "ir.recovery", "phase": "recovery", "site": "Recovery, resume, or interruption handling", "tool": "loopviz_incidents", "required": true },
+        { "id": "ir.outcome", "phase": "9", "site": "Run completion or terminal blocker", "tool": "loopviz_run_outcome", "required": true }
+      ]
+    }
+  },
+
+  "futureSkillRule": {
+    "description": "Discovery is by directory, not by an allow list. Every skills/<name>/SKILL.md whose front matter description mentions coordinating child or multi-session work must appear in skills{} above with a full entry-point set.",
+    "detectionPhrases": ["child session", "child project session", "coordinated child", "multi-session", "orchestrat"],
+    "onUndeclaredSkill": "fail"
+  }
+}

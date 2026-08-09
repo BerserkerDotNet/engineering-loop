@@ -1,0 +1,10 @@
+import { createReporter } from "../extensions/loop-execution-visualizer/src/reporter.mjs";
+const storeDir = "C:\\Users\\berse\\.copilot\\plugin-data\\engineering-loop-marketplace\\engineering-loop\\loop-execution-visualizer";
+const r = createReporter({ storeDir, role: "unknown", hostSessionId: "reader", appSessionId: "reader", extensionId: "plugin:engineering-loop:loop-execution-visualizer", pid: process.pid });
+const run = r.readRun("rtev-engineering-loop-001");
+const design = run.dag.nodes.find(n => n.nodeId === "design");
+console.log("design attempts:", design.attempts.length);
+console.log("semantics:", JSON.stringify(design.attempts[0].semantics, null, 1));
+console.log("session:", JSON.stringify(design.attempts[0].session));
+console.log("usage:", JSON.stringify(design.attempts[0].usage));
+r.close();

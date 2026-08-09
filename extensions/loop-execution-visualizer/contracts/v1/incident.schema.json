@@ -1,0 +1,59 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "loop-execution-visualizer/v1/incident",
+  "title": "Projected incident (v1)",
+  "$defs": {
+    "id": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$" },
+    "isoTime": { "type": "string", "format": "date-time", "minLength": 20, "maxLength": 32 },
+    "nullableIso": { "anyOf": [{ "$ref": "#/$defs/isoTime" }, { "type": "null" }] },
+    "nullableString": { "anyOf": [{ "type": "string", "maxLength": 65536 }, { "type": "null" }] },
+
+    "incident": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["incidentId", "kind", "state", "subjectNodeId", "summary", "envelope", "openedAt", "attempts", "grantsNoAuthority", "history"],
+      "properties": {
+        "incidentId": { "$ref": "#/$defs/id" },
+        "kind": { "enum": ["child_failed", "connection_lost", "envelope_missing"] },
+        "state": { "type": "string", "minLength": 1, "maxLength": 32 },
+        "stateReason": { "$ref": "#/$defs/nullableString" },
+        "subjectNodeId": { "$ref": "#/$defs/id" },
+        "subjectAttemptId": { "anyOf": [{ "$ref": "#/$defs/id" }, { "type": "null" }] },
+        "summary": { "type": "string", "minLength": 1, "maxLength": 2000 },
+        "envelope": { "type": "string", "minLength": 1, "maxLength": 8192 },
+        "openedAt": { "$ref": "#/$defs/isoTime" },
+        "deliveredAt": { "$ref": "#/$defs/nullableIso" },
+        "acknowledgedAt": { "$ref": "#/$defs/nullableIso" },
+        "resolvedAt": { "$ref": "#/$defs/nullableIso" },
+        "detectionToWakeMs": { "anyOf": [{ "type": "number", "minimum": 0 }, { "type": "null" }] },
+        "attempts": { "type": "integer", "minimum": 0 },
+        "grantsNoAuthority": {
+          "type": "array",
+          "description": "Authorities an incident can never confer. Present on every incident so no consumer can render one without it.",
+          "minItems": 1,
+          "maxItems": 16,
+          "items": { "type": "string", "minLength": 1, "maxLength": 64 }
+        },
+        "history": {
+          "type": "array",
+          "maxItems": 128,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["at", "state", "reason"],
+            "properties": {
+              "at": { "$ref": "#/$defs/isoTime" },
+              "state": { "type": "string", "minLength": 1, "maxLength": 32 },
+              "reason": { "type": "string", "minLength": 1, "maxLength": 2000 },
+              "attempt": { "type": "integer", "minimum": 0 }
+            }
+          }
+        }
+      }
+    }
+  },
+
+  "type": "array",
+  "maxItems": 512,
+  "items": { "$ref": "#/$defs/incident" }
+}

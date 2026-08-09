@@ -1,7 +1,7 @@
 {
   "name": "engineering-loop",
-  "description": "Coordinated engineering workflows: engineering-loop takes a new capability from requirements, design, independent critique, and approval to a pull request, while issue-resolution takes a reproducible defect from evidence to root cause, an approved fix plan, and a runtime-validated pull request.",
-  "version": "1.1.0",
+  "description": "Coordinated engineering workflows: engineering-loop takes a new capability from requirements, design, independent critique, and approval to a pull request, while issue-resolution takes a reproducible defect from evidence to root cause, an approved fix plan, and a runtime-validated pull request. Both are visualized live as a multi-session pipeline.",
+  "version": "1.2.0",
   "author": {
     "name": "BerserkerDotNet",
     "email": "noreply@example.com"
@@ -16,7 +16,9 @@
     "issue-resolution",
     "debugging",
     "root-cause",
-    "bug-fix"
+    "bug-fix",
+    "visualization",
+    "multi-session"
   ],
   "skills": [
     "skills/"

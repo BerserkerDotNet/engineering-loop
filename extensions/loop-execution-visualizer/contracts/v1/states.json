@@ -1,0 +1,154 @@
+{
+  "$id": "loop-execution-visualizer/v1/states",
+  "version": "1",
+  "description": "Normative state vocabularies and transitions. Every state machine in the visualizer is defined here once; per-skill duplication of these rules is forbidden and is rejected by the coverage validator.",
+
+  "run": {
+    "states": ["declared", "running", "blocked", "completed", "failed", "canceled"],
+    "initial": "declared",
+    "terminal": ["completed", "failed", "canceled"],
+    "callerDirected": true,
+    "transitions": {
+      "declared": ["running", "blocked", "completed", "failed", "canceled"],
+      "running": ["running", "blocked", "completed", "failed", "canceled"],
+      "blocked": ["running", "blocked", "completed", "failed", "canceled"],
+      "completed": [],
+      "failed": [],
+      "canceled": []
+    },
+    "authority": {
+      "terminalRequires": "orchestrator_control",
+      "note": "Only an orchestrator-authoritative run.outcome may move a run to a terminal state. Host idle, end-of-turn, session end and heartbeat loss must never do so. Every non-terminal state can reach every terminal state, so an authoritative outcome is never dropped for want of a transition."
+    }
+  },
+
+  "node": {
+    "states": ["pending", "ready", "running", "waiting", "blocked", "succeeded", "failed", "skipped", "canceled", "replaced"],
+    "initial": "pending",
+    "terminal": ["replaced"],
+    "settled": ["succeeded", "failed", "skipped", "canceled", "replaced"],
+    "callerDirected": true,
+    "transitions": {
+      "pending": ["ready", "running", "waiting", "blocked", "skipped", "canceled", "replaced"],
+      "ready": ["running", "waiting", "blocked", "skipped", "canceled", "replaced"],
+      "running": ["running", "waiting", "blocked", "succeeded", "failed", "canceled", "replaced"],
+      "waiting": ["running", "waiting", "blocked", "succeeded", "failed", "canceled", "replaced"],
+      "blocked": ["ready", "running", "waiting", "succeeded", "failed", "canceled", "replaced"],
+      "succeeded": ["running", "waiting", "replaced"],
+      "failed": ["running", "waiting", "succeeded", "replaced"],
+      "skipped": ["ready", "running", "replaced"],
+      "canceled": ["running", "replaced"],
+      "replaced": []
+    },
+    "note": "A logical node is 'settled' when it reaches succeeded/failed/skipped/canceled, but only 'replaced' is truly terminal: retries and replacements are recorded as new attempts on the same logical node and legitimately re-enter running."
+  },
+
+  "attempt": {
+    "states": ["pending", "running", "waiting", "succeeded", "failed", "canceled", "abandoned"],
+    "initial": "pending",
+    "terminal": ["succeeded", "failed", "canceled", "abandoned"],
+    "callerDirected": true,
+    "transitions": {
+      "pending": ["running", "waiting", "succeeded", "canceled", "abandoned", "failed"],
+      "running": ["running", "waiting", "succeeded", "failed", "canceled", "abandoned"],
+      "waiting": ["running", "waiting", "succeeded", "failed", "canceled", "abandoned"],
+      "succeeded": [],
+      "failed": [],
+      "canceled": [],
+      "abandoned": []
+    },
+    "authoritativeFailureSignals": [
+      "session.lifecycle:end:error",
+      "session.lifecycle:error",
+      "session.lifecycle:shutdown",
+      "attempt.state:failed"
+    ],
+    "note": "Only the listed authoritative signals may fail an attempt. Missing heartbeats, host idle and end-of-turn must not."
+  },
+
+  "controller": {
+    "axis": "workflow",
+    "states": ["idle", "planning", "dispatching", "awaiting_children", "reconciling", "recovering", "blocked", "completed", "failed"],
+    "initial": "idle",
+    "terminal": ["completed", "failed"],
+    "callerDirected": true,
+    "transitions": {
+      "idle": ["planning", "dispatching", "awaiting_children", "reconciling", "recovering", "blocked", "completed", "failed"],
+      "planning": ["planning", "dispatching", "awaiting_children", "reconciling", "recovering", "blocked", "completed", "failed"],
+      "dispatching": ["planning", "dispatching", "awaiting_children", "reconciling", "recovering", "blocked", "completed", "failed"],
+      "awaiting_children": ["planning", "dispatching", "awaiting_children", "reconciling", "recovering", "blocked", "completed", "failed"],
+      "reconciling": ["planning", "dispatching", "awaiting_children", "reconciling", "recovering", "blocked", "completed", "failed"],
+      "recovering": ["planning", "dispatching", "awaiting_children", "reconciling", "recovering", "blocked", "completed", "failed"],
+      "blocked": ["planning", "dispatching", "awaiting_children", "reconciling", "recovering", "blocked", "completed", "failed"],
+      "completed": [],
+      "failed": []
+    },
+    "independentOfHostActivity": true,
+    "note": "Controller workflow state and host activity are independent axes. An idle host while awaiting_children renders as 'Waiting on children', never as completed."
+  },
+
+  "hostActivity": {
+    "states": ["unknown", "starting", "thinking", "tool_running", "awaiting_permission", "awaiting_user", "idle", "ended"],
+    "initial": "unknown",
+    "neverImpliesCompletion": ["idle", "ended"]
+  },
+
+  "health": {
+    "states": ["unknown", "healthy", "connection_lost", "recovered", "ended"],
+    "initial": "unknown",
+    "heartbeatIntervalMs": 2000,
+    "missingHeartbeatMs": 5000,
+    "transitions": {
+      "unknown": ["healthy", "connection_lost", "ended"],
+      "healthy": ["healthy", "connection_lost", "ended"],
+      "connection_lost": ["recovered", "connection_lost", "ended"],
+      "recovered": ["healthy", "connection_lost", "ended"],
+      "ended": []
+    },
+    "note": "connection_lost is a health state only. It never fails a workflow and never clears prior history."
+  },
+
+  "incident": {
+    "states": ["open", "delivery_pending", "delivered", "acknowledged", "resolved", "recovery_pending", "expired"],
+    "initial": "open",
+    "terminal": ["resolved", "expired"],
+    "transitions": {
+      "open": ["delivery_pending", "delivered", "acknowledged", "resolved", "recovery_pending", "expired"],
+      "delivery_pending": ["delivered", "delivery_pending", "acknowledged", "resolved", "recovery_pending", "expired"],
+      "delivered": ["acknowledged", "delivery_pending", "recovery_pending", "resolved", "expired"],
+      "acknowledged": ["resolved", "expired"],
+      "recovery_pending": ["delivery_pending", "delivered", "acknowledged", "resolved", "expired"],
+      "resolved": [],
+      "expired": []
+    },
+    "deliveryBackoffMs": [1000, 2000, 4000, 8000],
+    "maxDeliveryAttempts": 4,
+    "grantsNoAuthority": ["approval", "delivery_authority", "push", "terminal_status"]
+  },
+
+  "outbox": {
+    "states": ["queued", "delivering", "delivered", "accepted", "rejected", "expired", "failed", "denied"],
+    "initial": "queued",
+    "terminal": ["accepted", "rejected", "expired", "failed", "denied"],
+    "transitions": {
+      "queued": ["delivering", "denied", "expired"],
+      "delivering": ["delivered", "delivering", "failed", "expired", "denied"],
+      "delivered": ["accepted", "rejected", "expired"],
+      "accepted": [],
+      "rejected": [],
+      "expired": [],
+      "failed": [],
+      "denied": []
+    },
+    "defaultTtlMs": 900000,
+    "maxDeliveryAttempts": 3,
+    "exactlyOneTerminalAuditState": true,
+    "grantsNoAuthority": ["approval", "delivery_authority", "push", "terminal_status"]
+  },
+
+  "costConfidence": {
+    "values": ["actual", "estimated", "partial", "unavailable"],
+    "actualRequires": "explicit_provider_billed_currency",
+    "note": "Copilot AI credits are not a billed currency. Credit-derived numbers are estimated or partial and are never relabelled actual."
+  }
+}

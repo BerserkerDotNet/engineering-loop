@@ -87,12 +87,44 @@ skills/issue-resolution/
   SKILL.md
   prompts/
   templates/
+extensions/loop-execution-visualizer/
+  extension.mjs
+  REPORTING.md
+  contracts/v1/
+  src/
 tests/validate-skills.ps1
+tests/loop-execution-visualizer/
 docs/engineering-loop/<task-slug>/
 ```
 
 `plugin.json` publishes the whole `skills/` directory, so both skill directories
-are loaded by the same plugin.
+are loaded by the same plugin. Copilot CLI loads `extensions/<name>/extension.mjs`
+from the same plugin by convention, so the visualizer ships and updates with the
+skills and is never installed separately.
+
+## Loop execution visualizer
+
+`extensions/loop-execution-visualizer/` is a Copilot CLI extension that renders a
+live multi-session run as a horizontal pipeline: a pinned orchestrator lane above
+the child stage graph, with health, elapsed time, cost, incidents and a
+targeted-message composer.
+
+It runs in every session the plugin is loaded into and needs no configuration.
+Both skills report to it through `loopviz_*` tools at the entry points in their
+`## Loop visibility` sections. If the extension is absent or disabled the skills
+detect that once and run exactly as they did before it existed.
+
+- Shared contract for skill authors:
+  [`extensions/loop-execution-visualizer/REPORTING.md`](extensions/loop-execution-visualizer/REPORTING.md)
+- Normative schemas and coverage:
+  [`extensions/loop-execution-visualizer/contracts/v1/`](extensions/loop-execution-visualizer/contracts/v1/)
+
+The extension uses Node built-ins only (Node 22+) and has no dependencies to
+install. Run its tests with the Node test runner:
+
+```powershell
+node --test "tests/loop-execution-visualizer/*.test.mjs"
+```
 
 ## Validate before a release
 
@@ -100,12 +132,15 @@ are loaded by the same plugin.
 required resources, unique skill frontmatter, the exact model table, the two
 approval gates, revision-bound critiques, the delivery vocabulary and authority
 handshake, prohibited actions, that each skill is self-contained and never
-references the other, and that every skill states the shared safety baseline in
-its own `SKILL.md`.
+references the other, that every skill states the shared safety baseline in its
+own `SKILL.md`, and that every loop-visibility entry point in
+`contracts/v1/coverage.json` is wired in the skill it belongs to with the tool
+the contract requires.
 
 ```powershell
 pwsh -File tests/validate-skills.ps1 -RepoRoot .
 pwsh -File tests/validate-skills.ps1 -RepoRoot . -SelfTest
+node --test "tests/loop-execution-visualizer/*.test.mjs"
 ```
 
 It exits `0` when every contract holds and `1` with a list of violations

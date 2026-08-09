@@ -1,0 +1,400 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "loop-execution-visualizer/v1/event",
+  "title": "Loop execution visualizer event envelope (v1)",
+  "description": "Every record written to the immutable store. The envelope is validated against #/$defs/envelope and the payload against #/$defs/data/<type>. An event whose type has no data schema is rejected; there is no permissive default.",
+  "$defs": {
+    "isoTime": { "type": "string", "format": "date-time", "minLength": 20, "maxLength": 32 },
+    "id": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$" },
+    "uuid": { "type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$" },
+    "nullableId": { "anyOf": [{ "$ref": "#/$defs/id" }, { "type": "null" }] },
+    "nullableString": { "anyOf": [{ "type": "string", "maxLength": 65536 }, { "type": "null" }] },
+    "nonNegativeNumber": { "type": "number", "minimum": 0 },
+
+    "sourceKind": { "enum": ["orchestrator", "child", "system"] },
+
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["sourceId", "kind", "hostSessionId", "appSessionId", "extensionId", "pid"],
+      "properties": {
+        "sourceId": { "$ref": "#/$defs/id" },
+        "kind": { "$ref": "#/$defs/sourceKind" },
+        "hostSessionId": { "$ref": "#/$defs/id" },
+        "appSessionId": { "$ref": "#/$defs/nullableId" },
+        "extensionId": { "type": "string", "minLength": 1, "maxLength": 256 },
+        "pid": { "type": "integer", "minimum": 0 },
+        "workingDirectory": { "$ref": "#/$defs/nullableString" }
+      }
+    },
+
+    "authority": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["basis", "metadata", "content", "control"],
+      "properties": {
+        "basis": { "enum": ["runtime_identity", "enrollment_token", "orchestrator_grant", "system"] },
+        "grantId": { "$ref": "#/$defs/nullableId" },
+        "metadata": { "type": "boolean" },
+        "content": { "type": "boolean" },
+        "control": { "type": "boolean" }
+      }
+    },
+
+    "envelope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion", "eventId", "runId", "type", "seq",
+        "source", "authority", "occurredAt", "recordedAt", "causalParentId", "data"
+      ],
+      "properties": {
+        "schemaVersion": { "const": "1" },
+        "eventId": { "$ref": "#/$defs/uuid" },
+        "runId": { "$ref": "#/$defs/id" },
+        "type": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "seq": { "type": "integer", "minimum": 1 },
+        "source": { "$ref": "#/$defs/source" },
+        "authority": { "$ref": "#/$defs/authority" },
+        "occurredAt": { "$ref": "#/$defs/isoTime" },
+        "recordedAt": { "$ref": "#/$defs/isoTime" },
+        "causalParentId": { "anyOf": [{ "$ref": "#/$defs/uuid" }, { "type": "null" }] },
+        "priority": { "enum": ["normal", "immediate"] },
+        "data": { "type": "object" }
+      }
+    },
+
+    "dagNodeSpec": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["nodeId", "label", "dependsOn"],
+      "properties": {
+        "nodeId": { "$ref": "#/$defs/id" },
+        "label": { "type": "string", "minLength": 1, "maxLength": 160 },
+        "phase": { "$ref": "#/$defs/nullableString" },
+        "role": { "enum": ["orchestrator", "worker", "critique", "review", "gate", "recovery"] },
+        "dependsOn": { "type": "array", "maxItems": 64, "items": { "$ref": "#/$defs/id" } },
+        "planned": { "type": "boolean" },
+        "optional": { "type": "boolean" }
+      }
+    },
+
+    "tokenPrice": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["tokenType", "unitPrice", "batchSize"],
+      "properties": {
+        "tokenType": { "type": "string", "minLength": 1, "maxLength": 48 },
+        "unitPrice": { "$ref": "#/$defs/nonNegativeNumber" },
+        "batchSize": { "type": "number", "minimum": 1 }
+      }
+    },
+
+    "data": {
+      "run.declared": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["skill", "title", "projectId", "repository", "orchestratorNodeId", "nodes", "createdAt"],
+        "properties": {
+          "skill": { "$ref": "#/$defs/id" },
+          "skillVersion": { "$ref": "#/$defs/nullableString" },
+          "title": { "type": "string", "minLength": 1, "maxLength": 300 },
+          "projectId": { "$ref": "#/$defs/nullableString" },
+          "repository": { "$ref": "#/$defs/nullableString" },
+          "branch": { "$ref": "#/$defs/nullableString" },
+          "orchestratorNodeId": { "$ref": "#/$defs/id" },
+          "orchestratorLabel": { "type": "string", "minLength": 1, "maxLength": 160 },
+          "nodes": { "type": "array", "minItems": 1, "maxItems": 256, "items": { "$ref": "#/$defs/dagNodeSpec" } },
+          "createdAt": { "$ref": "#/$defs/isoTime" }
+        }
+      },
+      "run.outcome": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["outcome", "reason"],
+        "properties": {
+          "outcome": { "enum": ["completed", "failed", "canceled", "blocked"] },
+          "reason": { "type": "string", "minLength": 1, "maxLength": 2000 },
+          "prUrl": { "$ref": "#/$defs/nullableString" }
+        }
+      },
+      "dag.node_added": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["node", "reason"],
+        "properties": {
+          "node": { "$ref": "#/$defs/dagNodeSpec" },
+          "reason": { "type": "string", "minLength": 1, "maxLength": 2000 },
+          "replacesNodeId": { "$ref": "#/$defs/nullableId" }
+        }
+      },
+      "node.state": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["nodeId", "state", "reason"],
+        "properties": {
+          "nodeId": { "$ref": "#/$defs/id" },
+          "state": { "type": "string", "minLength": 1, "maxLength": 32 },
+          "reason": { "type": "string", "minLength": 1, "maxLength": 2000 }
+        }
+      },
+      "attempt.started": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["nodeId", "attemptId", "attemptNumber", "kind"],
+        "properties": {
+          "nodeId": { "$ref": "#/$defs/id" },
+          "attemptId": { "$ref": "#/$defs/id" },
+          "attemptNumber": { "type": "integer", "minimum": 1 },
+          "kind": { "enum": ["initial", "retry", "replacement"] },
+          "model": { "$ref": "#/$defs/nullableString" },
+          "reason": { "$ref": "#/$defs/nullableString" }
+        }
+      },
+      "attempt.state": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["nodeId", "attemptId", "state", "reason"],
+        "properties": {
+          "nodeId": { "$ref": "#/$defs/id" },
+          "attemptId": { "$ref": "#/$defs/id" },
+          "state": { "type": "string", "minLength": 1, "maxLength": 32 },
+          "reason": { "type": "string", "minLength": 1, "maxLength": 2000 },
+          "authoritative": { "type": "boolean" }
+        }
+      },
+      "session.bound": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["nodeId", "attemptId", "appSessionId", "hostSessionId"],
+        "properties": {
+          "nodeId": { "$ref": "#/$defs/id" },
+          "attemptId": { "$ref": "#/$defs/id" },
+          "appSessionId": { "$ref": "#/$defs/id" },
+          "hostSessionId": { "$ref": "#/$defs/id" },
+          "grantId": { "$ref": "#/$defs/nullableId" },
+          "workingDirectory": { "$ref": "#/$defs/nullableString" }
+        }
+      },
+      "session.lifecycle": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["phase"],
+        "properties": {
+          "phase": { "enum": ["start", "prompt_submitted", "idle", "end", "error", "shutdown"] },
+          "reason": { "$ref": "#/$defs/nullableString" },
+          "source": { "$ref": "#/$defs/nullableString" },
+          "authoritative": { "type": "boolean" },
+          "terminal": { "type": "boolean" }
+        }
+      },
+      "session.activity": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["activity"],
+        "properties": {
+          "activity": { "type": "string", "minLength": 1, "maxLength": 32 },
+          "detail": { "$ref": "#/$defs/nullableString" },
+          "toolName": { "$ref": "#/$defs/nullableString" },
+          "model": { "$ref": "#/$defs/nullableString" },
+          "ok": { "anyOf": [{ "type": "boolean" }, { "type": "null" }] }
+        }
+      },
+      "health.heartbeat": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["intervalMs"],
+        "properties": {
+          "intervalMs": { "type": "integer", "minimum": 1 },
+          "activity": { "$ref": "#/$defs/nullableString" },
+          "uptimeMs": { "$ref": "#/$defs/nonNegativeNumber" }
+        }
+      },
+      "health.state": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["subjectHostSessionId", "state", "reason"],
+        "properties": {
+          "subjectHostSessionId": { "$ref": "#/$defs/id" },
+          "state": { "type": "string", "minLength": 1, "maxLength": 32 },
+          "reason": { "type": "string", "minLength": 1, "maxLength": 2000 },
+          "lastHeartbeatAt": { "anyOf": [{ "$ref": "#/$defs/isoTime" }, { "type": "null" }] }
+        }
+      },
+      "semantic.report": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["fields"],
+        "properties": {
+          "nodeId": { "$ref": "#/$defs/nullableId" },
+          "attemptId": { "$ref": "#/$defs/nullableId" },
+          "fields": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "model": { "$ref": "#/$defs/nullableString" },
+              "prompt": { "$ref": "#/$defs/nullableString" },
+              "plan": { "$ref": "#/$defs/nullableString" },
+              "progress": { "$ref": "#/$defs/nullableString" },
+              "details": { "$ref": "#/$defs/nullableString" },
+              "artifacts": { "type": "array", "maxItems": 64, "items": { "type": "string", "maxLength": 1024 } }
+            }
+          }
+        }
+      },
+      "usage.sample": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["model", "tokens", "confidence"],
+        "properties": {
+          "model": { "type": "string", "minLength": 1, "maxLength": 128 },
+          "apiCallId": { "$ref": "#/$defs/nullableString" },
+          "tokens": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "input": { "$ref": "#/$defs/nonNegativeNumber" },
+              "output": { "$ref": "#/$defs/nonNegativeNumber" },
+              "cacheRead": { "$ref": "#/$defs/nonNegativeNumber" },
+              "cacheWrite": { "$ref": "#/$defs/nonNegativeNumber" },
+              "reasoning": { "$ref": "#/$defs/nonNegativeNumber" }
+            }
+          },
+          "creditCost": { "$ref": "#/$defs/nonNegativeNumber" },
+          "durationMs": { "$ref": "#/$defs/nonNegativeNumber" },
+          "confidence": { "enum": ["actual", "estimated", "partial", "unavailable"] },
+          "priceSnapshotId": { "$ref": "#/$defs/nullableId" }
+        }
+      },
+      "usage.reconciliation": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["window", "aggregate", "delta", "confidence"],
+        "properties": {
+          "window": { "enum": ["checkpoint", "final"] },
+          "aggregate": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "premiumRequestCost": { "$ref": "#/$defs/nonNegativeNumber" },
+              "userRequests": { "$ref": "#/$defs/nonNegativeNumber" },
+              "nanoAiu": { "$ref": "#/$defs/nonNegativeNumber" },
+              "apiDurationMs": { "$ref": "#/$defs/nonNegativeNumber" }
+            }
+          },
+          "delta": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "premiumRequestCost": { "type": "number" },
+              "userRequests": { "type": "number" },
+              "nanoAiu": { "type": "number" },
+              "apiDurationMs": { "type": "number" }
+            }
+          },
+          "attributedSampleCredits": { "$ref": "#/$defs/nonNegativeNumber" },
+          "confidence": { "enum": ["actual", "estimated", "partial", "unavailable"] }
+        }
+      },
+      "price.snapshot": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["snapshotId", "unit", "models"],
+        "properties": {
+          "snapshotId": { "$ref": "#/$defs/id" },
+          "unit": { "enum": ["copilot_ai_credits", "provider_billed_currency"] },
+          "currency": { "$ref": "#/$defs/nullableString" },
+          "models": {
+            "type": "array",
+            "maxItems": 128,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["model", "prices"],
+              "properties": {
+                "model": { "type": "string", "minLength": 1, "maxLength": 128 },
+                "variant": { "enum": ["default", "long_context"] },
+                "prices": { "type": "array", "maxItems": 16, "items": { "$ref": "#/$defs/tokenPrice" } }
+              }
+            }
+          }
+        }
+      },
+      "incident.opened": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["incidentId", "kind", "subjectNodeId", "summary", "envelope"],
+        "properties": {
+          "incidentId": { "$ref": "#/$defs/id" },
+          "kind": { "enum": ["child_failed", "connection_lost", "envelope_missing"] },
+          "subjectNodeId": { "$ref": "#/$defs/id" },
+          "subjectAttemptId": { "$ref": "#/$defs/nullableId" },
+          "summary": { "type": "string", "minLength": 1, "maxLength": 2000 },
+          "envelope": { "type": "string", "minLength": 1, "maxLength": 8192 }
+        }
+      },
+      "incident.state": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["incidentId", "state", "reason"],
+        "properties": {
+          "incidentId": { "$ref": "#/$defs/id" },
+          "state": { "type": "string", "minLength": 1, "maxLength": 32 },
+          "reason": { "type": "string", "minLength": 1, "maxLength": 2000 },
+          "attempt": { "type": "integer", "minimum": 0 }
+        }
+      },
+      "outbox.queued": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["messageId", "targetAppSessionId", "body", "expiresAt"],
+        "properties": {
+          "messageId": { "$ref": "#/$defs/id" },
+          "targetAppSessionId": { "$ref": "#/$defs/id" },
+          "targetNodeId": { "$ref": "#/$defs/nullableId" },
+          "body": { "type": "string", "minLength": 1, "maxLength": 16384 },
+          "bodyChecksum": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+          "expiresAt": { "$ref": "#/$defs/isoTime" }
+        }
+      },
+      "outbox.state": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["messageId", "state", "reason"],
+        "properties": {
+          "messageId": { "$ref": "#/$defs/id" },
+          "state": { "type": "string", "minLength": 1, "maxLength": 32 },
+          "reason": { "type": "string", "minLength": 1, "maxLength": 2000 },
+          "attempt": { "type": "integer", "minimum": 0 }
+        }
+      },
+      "controller.state": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["workflowState", "reason"],
+        "properties": {
+          "workflowState": { "type": "string", "minLength": 1, "maxLength": 32 },
+          "reason": { "type": "string", "minLength": 1, "maxLength": 2000 },
+          "focus": { "$ref": "#/$defs/nullableString" },
+          "waitingOnNodeIds": { "type": "array", "maxItems": 256, "items": { "$ref": "#/$defs/id" } }
+        }
+      },
+      "telemetry.health": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["component", "status", "detail"],
+        "properties": {
+          "component": { "type": "string", "minLength": 1, "maxLength": 64 },
+          "status": { "enum": ["ok", "degraded", "unavailable"] },
+          "detail": { "type": "string", "minLength": 1, "maxLength": 2000 },
+          "droppedEvents": { "$ref": "#/$defs/nonNegativeNumber" },
+          "contractViolations": {
+            "$ref": "#/$defs/nonNegativeNumber",
+            "description": "Writes rejected because the payload broke the contract. Unlike a dropped write this is a defect, never a transient storage condition."
+          },
+          "quarantinedRecords": { "$ref": "#/$defs/nonNegativeNumber" }
+        }
+      }
+    }
+  }
+}
