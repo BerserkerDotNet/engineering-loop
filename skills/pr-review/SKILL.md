@@ -186,20 +186,26 @@ write may happen and the run reports `BLOCKED` with the exact missing fixture or
 ### Step 5: Azure DevOps credential terminal
 
 Used only when the chosen Azure DevOps adapter is `az devops`. Follow
-`reference/commands.md` blocks `terminal.launch`, `terminal.secret-entry`, `terminal.probe`,
-`terminal.read-since-last-input`, and `terminal.cleanup`.
+`reference/commands.md` blocks `terminal.preflight`, `terminal.launch`, `terminal.secret-entry`,
+`terminal.probe`, `terminal.read-since-last-input`, and `terminal.cleanup`.
 
-Preflight the host first: it must support a non-echoing secure prompt, process-scoped
-environment injection, and the platform access controls in `acl.apply`. An unsupported host
-blocks before Azure DevOps acquisition, with no persistent login and no fallback.
+Run `terminal.preflight` first and execute its checks; a narrative assurance is not a preflight.
+It must prove a visible interactive terminal, a non-echoing secure prompt, process-scoped
+environment injection, the platform access controls in `acl.apply`, an effective PSReadLine
+history policy that saves nothing, and that transcription is off. Transcription counts as proven
+off only when the policy is readable and disabled; an unreadable policy is not proven off. Any
+failure blocks before secret entry and before Azure DevOps acquisition, with no persistent login,
+no fallback, and no attempt to override a mandatory host or group policy.
 
 Open exactly one visible persistent terminal at the derived organization, launched with
-`-NoProfile` and with history saving and transcription disabled. Explain that the secret exists
-only in that process for this run. Only these tagged commands may be sent:
+`-NoProfile`, then re-prove inside that exact terminal that history saving and transcription are
+disabled. Explain that the secret exists only in that process for this run. Only these tagged
+commands may be sent:
 
 | Tag | Allowed command |
 |---|---|
-| `terminal-allow:bootstrap` | The launch and history-disabling commands |
+| `terminal-allow:preflight` | The read-only capability, history-policy, and transcription-policy checks |
+| `terminal-allow:bootstrap` | The launch, history-disabling, and in-terminal policy read-back commands |
 | `terminal-allow:secret-entry` | The non-echoing `Read-Host -AsSecureString` sequence |
 | `terminal-allow:az-explicit-org` | An explicit-organization, non-debug `az devops invoke` command from `reference/commands.md` |
 | `terminal-allow:handshake` | The non-secret prompt asking the user to confirm entry is complete |
@@ -209,6 +215,12 @@ Anything else is prohibited, including rendering the PAT or the environment, `--
 `--debug`, full or screen scrollback reads, transcripts, and history export. Read nothing while
 entry is pending; after the non-secret handshake, read only output produced since the last
 command this workflow sent.
+
+`terminal.probe` then runs its complete ordered chain in this terminal: acting identity,
+repository resolution, pull request and revision, iteration list, one paged change read, one
+pinned item read with the blob read it resolves, and the complete thread inventory. Repository
+resolution precedes every route that needs a repository ID. Any failure, missing field, or
+out-of-order step clears the credential and blocks.
 
 Clear the variable and close the terminal, then enter `blocked` and require fresh secure entry,
 on any of: a five-minute idle timeout, cancellation, terminal close, a block, logout, run end,
@@ -229,7 +241,28 @@ atomically at the end of bootstrap; nothing earlier may use it.
 ## Phase 2: acquisition
 
 Record `acquiring`. Read `reference/commands.md` blocks `bundle.seal`, `bundle.verify`,
-`bundle.child-copy`, `acl.apply`, and `hash.compute`.
+`bundle.child-copy`, `diff.compute`, `acl.apply`, and `hash.compute`.
+
+### Immutable resolution
+
+Resolve every path to content only through the pinned revisions, never through a branch, a tag,
+`HEAD`, a fetch, or a working tree. On GitHub, `github.pull-request-read` pins `base.sha` and
+`head.sha`, `github.commit-read` turns each into a root tree, `github.tree-read` resolves paths
+inside that tree, and `github.item-read` resolves a single path when the recursive tree returns
+`truncated: true` or when only one path is needed. On Azure DevOps, `ado.pull-request-read` and
+`ado.iteration-list` pin the base and source revisions, `ado.commit-read` returns each `treeId`,
+`ado.tree-read` resolves paths, and `ado.item-read` resolves a single path with
+`versionType=commit`. Both providers then read the resolved blob SHA with `blob-read`.
+
+`github.pull-request-file-list` returns only the source-side blob, so every base-side blob and
+every unchanged-context blob is resolved through this chain. A missing, truncated, or ambiguous
+resolution that neither the tree read nor the single-path item read can settle blocks the run.
+
+### Pinned diff
+
+Every anchor comes from `diff.compute` over the bundle's own base-side and source-side blobs.
+Never derive an anchor from a checkout, an index, a working tree, or a provider-supplied patch,
+because a provider patch is omitted or truncated for large files.
 
 ### Admission
 
@@ -257,9 +290,11 @@ immutable provider content or block. Never substitute local `HEAD`, never fetch,
 reconstruct content from a working tree.
 
 Unchanged context is the directly imported or called definitions plus the nearest tests and
-configuration referenced by the changed symbols. A child that needs more asks through this
-coordinator; an approved addition reseals the bundle as `v(n+1)` and supersedes every affected
-review digest.
+configuration referenced by the changed symbols. Each of those paths is resolved at the pinned
+base revision through `item-read` or `tree-read` and read with `blob-read`; an unchanged-context
+path that cannot be resolved immutably is omitted from the bundle and recorded as unresolved,
+never filled in from a checkout. A child that needs more asks through this coordinator; an
+approved addition reseals the bundle as `v(n+1)` and supersedes every affected review digest.
 
 Hash the manifest and every entry, give each child an isolated content-addressed copy, and
 independently rehash before and after every child, rejecting any added, deleted, renamed, or
@@ -345,8 +380,9 @@ digest of each request and of the whole set.
 
 ### Anchors
 
-Side is immutable from the pinned diff and is validated in-diff immediately before the write.
-Never infer the opposite side.
+Side is immutable from `diff.compute` over the bundle's pinned base-side and source-side blobs,
+and is validated in-diff immediately before the write. Never infer the opposite side, and never
+read a side from a checkout or a provider-supplied patch.
 
 | Change | GitHub projection | Azure DevOps projection |
 |---|---|---|
@@ -363,9 +399,17 @@ Azure DevOps binds the exact `changeTrackingId` and the iteration pair
 
 `ApprovedRequest` contains the exact Unicode body and suggestion, the placement, the neutral and
 projected anchor, the destination and author, the route and order, the adapter, adapter version
-and `access_digest`, the revision, and the tagged serializer version. A canonical SHA-256 binds
-each request and the whole set. GitHub additionally freezes the exact wire bytes. Azure DevOps
-may reserialize, so its read-back is accepted only when inverse projection proves exact meaning.
+and `access_digest`, the revision, and the tagged serializer version. Read
+`reference/commands.md` blocks `request.canonicalize`, `response.project-github`, and
+`response.project-ado`, and derive every digest and every preview only from them.
+
+`request.canonicalize` is the single deterministic serializer: it fixes member ordering,
+escaping, and newline handling, preserves every code point above U+001F literally, keeps a CRLF
+as `\r\n`, and produces the SHA-256 that binds each request plus the set digest over the approved
+route and order. GitHub additionally freezes those exact wire bytes. Azure DevOps may
+reserialize, so `response.project-ado` accepts a read-back only when the inverse projection is
+byte-identical to the canonical approved bytes; `response.project-github` requires the same
+byte-identical equality against the frozen bytes.
 
 GitHub renders the exact approved fenced suggestion; Azure DevOps preserves the exact approved
 suggestion text. Any mutation of any bound field revokes approval.
@@ -387,8 +431,9 @@ settings.
 ## Phase 7: posting
 
 Record `revalidating`, then `posting`. Read `reference/commands.md` blocks `lease.acquire`,
-`lease.heartbeat`, `lease.takeover`, `lease.release`, `journal.append`, `journal.read-back`,
-`acl.apply`, `hash.compute`, and `temp.secure-delete`.
+`lease.heartbeat`, `lease.takeover`, `lease.fence`, `lease.release`, `journal.create`,
+`journal.append`, `journal.read-back`, `request.canonicalize`, `response.project-github`,
+`response.project-ado`, `acl.apply`, `hash.compute`, and `temp.secure-delete`.
 
 ### Revalidation
 
@@ -400,13 +445,30 @@ affected review and targets, and requires approval of a new exact set.
 ### Lease and scope
 
 Acquire the lease before the first write and release it only with the matching owner token.
-Heartbeat every 10 seconds; six missed heartbeats, that is 60 seconds, expire it. A same-boot
-takeover additionally requires proof that the recorded process start is absent and the recorded
-app session is not running. A wall-clock change never proves liveness, and a boot-ID change or
-monotonic loss forbids automatic takeover until the prior boot is proven ended and the prior
-session proven inactive. The winner claims a strictly higher epoch, freshly inventories and
-reconciles every `attempt_started` row, and blocks on ambiguity. An unwritable Git common
-directory blocks.
+`lease.acquire` creates the record with `CreateNew`, so exactly one contender wins and every
+other is denied. Heartbeat every 10 seconds; six missed heartbeats, that is 60 seconds, expire
+it. A same-boot takeover additionally requires proof that the recorded process start is absent
+and the recorded app session is not running. A wall-clock change never proves liveness, and a
+boot-ID change or monotonic loss forbids automatic takeover until the prior boot is proven ended
+and the prior session proven inactive.
+
+`lease.takeover` is a compare-and-swap, not a plain replace: the contender first creates an
+exclusive takeover claim, then re-reads and requires the lease to still be the exact expired
+record it observed, then replaces it at a strictly higher epoch with a fresh owner token, then
+re-reads and requires its own token and epoch back. A contender that loses the claim, sees a
+changed record, or fails the read-back writes nothing, so two contenders can never both believe
+they took over. The winner freshly inventories and reconciles every `attempt_started` row and
+blocks on ambiguity. An unwritable Git common directory blocks.
+
+Run `lease.fence` immediately before every provider send and immediately before every journal
+write. A run whose persisted owner token or monotonic epoch no longer matches is a stale writer:
+it sends nothing, writes no journal row, releases nothing, and records `blocked`. Every journal
+row carries the writing owner token and epoch, and `journal.append` re-reads and merges before
+replacing, so a full-journal write can never drop or downgrade another owner's row.
+
+The first journal is created with `journal.create` using `CreateNew`, because
+`[System.IO.File]::Replace` requires an existing destination and can never create it. Every
+later version goes through `journal.append`.
 
 Before posting, always disclose that mutual exclusion and exactly-once behavior cover only runs
 that write this same Git common-directory lease, and never other clones, other machines, or any
@@ -414,9 +476,11 @@ global scope. Disclose it unconditionally, including when no other run is known.
 
 ### Write loop
 
-For each approved item, in the approved order: take a complete before inventory, append the
-journal row before sending, send exactly one write, read the journal back before starting the
-next item, then take a complete after inventory.
+For each approved item, in the approved order: take a complete before inventory, pass
+`lease.fence`, append the journal row before sending, pass `lease.fence` again, send exactly one
+write, read the journal back before starting the next item, then take a complete after
+inventory. Classify every candidate through `response.project-github` or `response.project-ado`,
+never by eyeballing the response.
 
 | Observation | Item state |
 |---|---|
@@ -433,8 +497,11 @@ set.
 
 GitHub writes are standalone comments paced at least one second apart and honor `Retry-After`
 and secondary-rate-limit guidance. Its baseline-relative final predicate must prove that no
-submitted review, no review decision, and no pending review changed, and that preexisting
-pending reviews remain untouched.
+submitted review and no pending review changed, that preexisting pending reviews remain
+untouched, and that the aggregate review decision read by `github.review-decision-read` before
+and after the write loop is unchanged. That decision is never inferred from review rows or
+branch policy, because the REST review rows do not carry it. Azure DevOps proves the equivalent
+with `ado.reviewer-vote-read` before and after.
 
 Hash every frozen body file before and after invocation, then securely delete it.
 
@@ -477,13 +544,15 @@ a defect.
 
 | Area | Operations |
 |---|---|
-| GitHub | `github.identity-read`, `github.repository-read`, `github.pull-request-read`, `github.pull-request-file-list`, `github.blob-read`, `github.review-comment-inventory`, `github.review-inventory`, `github.issue-comment-inventory`, `github.review-comment-create`, `github.issue-comment-create` |
-| Azure DevOps | `ado.identity-read`, `ado.repository-read`, `ado.pull-request-read`, `ado.iteration-list`, `ado.iteration-change-list`, `ado.blob-read`, `ado.thread-inventory`, `ado.thread-create`, `ado.general-thread-create` |
-| Terminal | `terminal.launch`, `terminal.secret-entry`, `terminal.probe`, `terminal.read-since-last-input`, `terminal.cleanup` |
+| GitHub | `github.identity-read`, `github.repository-read`, `github.pull-request-read`, `github.commit-read`, `github.tree-read`, `github.item-read`, `github.pull-request-file-list`, `github.blob-read`, `github.review-comment-inventory`, `github.review-inventory`, `github.review-decision-read`, `github.issue-comment-inventory`, `github.review-comment-create`, `github.issue-comment-create` |
+| Azure DevOps | `ado.identity-read`, `ado.repository-read`, `ado.pull-request-read`, `ado.commit-read`, `ado.tree-read`, `ado.item-read`, `ado.iteration-list`, `ado.iteration-change-list`, `ado.blob-read`, `ado.thread-inventory`, `ado.reviewer-vote-read`, `ado.thread-create`, `ado.general-thread-create` |
+| Terminal | `terminal.preflight`, `terminal.launch`, `terminal.secret-entry`, `terminal.probe`, `terminal.read-since-last-input`, `terminal.cleanup` |
 | Bundle | `bundle.seal`, `bundle.verify`, `bundle.child-copy` |
+| Diff | `diff.compute` |
+| Approval | `request.canonicalize`, `response.project-github`, `response.project-ado` |
 | Files | `acl.apply`, `hash.compute`, `temp.secure-delete` |
-| Lease | `lease.acquire`, `lease.heartbeat`, `lease.takeover`, `lease.release` |
-| Journal | `journal.append`, `journal.read-back` |
+| Lease | `lease.acquire`, `lease.heartbeat`, `lease.takeover`, `lease.fence`, `lease.release` |
+| Journal | `journal.create`, `journal.append`, `journal.read-back` |
 
 ## Run ledger
 

@@ -268,6 +268,7 @@ $script:ReviewEntryTags = @(
 
 # Exhaustive credential-terminal command allowlist.
 $script:ReviewTerminalAllowTags = @(
+    'terminal-allow:preflight',
     'terminal-allow:bootstrap',
     'terminal-allow:secret-entry',
     'terminal-allow:az-explicit-org',
@@ -317,11 +318,18 @@ $script:ContractFields = @(
 # Parity capabilities every provider adapter must cover, so neither provider offers a reduced
 # acquisition, review, approval, posting, or recovery flow.
 $script:ContractCapabilities = @(
-    'identity', 'repository', 'pull-request', 'changes', 'blob', 'inventory', 'inline-create',
-    'general-create'
+    'identity', 'repository', 'pull-request', 'revision', 'tree', 'item', 'changes', 'blob',
+    'inventory', 'decision', 'inline-create', 'general-create'
 )
 
 $script:ContractProviderAdapters = @('github', 'ado')
+
+# The ordered read chain the Azure DevOps credential-terminal probe must actually execute.
+# Repository resolution precedes every route that needs a repository ID.
+$script:ReviewProbeChain = @(
+    'ado.identity-read', 'ado.repository-read', 'ado.pull-request-read', 'ado.iteration-list',
+    'ado.iteration-change-list', 'ado.item-read', 'ado.blob-read', 'ado.thread-inventory'
+)
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -1169,9 +1177,7 @@ function Test-ReviewTerminalContract {
 
     $required = [ordered]@{
         'cli-only-scope'      = 'Used only when the chosen Azure DevOps adapter is `az devops`\.'
-        'host-preflight'      = 'it must support a non-echoing secure prompt, process-scoped\s*environment injection, and the platform access controls in `acl\.apply`'
-        'unsupported-blocks'  = 'An unsupported host\s*blocks before Azure DevOps acquisition, with no persistent login and no fallback\.'
-        'single-terminal'     = 'Open exactly one visible persistent terminal at the derived organization, launched with\s*`-NoProfile` and with history saving and transcription disabled\.'
+        'single-terminal'     = 'Open exactly one visible persistent terminal at the derived organization, launched with\s*`-NoProfile`, then re-prove inside that exact terminal that history saving and transcription are\s*disabled\.'
         'process-scoped-only' = 'the secret exists\s*only in that process for this run'
         'allowlist-closed'    = 'Only these tagged commands may be sent'
         'prohibitions'        = 'Anything else is prohibited, including rendering the PAT or the environment, `--verbose`,\s*`--debug`, full or screen scrollback reads, transcripts, and history export\.'
@@ -1261,8 +1267,8 @@ function Test-ReviewAnchorContract {
     param([string] $SkillText, [System.Collections.Generic.List[string]] $Violations)
 
     $required = [ordered]@{
-        'side-immutable'    = 'Side is immutable from the pinned diff and is validated in-diff immediately before the write\.'
-        'never-infer-side'  = 'Never infer the opposite side\.'
+        'side-immutable'  = 'Side is immutable from `diff\.compute` over the bundle''s pinned base-side and source-side blobs,\s*and is validated in-diff immediately before the write\.'
+        'never-infer-side' = 'Never infer the opposite side, and never\s*read a side from a checkout or a provider-supplied patch\.'
         'right-side-row'    = '\| add, copy, edited added, or context \| `RIGHT` with the current path and new line \| right or current path with line and offset \|'
         'left-side-row'     = '\| delete or edited removed \| `LEFT` with the original path and original line \| left or original path with line and offset \|'
         'rename-row'        = '\| rename \| the separately approved left-original or right-current side \| the separately approved left-original or right-current side \|'
@@ -1283,9 +1289,9 @@ function Test-ReviewApprovalContract {
         'preview-derives-from-request' = 'Display the exact pending set derived only from the `ApprovedRequest`\s*objects'
         'preview-fields'      = 'for each comment its exact body, its suggestion, its placement, its neutral and\s*projected anchor, its destination and author, and its route and order, plus the adapter,\s*adapter version, `access_digest`, revision, serializer version, and the canonical semantic\s*digest of each request and of the whole set'
         'request-fields'      = '`ApprovedRequest` contains the exact Unicode body and suggestion, the placement, the neutral and\s*projected anchor, the destination and author, the route and order, the adapter, adapter version\s*and `access_digest`, the revision, and the tagged serializer version\.'
-        'canonical-digest'    = 'A canonical SHA-256 binds\s*each request and the whole set\.'
-        'github-wire-bytes'   = 'GitHub additionally freezes the exact wire bytes\.'
-        'ado-inverse-projection' = 'Azure DevOps\s*may reserialize, so its read-back is accepted only when inverse projection proves exact meaning\.'
+        'canonical-digest' = 'produces the SHA-256 that binds each request plus the set digest over the approved\s*route and order\.'
+        'github-wire-bytes' = 'GitHub additionally freezes those exact wire bytes\.'
+        'ado-inverse-projection' = 'Azure DevOps may\s*reserialize, so `response\.project-ado` accepts a read-back only when the inverse projection is\s*byte-identical to the canonical approved bytes'
         'suggestion-fidelity' = 'GitHub renders the exact approved fenced suggestion; Azure DevOps preserves the exact approved\s*suggestion text\.'
         'mutation-revokes'    = 'Any mutation of any bound field revokes approval\.'
         'mutation-invalidates-set' = 'Any mutation of text, target, suggestion, identity, adapter, revision, order, or set\s*membership revokes approval and requires a new preview and a new approval\.'
@@ -1322,17 +1328,17 @@ function Test-ReviewPostingContract {
         'heartbeat'         = 'Heartbeat every 10 seconds; six missed heartbeats, that is 60 seconds, expire it\.'
         'same-boot-takeover' = 'A same-boot\s*takeover additionally requires proof that the recorded process start is absent and the recorded\s*app session is not running\.'
         'wall-clock-never-proves' = 'A wall-clock change never proves liveness, and a boot-ID change or\s*monotonic loss forbids automatic takeover until the prior boot is proven ended and the prior\s*session proven inactive\.'
-        'higher-epoch'      = 'The winner claims a strictly higher epoch, freshly inventories and\s*reconciles every `attempt_started` row, and blocks on ambiguity\.'
+        'higher-epoch'      = 'The winner freshly inventories and reconciles every `attempt_started` row and\s*blocks on ambiguity\.'
         'unwritable-blocks' = 'An unwritable Git common\s*directory blocks\.'
         'scope-disclosure'  = 'Before posting, always disclose that mutual exclusion and exactly-once behavior cover only runs\s*that write this same Git common-directory lease, and never other clones, other machines, or any\s*global scope\.'
         'scope-unconditional' = 'Disclose it unconditionally, including when no other run is known\.'
-        'write-loop'        = 'take a complete before inventory, append the\s*journal row before sending, send exactly one write, read the journal back before starting the\s*next item, then take a complete after inventory'
+        'write-loop'        = 'take a complete before inventory, pass\s*`lease\.fence`, append the journal row before sending, pass `lease\.fence` again, send exactly one\s*write, read the journal back before starting the next item, then take a complete after\s*inventory'
         'invalid-anchor-422' = 'A GitHub invalid-anchor `422` is `proven_unposted` and may return only to the separately\s*approved general-comment fallback\.'
         'stop-on-403'       = 'A `403`, a rate-limit response, and any transport or unknown\s*failure stop according to the evidence\.'
         'never-auto-repost' = 'Never automatically repost a `confirmed` or `uncertain`\s*comment\.'
         'retry-needs-approval' = 'Retry only `proven_unposted` comments, and only after fresh approval of a new exact\s*set\.'
         'github-pacing'     = 'GitHub writes are standalone comments paced at least one second apart and honor `Retry-After`\s*and secondary-rate-limit guidance\.'
-        'final-predicate'   = 'final predicate must prove that no\s*submitted review, no review decision, and no pending review changed, and that preexisting\s*pending reviews remain untouched'
+        'final-predicate'   = 'final predicate must prove that no\s*submitted review and no pending review changed, that preexisting pending reviews remain\s*untouched'
         'body-file-hygiene' = 'Hash every frozen body file before and after invocation, then securely delete it\.'
         'per-item-evidence' = 'Report every comment as posted, not posted, or uncertain, each with provider evidence and its\s*immutable IDs'
         'no-uncertain-completion' = 'Record\s*`complete` only when every item is terminal and no item is `uncertain`'
@@ -1390,8 +1396,15 @@ function Test-ReviewContractBlocks {
         'grammar-stated'   = 'Every contract is one fenced block whose info string is\s*`contract:<kind>:<adapter-or-local-area>:v<n>`\.'
         'tag-unique'       = 'The pair `<kind>:<adapter-or-local-area>` is\s*unique across this repository'
         'version-bumped'   = '`<n>` is bumped whenever a block''s meaning changes'
-        'capability-set'   = 'The parity capability set is `identity`, `repository`, `pull-request`, `changes`, `blob`,\s*`inventory`, `inline-create`, and `general-create`\.'
-        'parity-stated'    = 'Both provider adapters cover all eight, so\s*neither provider offers a reduced flow\.'
+        'capability-set'   = 'The parity capability set is `identity`, `repository`, `pull-request`, `revision`, `tree`,\s*`item`, `changes`, `blob`, `inventory`, `decision`, `inline-create`, and `general-create`\.'
+        'parity-stated'    = 'Both\s*provider adapters cover all twelve, so neither provider offers a reduced flow\.'
+        'headers-transmitted' = '`method` is the exact command form, so a declared header must actually be transmitted by it\.\s*Every provider block sends its declared `accept` in `method`, and every GitHub block also sends\s*its declared `api-version` as an `X-GitHub-Api-Version` header\.'
+        'undeclared-media-defect' = 'A declared media type that the\s*command never sends is a defect'
+        'immutable-resolution' = 'A path is\s*resolved to content in exactly one way: resolve the pinned commit to its tree, resolve the path\s*inside that tree or through the pinned single-path item read, then read the resulting\s*content-addressed blob\.'
+        'no-mutable-ref'   = 'Never resolve a path through a branch name, a tag, `HEAD`, a fetch, or a\s*working tree\.'
+        'resolution-blocks' = 'A missing, truncated, or ambiguous immutable resolution blocks the run\.'
+        'ado-accept-media-type' = '`--accept-media-type` is the response media type and is what carries each block''s declared\s*`accept`\.'
+        'ado-encoding-is-input' = '`--encoding` describes the `--in-file` request body only, so it appears on write blocks\s*and never stands in for an Accept header\.'
         'no-verbose-debug' = 'No block may pass `--verbose` or `--debug`\.'
         'ado-explicit'     = 'Every ADO command passes the derived organization explicitly, disables detection, and pins the\s*API version\.'
         'ado-no-login'     = '`az devops login` is never used'
@@ -1485,8 +1498,21 @@ function Test-ReviewContractBlocks {
             if ($block.Fields['api-version'] -ne '2022-11-28') {
                 Add-Violation $Violations 'review-contract-blocks' "GitHub contract block '$tag' pins API version '$($block.Fields['api-version'])' instead of '2022-11-28'."
             }
+            # A declared media type the command never sends would silently accept a different
+            # representation than the one this workflow reasoned about.
+            $acceptHeader = '--header "Accept: ' + [regex]::Escape($block.Fields['accept']) + '"'
+            if ($block.Fields['method'] -notmatch $acceptHeader) {
+                Add-Violation $Violations 'review-contract-blocks' "GitHub contract block '$tag' declares Accept '$($block.Fields['accept'])' but its method never sends it as a header."
+            }
+            $versionHeader = '--header "X-GitHub-Api-Version: ' + [regex]::Escape($block.Fields['api-version']) + '"'
+            if ($block.Fields['method'] -notmatch $versionHeader) {
+                Add-Violation $Violations 'review-contract-blocks' "GitHub contract block '$tag' declares API version '$($block.Fields['api-version'])' but its method never sends the 'X-GitHub-Api-Version' header."
+            }
             if ($block.Fields['paging'] -ne 'n/a' -and $block.Fields['paging'] -notmatch 'per_page=100') {
                 Add-Violation $Violations 'review-contract-blocks' "GitHub contract block '$tag' pages without 'per_page=100'."
+            }
+            if ($capability -eq 'blob' -and $block.Fields['output'] -notmatch 'exact bytes') {
+                Add-Violation $Violations 'review-contract-blocks' "GitHub raw block '$tag' does not return the exact bytes of the blob."
             }
             if ($capability -in @('inline-create', 'general-create')) {
                 if ($block.Fields['input'] -notmatch 'frozen wire bytes') {
@@ -1502,13 +1528,30 @@ function Test-ReviewContractBlocks {
         }
 
         if ($area -eq 'ado') {
-            foreach ($flag in @('--organization', '--detect false', '--api-version 7\.1', '--encoding utf-8')) {
+            foreach ($flag in @('--organization', '--detect false', '--api-version 7\.1')) {
                 if ($block.Fields['method'] -notmatch $flag) {
                     Add-Violation $Violations 'review-contract-blocks' "Azure DevOps contract block '$tag' does not pass '$($flag -replace '\\', '')'."
                 }
             }
             if ($block.Fields['api-version'] -ne '7.1') {
                 Add-Violation $Violations 'review-contract-blocks' "Azure DevOps contract block '$tag' pins API version '$($block.Fields['api-version'])' instead of '7.1'."
+            }
+            # '--accept-media-type' is the response media type; '--encoding' describes only the
+            # '--in-file' request body and is never an Accept header.
+            $acceptFlag = '--accept-media-type ' + [regex]::Escape($block.Fields['accept'])
+            if ($block.Fields['method'] -notmatch $acceptFlag) {
+                Add-Violation $Violations 'review-contract-blocks' "Azure DevOps contract block '$tag' declares Accept '$($block.Fields['accept'])' but its method never passes '--accept-media-type $($block.Fields['accept'])'."
+            }
+            $sendsInputFile = $block.Fields['method'] -match '--in-file'
+            $sendsEncoding = $block.Fields['method'] -match '--encoding utf-8'
+            if ($sendsInputFile -and -not $sendsEncoding) {
+                Add-Violation $Violations 'review-contract-blocks' "Azure DevOps contract block '$tag' sends '--in-file' without '--encoding utf-8'."
+            }
+            if ($sendsEncoding -and -not $sendsInputFile) {
+                Add-Violation $Violations 'review-contract-blocks' "Azure DevOps contract block '$tag' passes '--encoding utf-8' with no '--in-file'; encoding describes the request body, not the response."
+            }
+            if ($block.Fields['accept'] -eq 'application/octet-stream' -and $block.Fields['method'] -notmatch '--out-file') {
+                Add-Violation $Violations 'review-contract-blocks' "Azure DevOps raw block '$tag' does not write the response to '--out-file', so console encoding could alter the bytes."
             }
             if ($capability -in @('inline-create', 'general-create')) {
                 if ($block.Fields['input'] -notmatch 'BOM-free LF UTF-8 JSON file') {
@@ -1571,6 +1614,27 @@ function Test-ReviewOperationBijection {
         }
     }
 
+    # A closed set can still be insufficient: equality alone would pass if both the registry and
+    # the block file dropped the same required operation. Assert the required operations exist.
+    $requiredOperations = @(
+        'github.commit-read', 'github.tree-read', 'github.item-read', 'github.blob-read',
+        'github.review-decision-read',
+        'ado.commit-read', 'ado.tree-read', 'ado.item-read', 'ado.blob-read',
+        'ado.reviewer-vote-read',
+        'terminal.preflight', 'terminal.probe',
+        'diff.compute',
+        'request.canonicalize', 'response.project-github', 'response.project-ado',
+        'lease.fence', 'journal.create', 'journal.append'
+    )
+    foreach ($operation in $requiredOperations) {
+        if (-not $blockSeen.Contains($operation)) {
+            Add-Violation $Violations 'review-operation-registry' "Required operation '$operation' has no contract block, so the operation set is closed but insufficient."
+        }
+        if (-not $seen.Contains($operation)) {
+            Add-Violation $Violations 'review-operation-registry' "Required operation '$operation' is not registered in SKILL.md, so the operation set is closed but insufficient."
+        }
+    }
+
     $required = [ordered]@{
         'bijection-stated' = 'Every provider and local operation this workflow performs is named here and has exactly one\s*matching contract block in `reference/commands\.md`\.'
         'both-directions'  = 'The two sets are equal, and the mapping is\s*one to one in both directions\.'
@@ -1612,6 +1676,392 @@ function Test-ReviewPromptContracts {
     }
 }
 
+function Test-ReviewResolutionAndDiff {
+    param([string] $Root, [string] $SkillText, [System.Collections.Generic.List[string]] $Violations)
+
+    $required = [ordered]@{
+        'pinned-only'       = 'Resolve every path to content only through the pinned revisions, never through a branch, a tag,\s*`HEAD`, a fetch, or a working tree\.'
+        'github-chain'      = 'On GitHub, `github\.pull-request-read` pins `base\.sha` and\s*`head\.sha`, `github\.commit-read` turns each into a root tree, `github\.tree-read` resolves paths\s*inside that tree, and `github\.item-read` resolves a single path when the recursive tree returns\s*`truncated: true`'
+        'ado-chain'         = 'On Azure DevOps, `ado\.pull-request-read` and\s*`ado\.iteration-list` pin the base and source revisions, `ado\.commit-read` returns each `treeId`,\s*`ado\.tree-read` resolves paths, and `ado\.item-read` resolves a single path with\s*`versionType=commit`\.'
+        'file-list-is-head-only' = '`github\.pull-request-file-list` returns only the source-side blob, so every base-side blob and\s*every unchanged-context blob is resolved through this chain\.'
+        'resolution-blocks' = 'A missing, truncated, or ambiguous\s*resolution that neither the tree read nor the single-path item read can settle blocks the run\.'
+        'anchors-from-diff' = 'Every anchor comes from `diff\.compute` over the bundle''s own base-side and source-side blobs\.'
+        'never-from-checkout' = 'Never derive an anchor from a checkout, an index, a working tree, or a provider-supplied patch,\s*because a provider patch is omitted or truncated for large files\.'
+        'context-pinned'    = 'Each of those paths is resolved at the pinned\s*base revision through `item-read` or `tree-read` and read with `blob-read`'
+        'context-unresolved' = 'an unchanged-context\s*path that cannot be resolved immutably is omitted from the bundle and recorded as unresolved,\s*never filled in from a checkout'
+    }
+    Test-ReviewStatements -SkillText $SkillText -Check 'review-resolution' -Required $required -Violations $Violations
+
+    $blocks = @{}
+    foreach ($block in (Get-ReviewContractBlocks -Root $Root)) {
+        if ($block.Fields.Contains('operation')) { $blocks[$block.Fields['operation']] = $block }
+    }
+
+    # A truncated recursive tree is silently incomplete, so it must never be an authority.
+    if ($blocks.ContainsKey('github.tree-read')) {
+        $tree = $blocks['github.tree-read']
+        if ($tree.Fields['resource'] -notmatch 'recursive=1') {
+            Add-Violation $Violations 'review-resolution' "'github.tree-read' does not request the recursive tree."
+        }
+        if ($tree.Fields['output'] -notmatch 'truncated' -or $tree.Fields['output'] -notmatch 'must not be used as an authority') {
+            Add-Violation $Violations 'review-resolution' "'github.tree-read' does not reject a truncated tree as an authority for any path."
+        }
+        if ($tree.Fields['output'] -notmatch 'fall back to `github\.item-read`') {
+            Add-Violation $Violations 'review-resolution' "'github.tree-read' declares no single-path fallback for a truncated tree."
+        }
+    }
+    if ($blocks.ContainsKey('ado.tree-read')) {
+        if ($blocks['ado.tree-read'].Fields['output'] -notmatch 'fall back to `ado\.item-read`') {
+            Add-Violation $Violations 'review-resolution' "'ado.tree-read' declares no single-path fallback for an incomplete tree."
+        }
+    }
+    if ($blocks.ContainsKey('ado.item-read')) {
+        $item = $blocks['ado.item-read']
+        foreach ($token in @('versionDescriptor.version=<commit-id>', 'versionDescriptor.versionType=commit')) {
+            if ($item.Fields['method'] -notmatch [regex]::Escape($token)) {
+                Add-Violation $Violations 'review-resolution' "'ado.item-read' does not pin its version descriptor with '$token'."
+            }
+        }
+    }
+    if ($blocks.ContainsKey('github.item-read')) {
+        if ($blocks['github.item-read'].Fields['resource'] -notmatch 'ref=\{commit_sha\}') {
+            Add-Violation $Violations 'review-resolution' "'github.item-read' does not pin its ref to an immutable commit SHA."
+        }
+    }
+    foreach ($operation in @('github.commit-read', 'ado.commit-read')) {
+        if ($blocks.ContainsKey($operation) -and $blocks[$operation].Fields['output'] -notmatch 'never a branch, tag, or `HEAD`') {
+            Add-Violation $Violations 'review-resolution' "'$operation' does not forbid resolving a mutable ref."
+        }
+    }
+
+    if ($blocks.ContainsKey('diff.compute')) {
+        $diff = $blocks['diff.compute']
+        foreach ($flag in @('--no-index', '--unified=0', 'diff\.renames=false', 'core\.autocrlf=false')) {
+            if ($diff.Fields['method'] -notmatch $flag) {
+                Add-Violation $Violations 'review-resolution' "'diff.compute' is not deterministic: its method omits '$($flag -replace '\\', '')'."
+            }
+        }
+        $diffOutput = $diff.Fields['output']
+        $diffRules = [ordered]@{
+            'hunk-ranges'   = 'orig-start'
+            'left-side'     = 'deleted and edited-removed lines project to the original side'
+            'right-side'    = 'added, copied, edited-added, and context lines project to the current side'
+            'added-entry'   = 'an added entry has no base blob so every line is current-side'
+            'deleted-entry' = 'a deleted entry has no source blob so every line is original-side'
+            'rename'        = 'a rename is diffed only as its separately approved side''s blob pair'
+            'binary'        = 'a binary or Git LFS entry yields no line anchor and is eligible only for the file-level anchor'
+            'exit-codes'    = 'exit code 0 means identical and 1 means differing while any other exit code blocks'
+            'no-checkout'   = 'no checkout, index, working tree, or provider-supplied patch is ever consulted'
+        }
+        foreach ($id in $diffRules.Keys) {
+            if ($diffOutput -notmatch [regex]::Escape($diffRules[$id])) {
+                Add-Violation $Violations 'review-resolution' "'diff.compute' does not define '$id'."
+            }
+        }
+    }
+    else {
+        Add-Violation $Violations 'review-resolution' "There is no 'diff.compute' contract, so no deterministic pinned diff produces the anchors posting validates."
+    }
+}
+
+function Test-ReviewSerializerContracts {
+    param([string] $Root, [string] $SkillText, [System.Collections.Generic.List[string]] $Violations)
+
+    $required = [ordered]@{
+        'serializer-referenced' = 'Read\s*`reference/commands\.md` blocks `request\.canonicalize`, `response\.project-github`, and\s*`response\.project-ado`, and derive every digest and every preview only from them\.'
+        'single-serializer'   = '`request\.canonicalize` is the single deterministic serializer: it fixes member ordering,\s*escaping, and newline handling, preserves every code point above U\+001F literally, keeps a CRLF\s*as `\\r\\n`'
+        'set-digest'          = 'produces the SHA-256 that binds each request plus the set digest over the approved\s*route and order'
+        'github-frozen-bytes' = 'GitHub additionally freezes those exact wire bytes\.'
+        'ado-inverse-equality' = '`response\.project-ado` accepts a read-back only when the inverse projection is\s*byte-identical to the canonical approved bytes'
+        'github-equality'     = '`response\.project-github` requires the same\s*byte-identical equality against the frozen bytes'
+        'classify-by-projector' = 'Classify every candidate through `response\.project-github` or `response\.project-ado`,\s*never by eyeballing the response\.'
+    }
+    Test-ReviewStatements -SkillText $SkillText -Check 'review-serializer' -Required $required -Violations $Violations
+
+    $blocks = @{}
+    foreach ($block in (Get-ReviewContractBlocks -Root $Root)) {
+        if ($block.Fields.Contains('operation')) { $blocks[$block.Fields['operation']] = $block }
+    }
+
+    if (-not $blocks.ContainsKey('request.canonicalize')) {
+        Add-Violation $Violations 'review-serializer' "There is no 'request.canonicalize' contract, so the canonical approval serialization is prose only."
+    }
+    else {
+        $canon = $blocks['request.canonicalize']
+        $canonRules = [ordered]@{
+            'utf8-no-bom'      = 'UTF-8 with no BOM'
+            'member-order'     = 'object members in ascending Unicode code point order of their names'
+            'escaping'         = 'string escaping restricted to `\"`, `\\`, and `\u00xx` lowercase-hex for U+0000 through U+001F'
+            'literal-codepoints' = 'every code point above U+001F including non-ASCII, emoji, and astral-plane characters is emitted literally and preserved exactly'
+            'crlf-preserved'   = 'a CRLF inside a body stays `\r\n` and is never normalized to `\n`'
+            'surrogate-rejected' = 'an unpaired surrogate or a non-characters code point is rejected rather than repaired'
+            'reproducible'     = 're-serializing the same `ApprovedRequest` on any host must reproduce the same bytes'
+            'set-order'        = 'the set digest as the SHA-256 over the LF-joined per-request digests taken in approved route then approved zero-based order'
+        }
+        $canonText = ($canon.Body -join ' ')
+        foreach ($id in $canonRules.Keys) {
+            if ($canonText -notmatch [regex]::Escape($canonRules[$id])) {
+                Add-Violation $Violations 'review-serializer' "'request.canonicalize' does not bind '$id'."
+            }
+        }
+        foreach ($bound in @('adapter version and `access_digest`', 'the revision', 'the route and order', 'the neutral and projected anchor')) {
+            if ($canon.Fields['input'] -notmatch [regex]::Escape($bound)) {
+                Add-Violation $Violations 'review-serializer' "'request.canonicalize' no longer binds '$bound' into the canonical request."
+            }
+        }
+    }
+
+    foreach ($operation in @('response.project-github', 'response.project-ado')) {
+        if (-not $blocks.ContainsKey($operation)) {
+            Add-Violation $Violations 'review-serializer' "There is no '$operation' contract, so response equality is prose only."
+            continue
+        }
+        $projector = $blocks[$operation]
+        $text = ($projector.Body -join ' ')
+        if ($text -notmatch [regex]::Escape('run `request.canonicalize` over the projection')) {
+            Add-Violation $Violations 'review-serializer' "'$operation' does not re-serialize its projection through 'request.canonicalize'."
+        }
+        if ($text -notmatch [regex]::Escape('byte-identical')) {
+            Add-Violation $Violations 'review-serializer' "'$operation' does not require byte-identical equality."
+        }
+        if ($text -notmatch [regex]::Escape('zero, exactly one, or multiple')) {
+            Add-Violation $Violations 'review-serializer' "'$operation' does not classify zero, one, and multiple candidates."
+        }
+        if ($text -notmatch [regex]::Escape('only exactly one may be recorded `confirmed`')) {
+            Add-Violation $Violations 'review-serializer' "'$operation' does not restrict 'confirmed' to exactly one equal candidate."
+        }
+        if ($text -notmatch [regex]::Escape('projection and equality evidence journaled')) {
+            Add-Violation $Violations 'review-serializer' "'$operation' does not journal its projection and equality evidence."
+        }
+    }
+}
+
+function Test-ReviewLeaseAndJournal {
+    param([string] $Root, [string] $SkillText, [System.Collections.Generic.List[string]] $Violations)
+
+    $required = [ordered]@{
+        'acquire-cas'    = '`lease\.acquire` creates the record with `CreateNew`, so exactly one contender wins and every\s*other is denied\.'
+        'takeover-cas'   = '`lease\.takeover` is a compare-and-swap, not a plain replace: the contender first creates an\s*exclusive takeover claim, then re-reads and requires the lease to still be the exact expired\s*record it observed, then replaces it at a strictly higher epoch with a fresh owner token, then\s*re-reads and requires its own token and epoch back\.'
+        'loser-writes-nothing' = 'A contender that loses the claim, sees a\s*changed record, or fails the read-back writes nothing, so two contenders can never both believe\s*they took over\.'
+        'fence-before-send' = 'Run `lease\.fence` immediately before every provider send and immediately before every journal\s*write\.'
+        'stale-writer'   = 'A run whose persisted owner token or monotonic epoch no longer matches is a stale writer:\s*it sends nothing, writes no journal row, releases nothing, and records `blocked`\.'
+        'rows-stamped'   = 'Every journal\s*row carries the writing owner token and epoch, and `journal\.append` re-reads and merges before\s*replacing, so a full-journal write can never drop or downgrade another owner''s row\.'
+        'journal-create' = 'The first journal is created with `journal\.create` using `CreateNew`, because\s*`\[System\.IO\.File\]::Replace` requires an existing destination and can never create it\.'
+        'journal-append-later' = 'Every\s*later version goes through `journal\.append`\.'
+        'write-loop-fenced' = 'take a complete before inventory, pass\s*`lease\.fence`, append the journal row before sending, pass `lease\.fence` again, send exactly one\s*write'
+    }
+    Test-ReviewStatements -SkillText $SkillText -Check 'review-lease' -Required $required -Violations $Violations
+
+    $blocks = @{}
+    foreach ($block in (Get-ReviewContractBlocks -Root $Root)) {
+        if ($block.Fields.Contains('operation')) { $blocks[$block.Fields['operation']] = $block }
+    }
+
+    if (-not $blocks.ContainsKey('journal.create')) {
+        Add-Violation $Violations 'review-lease' "There is no 'journal.create' contract, so the first journal could never be created: 'File.Replace' requires an existing destination."
+    }
+    else {
+        $create = $blocks['journal.create']
+        if ($create.Fields['method'] -notmatch 'FileMode\]::CreateNew') {
+            Add-Violation $Violations 'review-lease' "'journal.create' does not create the first journal exclusively with 'CreateNew'."
+        }
+        if ($create.Fields['method'] -notmatch 'Flush\(\$true\)') {
+            Add-Violation $Violations 'review-lease' "'journal.create' does not flush the first journal to disk."
+        }
+        if ($create.Fields['output'] -notmatch [regex]::Escape('`[System.IO.File]::Replace` requires an existing destination')) {
+            Add-Violation $Violations 'review-lease' "'journal.create' does not state why 'File.Replace' cannot create the first journal."
+        }
+    }
+
+    if ($blocks.ContainsKey('journal.append')) {
+        $append = $blocks['journal.append']
+        if ($append.Fields['method'] -notmatch 'used only when the journal already exists') {
+            Add-Violation $Violations 'review-lease' "'journal.append' does not restrict itself to an existing journal."
+        }
+        if ($append.Fields['method'] -notmatch 'pass `lease\.fence`') {
+            Add-Violation $Violations 'review-lease' "'journal.append' does not fence against a stale writer before replacing the journal."
+        }
+        if ($append.Fields['method'] -notmatch 're-read the on-disk journal, merge this run''s rows into it') {
+            Add-Violation $Violations 'review-lease' "'journal.append' replaces the whole journal without re-reading and merging, so it can clobber another owner's rows."
+        }
+        foreach ($field in @('the writing owner token and monotonic epoch')) {
+            if ($append.Fields['input'] -notmatch [regex]::Escape($field)) {
+                Add-Violation $Violations 'review-lease' "'journal.append' rows are not stamped with '$field'."
+            }
+        }
+    }
+
+    if (-not $blocks.ContainsKey('lease.fence')) {
+        Add-Violation $Violations 'review-lease' "There is no 'lease.fence' contract, so a stale writer could send after losing the lease."
+    }
+    else {
+        $fence = $blocks['lease.fence']
+        if ($fence.Fields['output'] -notmatch 'immediately before every provider send and immediately before every journal write') {
+            Add-Violation $Violations 'review-lease' "'lease.fence' does not run before every provider send and every journal write."
+        }
+        if ($fence.Fields['output'] -notmatch 'stale writer that sends nothing') {
+            Add-Violation $Violations 'review-lease' "'lease.fence' does not stop a stale writer."
+        }
+    }
+
+    if ($blocks.ContainsKey('lease.takeover')) {
+        $takeover = $blocks['lease.takeover']
+        $takeoverText = ($takeover.Body -join ' ')
+        $takeoverRules = [ordered]@{
+            'claim-createnew' = 'create `<key>.takeover.<new-epoch>.claim` with `[System.IO.FileMode]::CreateNew`'
+            'reread-expired'  = 'require it to be byte-identical to the expired record this contender observed'
+            'higher-epoch'    = 'at a strictly higher monotonic epoch with a fresh owner token'
+            'read-back'       = 'require its owner token and epoch to be exactly the ones just written'
+            'loser-stops'     = 'writes nothing, and never proceeds, so two contenders can never both believe they took over'
+        }
+        foreach ($id in $takeoverRules.Keys) {
+            if ($takeoverText -notmatch [regex]::Escape($takeoverRules[$id])) {
+                Add-Violation $Violations 'review-lease' "'lease.takeover' is not a compare-and-swap: it does not define '$id'."
+            }
+        }
+    }
+
+    if ($blocks.ContainsKey('lease.acquire')) {
+        if ($blocks['lease.acquire'].Fields['output'] -notmatch 'exactly one contender creates the file') {
+            Add-Violation $Violations 'review-lease' "'lease.acquire' does not state that 'CreateNew' admits exactly one contender."
+        }
+    }
+}
+
+function Test-ReviewProbeAndPreflight {
+    param([string] $Root, [string] $SkillText, [System.Collections.Generic.List[string]] $Violations)
+
+    $required = [ordered]@{
+        'preflight-executed' = 'Run `terminal\.preflight` first and execute its checks; a narrative assurance is not a preflight\.'
+        'preflight-scope'    = 'It must prove a visible interactive terminal, a non-echoing secure prompt, process-scoped\s*environment injection, the platform access controls in `acl\.apply`, an effective PSReadLine\s*history policy that saves nothing, and that transcription is off\.'
+        'unreadable-not-off' = 'Transcription counts as proven\s*off only when the policy is readable and disabled; an unreadable policy is not proven off\.'
+        'preflight-blocks'   = 'Any\s*failure blocks before secret entry and before Azure DevOps acquisition, with no persistent login,\s*no fallback, and no attempt to override a mandatory host or group policy\.'
+        'in-terminal-reproof' = 'then re-prove inside that exact terminal that history saving and transcription are\s*disabled'
+        'probe-chain'        = '`terminal\.probe` then runs its complete ordered chain in this terminal: acting identity,\s*repository resolution, pull request and revision, iteration list, one paged change read, one\s*pinned item read with the blob read it resolves, and the complete thread inventory\.'
+        'probe-order'        = 'Repository\s*resolution precedes every route that needs a repository ID\.'
+        'probe-failure'      = 'Any failure, missing field, or\s*out-of-order step clears the credential and blocks\.'
+    }
+    Test-ReviewStatements -SkillText $SkillText -Check 'review-probe' -Required $required -Violations $Violations
+
+    $blocks = @{}
+    foreach ($block in (Get-ReviewContractBlocks -Root $Root)) {
+        if ($block.Fields.Contains('operation')) { $blocks[$block.Fields['operation']] = $block }
+    }
+
+    if (-not $blocks.ContainsKey('terminal.preflight')) {
+        Add-Violation $Violations 'review-probe' "There is no 'terminal.preflight' contract, so host capability is narrative only."
+    }
+    else {
+        $preflight = $blocks['terminal.preflight']
+        $preflightText = ($preflight.Body -join ' ')
+        $preflightRules = [ordered]@{
+            'before-secret'    = 'before any secret entry'
+            'visible-terminal' = 'a visible interactive terminal can be opened'
+            'secure-prompt'    = 'the session is interactive so `Read-Host -AsSecureString` cannot silently fall through'
+            'env-injection'    = 'process-scoped environment injection works on a disposable variable'
+            'history-policy'   = '(Get-PSReadLineOption).HistorySaveStyle'
+            'transcription'    = 'Policies\Microsoft\Windows\PowerShell\Transcription'
+            'unreadable-blocks' = 'an unreadable policy is not proven off and blocks'
+            'never-override'   = 'a mandatory host or group policy is never overridden, disabled, or worked around'
+        }
+        foreach ($id in $preflightRules.Keys) {
+            if ($preflightText -notmatch [regex]::Escape($preflightRules[$id])) {
+                Add-Violation $Violations 'review-probe' "'terminal.preflight' does not check '$id'."
+            }
+        }
+    }
+
+    if ($blocks.ContainsKey('terminal.launch')) {
+        $launch = $blocks['terminal.launch']
+        if ($launch.Fields['method'] -notmatch 'only after `terminal\.preflight` passes') {
+            Add-Violation $Violations 'review-probe' "'terminal.launch' does not require 'terminal.preflight' to pass first."
+        }
+        if ($launch.Fields['method'] -notmatch 're-read the transcription policy inside this exact terminal') {
+            Add-Violation $Violations 'review-probe' "'terminal.launch' never verifies inside the credential terminal that transcription is disabled."
+        }
+        if ($launch.Fields['output'] -notmatch 'not merely in the preflight shell') {
+            Add-Violation $Violations 'review-probe' "'terminal.launch' accepts the preflight shell's result instead of proving the credential terminal's own state."
+        }
+    }
+
+    if (-not $blocks.ContainsKey('terminal.probe')) {
+        Add-Violation $Violations 'review-probe' "There is no 'terminal.probe' contract."
+        return
+    }
+
+    # The probe must actually execute the whole ordered read chain, and must resolve the
+    # repository before any route that needs a repository ID.
+    $probeMethod = $blocks['terminal.probe'].Fields['method']
+    $positions = [ordered]@{}
+    foreach ($operation in $script:ReviewProbeChain) {
+        $index = $probeMethod.IndexOf('`' + $operation + '`', [System.StringComparison]::Ordinal)
+        if ($index -lt 0) {
+            Add-Violation $Violations 'review-probe' "'terminal.probe' never sends '$operation', so its probe is weaker than the one this skill promises."
+        }
+        else {
+            $positions[$operation] = $index
+        }
+    }
+    $previous = -1
+    $previousName = ''
+    foreach ($operation in $script:ReviewProbeChain) {
+        if (-not $positions.Contains($operation)) { continue }
+        if ($positions[$operation] -lt $previous) {
+            Add-Violation $Violations 'review-probe' "'terminal.probe' sends '$operation' before '$previousName', so a route runs before the IDs it needs are resolved."
+        }
+        $previous = $positions[$operation]
+        $previousName = $operation
+    }
+    if ($blocks['terminal.probe'].Fields['output'] -notmatch 'repository resolution precedes every route that needs a repository ID') {
+        Add-Violation $Violations 'review-probe' "'terminal.probe' does not require repository resolution before the routes that need a repository ID."
+    }
+}
+
+function Test-ReviewDecisionPredicate {
+    param([string] $Root, [string] $SkillText, [System.Collections.Generic.List[string]] $Violations)
+
+    $required = [ordered]@{
+        'final-predicate'  = 'Its baseline-relative final predicate must prove that no\s*submitted review and no pending review changed, that preexisting pending reviews remain\s*untouched, and that the aggregate review decision read by `github\.review-decision-read` before\s*and after the write loop is unchanged\.'
+        'never-inferred'   = 'That decision is never inferred from review rows or\s*branch policy, because the REST review rows do not carry it\.'
+        'ado-equivalent'   = 'Azure DevOps proves the equivalent\s*with `ado\.reviewer-vote-read` before and after\.'
+    }
+    Test-ReviewStatements -SkillText $SkillText -Check 'review-decision' -Required $required -Violations $Violations
+
+    $blocks = @{}
+    foreach ($block in (Get-ReviewContractBlocks -Root $Root)) {
+        if ($block.Fields.Contains('operation')) { $blocks[$block.Fields['operation']] = $block }
+    }
+
+    if (-not $blocks.ContainsKey('github.review-decision-read')) {
+        Add-Violation $Violations 'review-decision' "There is no 'github.review-decision-read' contract, so the final predicate would claim a review decision nothing ever observed."
+    }
+    else {
+        $decision = $blocks['github.review-decision-read']
+        if ($decision.Fields['method'] -notmatch 'reviewDecision') {
+            Add-Violation $Violations 'review-decision' "'github.review-decision-read' never asks the provider for 'reviewDecision'."
+        }
+        if ($decision.Fields['output'] -notmatch 'read here before and after the write loop and compared for equality') {
+            Add-Violation $Violations 'review-decision' "'github.review-decision-read' is not captured before and after the write loop."
+        }
+        if ($decision.Fields['output'] -notmatch 'never inferred from review states or branch policy') {
+            Add-Violation $Violations 'review-decision' "'github.review-decision-read' does not forbid inferring the decision."
+        }
+    }
+
+    if ($blocks.ContainsKey('github.review-inventory')) {
+        if ($blocks['github.review-inventory'].Fields['output'] -notmatch 'never carry the pull request''s aggregate review decision') {
+            Add-Violation $Violations 'review-decision' "'github.review-inventory' still implies its rows carry the aggregate review decision."
+        }
+    }
+
+    if (-not $blocks.ContainsKey('ado.reviewer-vote-read')) {
+        Add-Violation $Violations 'review-decision' "There is no 'ado.reviewer-vote-read' contract, so Azure DevOps has no equivalent decision baseline."
+    }
+    elseif ($blocks['ado.reviewer-vote-read'].Fields['output'] -notmatch 'read before and after the write loop and compared for equality') {
+        Add-Violation $Violations 'review-decision' "'ado.reviewer-vote-read' is not captured before and after the write loop."
+    }
+}
+
 function Test-ReviewCertificationLedger {
     param([string] $Root, [System.Collections.Generic.List[string]] $Violations)
 
@@ -1635,6 +2085,8 @@ function Test-ReviewCertificationLedger {
         'manifest-missing-blocks' = 'no\s*certification write may happen and the run reports `BLOCKED` naming the exact missing field'
         'pre-write-guard'    = 'The pre-write guard compares the manifest nonce, expiry, run, fixture IDs, acting identity, type,\s*and remaining count before every certification write, and blocks on the first mismatch\.'
         'never-real-target'  = 'A\s*manifest never authorizes a write against a real, shared, or production pull request\.'
+        'matrix-quotes-prd'  = 'Every row is one committed product acceptance criterion, quoted verbatim from the committed\s*product requirements document that governs this release\.'
+        'subcases-not-substitutes' = 'Internal entry, bundle, model, serializer, and\s*provider scenarios are subcases listed inside the criterion they serve; they never substitute for\s*it\.'
         'matrix-mandatory'   = 'Every row must pass on current `gh`, on current `az devops`, and on each MCP row this release\s*enables, before that adapter''s row may move to `enabled`\. A skipped row is a failed row\.'
         'top-override'       = 'Paging mechanics may use a small fixture with a certification-only `\$top` override\.'
         'cap-spot-check'     = 'The\s*authoritative 2,000 ceiling gets a separately recorded spot check, refreshed whenever the API\s*version changes\.'
@@ -1654,9 +2106,29 @@ function Test-ReviewCertificationLedger {
         }
     }
 
+    # Each row must quote the actual committed criterion, not merely carry the label. Derive the
+    # expected text from the PRD so a relabeled internal check cannot masquerade as a criterion.
+    $prdPath = Join-Path $Root 'docs/engineering-loop/pr-review-skill/prd.md'
+    $prdCriteria = @{}
+    if (Test-Path -LiteralPath $prdPath -PathType Leaf) {
+        $prdText = Get-NormalizedText -Path $prdPath
+        foreach ($match in [regex]::Matches($prdText, '- (AC[1-8])\. (.+?) \((?:G|NG|FR|EF|C)[^)]*\)')) {
+            $prdCriteria[$match.Groups[1].Value] = $match.Groups[2].Value.Trim()
+        }
+    }
+
     foreach ($criterion in @('AC1', 'AC2', 'AC3', 'AC4', 'AC5', 'AC6', 'AC7', 'AC8')) {
-        if (-not (Test-Contains $text ('\| ' + $criterion + ' \| [^|]+ \| [^|]+ \|'))) {
-            Add-Violation $Violations 'review-certification' "$relative has no live certification row for '$criterion'."
+        if (-not (Test-Contains $text ('\| ' + $criterion + ' \| "[^|]+" \| [^|]+ \| [^|]+ \|'))) {
+            Add-Violation $Violations 'review-certification' "$relative has no four-column live certification row quoting the committed PRD text for '$criterion'."
+            continue
+        }
+        if (-not $prdCriteria.ContainsKey($criterion)) {
+            Add-Violation $Violations 'review-certification' "The committed PRD has no parsable '$criterion', so $relative cannot be checked against it."
+            continue
+        }
+        $quoted = '\| ' + $criterion + ' \| "' + [regex]::Escape($prdCriteria[$criterion]) + '" \|'
+        if (-not (Test-Contains $text $quoted)) {
+            Add-Violation $Violations 'review-certification' "The '$criterion' row in $relative does not quote the committed PRD criterion text, so it maps a label rather than the criterion."
         }
     }
 }
@@ -1677,6 +2149,11 @@ function Test-ReviewSkill {
     Test-ReviewApprovalContract -SkillText $skillText -Violations $Violations
     Test-ReviewPostingContract -SkillText $skillText -Violations $Violations
     Test-ReviewVocabulary -SkillText $skillText -Violations $Violations
+    Test-ReviewResolutionAndDiff -Root $Root -SkillText $skillText -Violations $Violations
+    Test-ReviewSerializerContracts -Root $Root -SkillText $skillText -Violations $Violations
+    Test-ReviewLeaseAndJournal -Root $Root -SkillText $skillText -Violations $Violations
+    Test-ReviewProbeAndPreflight -Root $Root -SkillText $skillText -Violations $Violations
+    Test-ReviewDecisionPredicate -Root $Root -SkillText $skillText -Violations $Violations
     Test-ReviewContractBlocks -Root $Root -Violations $Violations
     Test-ReviewCertificationLedger -Root $Root -Violations $Violations
     Test-ReviewOperationBijection -Root $Root -Violations $Violations
@@ -1916,7 +2393,7 @@ function Copy-Fixture {
     param([string] $Source, [string] $Destination)
 
     New-Item -ItemType Directory -Path $Destination -Force | Out-Null
-    foreach ($relative in @('skills', 'tests', '.github')) {
+    foreach ($relative in @('skills', 'tests', '.github', 'docs')) {
         $from = Join-Path $Source $relative
         if (Test-Path -LiteralPath $from) {
             Copy-Item -LiteralPath $from -Destination $Destination -Recurse -Force
@@ -2329,8 +2806,8 @@ function Get-NegativeFixtures {
             Apply = {
                 param([string] $Dir)
                 Edit-FixtureFile -Path (Join-Path $Dir 'skills/pr-review/SKILL.md') `
-                    -Find 'Never infer the opposite side.' `
-                    -ReplaceWith 'Infer the opposite side when the target is not found.'
+                    -Find 'Never infer the opposite side, and never' `
+                    -ReplaceWith 'Infer the opposite side when the target is not found, and never'
             }
         },
         @{
@@ -2392,7 +2869,7 @@ function Get-NegativeFixtures {
             Apply = {
                 param([string] $Dir)
                 Edit-FixtureFile -Path (Join-Path $Dir 'skills/pr-review/SKILL.md') `
-                    -Find 'final predicate must prove that no submitted review, no review decision, and no pending review changed, and that preexisting pending reviews remain untouched' `
+                    -Find 'final predicate must prove that no submitted review and no pending review changed, that preexisting pending reviews remain untouched' `
                     -ReplaceWith 'final check confirms the comment appears'
             }
         },
@@ -2419,9 +2896,9 @@ function Get-NegativeFixtures {
             Apply = {
                 param([string] $Dir)
                 Edit-FixtureFile -Path (Join-Path $Dir 'skills/pr-review/reference/commands.md') `
-                    -Find 'method: gh api --hostname github.com --method GET
+                    -Find 'method: gh api --hostname github.com --method GET --header "Accept: application/vnd.github+json" --header "X-GitHub-Api-Version: 2022-11-28"
 resource: /user' `
-                    -ReplaceWith "method: gh api --hostname github.com --method GET --verbose`nresource: /user"
+                    -ReplaceWith "method: gh api --hostname github.com --method GET --verbose --header `"Accept: application/vnd.github+json`" --header `"X-GitHub-Api-Version: 2022-11-28`"`nresource: /user"
             }
         },
         @{
@@ -2510,6 +2987,260 @@ capability: general-create' `
                     -Find 'STATUS: REVIEW_COMPLETE' `
                     -ReplaceWith 'STATUS: DONE'
             }
+        },
+        @{
+            Name  = 'review-resolution-allows-mutable-ref'
+            Apply = {
+                param([string] $Dir)
+                Edit-FixtureFile -Path (Join-Path $Dir 'skills/pr-review/SKILL.md') `
+                    -Find 'Resolve every path to content only through the pinned revisions, never through a branch, a tag, `HEAD`, a fetch, or a working tree.' `
+                    -ReplaceWith 'Resolve every path to content through the pinned revisions when available, or through `HEAD` otherwise.'
+            }
+        },
+        @{
+            Name  = 'review-truncated-tree-trusted'
+            Apply = {
+                param([string] $Dir)
+                Edit-FixtureFile -Path (Join-Path $Dir 'skills/pr-review/reference/commands.md') `
+                    -Find 'so `truncated: true` means the listing is incomplete and it must not be used as an authority for any path — fall back to `github.item-read` for each individual path still needed' `
+                    -ReplaceWith 'so `truncated: true` is treated as a complete listing of the paths that matter'
+            }
+        },
+        @{
+            Name  = 'review-ado-item-version-unpinned'
+            Apply = {
+                param([string] $Dir)
+                Edit-FixtureFile -Path (Join-Path $Dir 'skills/pr-review/reference/commands.md') `
+                    -Find 'path=<path> versionDescriptor.version=<commit-id> versionDescriptor.versionType=commit versionDescriptor.versionOptions=none' `
+                    -ReplaceWith 'path=<path> versionDescriptor.version=<branch-name> versionDescriptor.versionOptions=none'
+            }
+        },
+        @{
+            Name  = 'review-github-accept-not-transmitted'
+            Apply = {
+                param([string] $Dir)
+                Edit-FixtureFile -Path (Join-Path $Dir 'skills/pr-review/reference/commands.md') `
+                    -Find 'method: gh api --hostname github.com --method GET --header "Accept: application/vnd.github+json" --header "X-GitHub-Api-Version: 2022-11-28"
+resource: /user' `
+                    -ReplaceWith "method: gh api --hostname github.com --method GET --header `"X-GitHub-Api-Version: 2022-11-28`"`nresource: /user"
+            }
+        },
+        @{
+            Name  = 'review-github-api-version-not-transmitted'
+            Apply = {
+                param([string] $Dir)
+                Edit-FixtureFile -Path (Join-Path $Dir 'skills/pr-review/reference/commands.md') `
+                    -Find 'method: gh api --hostname github.com --method GET --header "Accept: application/vnd.github+json" --header "X-GitHub-Api-Version: 2022-11-28"
+resource: /user' `
+                    -ReplaceWith "method: gh api --hostname github.com --method GET --header `"Accept: application/vnd.github+json`"`nresource: /user"
+            }
+        },
+        @{
+            Name  = 'review-ado-accept-media-type-dropped'
+            Apply = {
+                param([string] $Dir)
+                Edit-FixtureFile -Path (Join-Path $Dir 'skills/pr-review/reference/commands.md') `
+                    -Find '--area git --resource pullRequests --route-parameters project=<project-id> repositoryId=<repository-id> pullRequestId=<pull-request-id> --http-method GET --accept-media-type application/json --only-show-errors' `
+                    -ReplaceWith '--area git --resource pullRequests --route-parameters project=<project-id> repositoryId=<repository-id> pullRequestId=<pull-request-id> --http-method GET --only-show-errors'
+            }
+        },
+        @{
+            Name  = 'review-ado-encoding-mistaken-for-accept'
+            Apply = {
+                param([string] $Dir)
+                Edit-FixtureFile -Path (Join-Path $Dir 'skills/pr-review/reference/commands.md') `
+                    -Find '--area git --resource pullRequests --route-parameters project=<project-id> repositoryId=<repository-id> pullRequestId=<pull-request-id> --http-method GET --accept-media-type application/json --only-show-errors' `
+                    -ReplaceWith '--area git --resource pullRequests --route-parameters project=<project-id> repositoryId=<repository-id> pullRequestId=<pull-request-id> --http-method GET --accept-media-type application/json --encoding utf-8 --only-show-errors'
+            }
+        },
+        @{
+            Name  = 'review-diff-not-deterministic'
+            Apply = {
+                param([string] $Dir)
+                Edit-FixtureFile -Path (Join-Path $Dir 'skills/pr-review/reference/commands.md') `
+                    -Find 'diff --no-index --no-color --no-ext-diff --unified=0 --' `
+                    -ReplaceWith 'diff --no-index --no-color --no-ext-diff --'
+            }
+        },
+        @{
+            Name  = 'review-anchor-from-provider-patch'
+            Apply = {
+                param([string] $Dir)
+                Edit-FixtureFile -Path (Join-Path $Dir 'skills/pr-review/reference/commands.md') `
+                    -Find 'no checkout, index, working tree, or provider-supplied patch is ever consulted' `
+                    -ReplaceWith 'the provider-supplied patch may be consulted when it is available'
+            }
+        },
+        @{
+            Name  = 'review-serializer-normalizes-code-points'
+            Apply = {
+                param([string] $Dir)
+                Edit-FixtureFile -Path (Join-Path $Dir 'skills/pr-review/reference/commands.md') `
+                    -Find 'every code point above U+001F including non-ASCII, emoji, and astral-plane characters is emitted literally and preserved exactly' `
+                    -ReplaceWith 'non-ASCII code points are escaped to their nearest ASCII equivalent'
+            }
+        },
+        @{
+            Name  = 'review-projector-confirms-multiple'
+            Apply = {
+                param([string] $Dir)
+                Edit-FixtureFile -Path (Join-Path $Dir 'skills/pr-review/reference/commands.md') `
+                    -Find 'the count of equal candidates is reported as zero, exactly one, or multiple, and only exactly one may be recorded `confirmed`' `
+                    -ReplaceWith 'the count of equal candidates is reported and the first may be recorded `confirmed`'
+            }
+        },
+        @{
+            Name  = 'review-journal-first-create-replaced'
+            Apply = {
+                param([string] $Dir)
+                Edit-FixtureFile -Path (Join-Path $Dir 'skills/pr-review/reference/commands.md') `
+                    -Find 'create `<key>.journal.json` with `[System.IO.File]::Open($path,[System.IO.FileMode]::CreateNew,[System.IO.FileAccess]::Write,[System.IO.FileShare]::None)`' `
+                    -ReplaceWith 'create `<key>.journal.json` with `[System.IO.File]::Replace($temp,$path,$null)`'
+            }
+        },
+        @{
+            Name  = 'review-journal-append-clobbers-rows'
+            Apply = {
+                param([string] $Dir)
+                Edit-FixtureFile -Path (Join-Path $Dir 'skills/pr-review/reference/commands.md') `
+                    -Find 're-read the on-disk journal, merge this run''s rows into it' `
+                    -ReplaceWith 'serialize this run''s rows'
+            }
+        },
+        @{
+            Name  = 'review-takeover-not-compare-and-swap'
+            Apply = {
+                param([string] $Dir)
+                Edit-FixtureFile -Path (Join-Path $Dir 'skills/pr-review/reference/commands.md') `
+                    -Find 'require it to be byte-identical to the expired record this contender observed' `
+                    -ReplaceWith 'require it to still be expired'
+            }
+        },
+        @{
+            Name  = 'review-fence-not-before-every-send'
+            Apply = {
+                param([string] $Dir)
+                Edit-FixtureFile -Path (Join-Path $Dir 'skills/pr-review/reference/commands.md') `
+                    -Find 'this fence runs immediately before every provider send and immediately before every journal write' `
+                    -ReplaceWith 'this fence runs once at the start of the write loop'
+            }
+        },
+        @{
+            Name  = 'review-probe-skips-repository-resolution'
+            Apply = {
+                param([string] $Dir)
+                Edit-FixtureFile -Path (Join-Path $Dir 'skills/pr-review/reference/commands.md') `
+                    -Find 'the `ado.identity-read` command, the `ado.repository-read` command, the `ado.pull-request-read` command' `
+                    -ReplaceWith 'the `ado.identity-read` command, the `ado.pull-request-read` command'
+            }
+        },
+        @{
+            Name  = 'review-probe-out-of-order'
+            Apply = {
+                param([string] $Dir)
+                Edit-FixtureFile -Path (Join-Path $Dir 'skills/pr-review/reference/commands.md') `
+                    -Find 'the `ado.identity-read` command, the `ado.repository-read` command, the `ado.pull-request-read` command' `
+                    -ReplaceWith 'the `ado.identity-read` command, the `ado.pull-request-read` command, the `ado.repository-read` command'
+            }
+        },
+        @{
+            Name  = 'review-decision-inferred-from-review-rows'
+            Apply = {
+                param([string] $Dir)
+                Edit-FixtureFile -Path (Join-Path $Dir 'skills/pr-review/reference/commands.md') `
+                    -Find 'it is read here before and after the write loop and compared for equality, and it is never inferred from review states or branch policy' `
+                    -ReplaceWith 'it is derived from the review states already inventoried'
+            }
+        },
+        @{
+            Name  = 'review-preflight-accepts-unreadable-transcription'
+            Apply = {
+                param([string] $Dir)
+                Edit-FixtureFile -Path (Join-Path $Dir 'skills/pr-review/reference/commands.md') `
+                    -Find 'an unreadable policy is not proven off and blocks' `
+                    -ReplaceWith 'an unreadable policy is treated as off'
+            }
+        },
+        @{
+            Name  = 'review-launch-skips-in-terminal-policy-proof'
+            Apply = {
+                param([string] $Dir)
+                Edit-FixtureFile -Path (Join-Path $Dir 'skills/pr-review/reference/commands.md') `
+                    -Find 'then send `(Get-PSReadLineOption).HistorySaveStyle` and re-read the transcription policy inside this exact terminal and require both to still prove history saving and transcription off' `
+                    -ReplaceWith 'then trust the preflight result for this terminal'
+            }
+        },
+        @{
+            Name  = 'review-certification-ac1-mapping-relabelled'
+            Apply = {
+                param([string] $Dir)
+                Edit-FixtureFile -Path (Join-Path $Dir 'skills/pr-review/reference/certification.md') `
+                    -Find '| AC1 | "Given an ADO locator, selection derives its organization/host' `
+                    -ReplaceWith '| AC1 | "Entry-guard routing covers every tagged entry'
+            }
+        },
+        @{
+            Name  = 'review-certification-ac2-mapping-relabelled'
+            Apply = {
+                param([string] $Dir)
+                Edit-FixtureFile -Path (Join-Path $Dir 'skills/pr-review/reference/certification.md') `
+                    -Find '| AC2 | "An authenticated GitHub or ADO review displays revision' `
+                    -ReplaceWith '| AC2 | "Bundle admission blocks above every declared threshold'
+            }
+        },
+        @{
+            Name  = 'review-certification-ac3-mapping-relabelled'
+            Apply = {
+                param([string] $Dir)
+                Edit-FixtureFile -Path (Join-Path $Dir 'skills/pr-review/reference/certification.md') `
+                    -Find '| AC3 | "During exploration and composition, interaction remains in the coordinator' `
+                    -ReplaceWith '| AC3 | "The fixed-model table admits no runtime substitution'
+            }
+        },
+        @{
+            Name  = 'review-certification-ac4-mapping-relabelled'
+            Apply = {
+                param([string] $Dir)
+                Edit-FixtureFile -Path (Join-Path $Dir 'skills/pr-review/reference/certification.md') `
+                    -Find '| AC4 | "Changed/deferred pending sets create nothing until the displayed exact set is approved."' `
+                    -ReplaceWith '| AC4 | "The canonical serializer is deterministic across hosts."'
+            }
+        },
+        @{
+            Name  = 'review-certification-ac5-mapping-relabelled'
+            Apply = {
+                param([string] $Dir)
+                Edit-FixtureFile -Path (Join-Path $Dir 'skills/pr-review/reference/certification.md') `
+                    -Find '| AC5 | "With approval and no drift, shared-local-project/Git-common-directory runs coordinate' `
+                    -ReplaceWith '| AC5 | "The lease record carries every declared field'
+            }
+        },
+        @{
+            Name  = 'review-certification-ac6-mapping-relabelled'
+            Apply = {
+                param([string] $Dir)
+                Edit-FixtureFile -Path (Join-Path $Dir 'skills/pr-review/reference/certification.md') `
+                    -Find '| AC6 | "Given provider, acquisition, or review failure, the coordinator identifies the gap' `
+                    -ReplaceWith '| AC6 | "The operation registry and the contract blocks are a bijection'
+            }
+        },
+        @{
+            Name  = 'review-certification-ac7-mapping-relabelled'
+            Apply = {
+                param([string] $Dir)
+                Edit-FixtureFile -Path (Join-Path $Dir 'skills/pr-review/reference/certification.md') `
+                    -Find '| AC7 | "Drift or posting failure pauses with refreshed review or per-comment status' `
+                    -ReplaceWith '| AC7 | "The locator grammar rejects every disallowed host form'
+            }
+        },
+        @{
+            Name  = 'review-certification-ac8-mapping-relabelled'
+            Apply = {
+                param([string] $Dir)
+                Edit-FixtureFile -Path (Join-Path $Dir 'skills/pr-review/reference/certification.md') `
+                    -Find '| AC8 | "Given concurrent or resumed use, review context and credentials remain scoped' `
+                    -ReplaceWith '| AC8 | "The credential terminal allowlist is closed'
+            }
         }
     )
 }
@@ -2591,6 +3322,259 @@ function Invoke-HistoryScanProof {
     }
 }
 
+function Invoke-JournalCreateProof {
+    param([System.Collections.Generic.List[string]] $Failures)
+
+    # Runtime proof for the journal contracts: 'File.Replace' can never create the first journal,
+    # so 'journal.create' must open it exclusively, and 'journal.append' must re-read, merge, and
+    # replace without dropping an earlier owner's row.
+    $dir = Join-Path ([System.IO.Path]::GetTempPath()) ('validate-skills-journal-' + [Guid]::NewGuid().ToString('n'))
+    New-Item -ItemType Directory -Path $dir -Force | Out-Null
+    $journal = Join-Path $dir 'pr.journal.json'
+    $temp = Join-Path $dir 'pr.journal.json.tmp'
+
+    try {
+        $replaceRefused = $false
+        [System.IO.File]::WriteAllText($temp, '[]')
+        try { [System.IO.File]::Replace($temp, $journal, $null) }
+        catch { $replaceRefused = $true }
+        if (-not $replaceRefused) {
+            $Failures.Add('journal proof: [System.IO.File]::Replace created a missing destination, so this platform contradicts the journal.create rationale') | Out-Null
+        }
+
+        $firstVersion = '[{"owner":"owner-1","epoch":1,"item":"item-A","state":"attempt_started"}]'
+        $stream = [System.IO.File]::Open($journal, [System.IO.FileMode]::CreateNew, [System.IO.FileAccess]::Write, [System.IO.FileShare]::None)
+        try {
+            $bytes = [System.Text.Encoding]::UTF8.GetBytes($firstVersion)
+            $stream.Write($bytes, 0, $bytes.Length)
+            $stream.Flush($true)
+        }
+        finally { $stream.Dispose() }
+
+        $created = [System.IO.File]::ReadAllText($journal) -eq $firstVersion
+        if (-not $created) {
+            $Failures.Add('journal proof: journal.create did not produce a readable first journal') | Out-Null
+        }
+
+        $secondCreateRefused = $false
+        try {
+            $again = [System.IO.File]::Open($journal, [System.IO.FileMode]::CreateNew, [System.IO.FileAccess]::Write, [System.IO.FileShare]::None)
+            $again.Dispose()
+        }
+        catch { $secondCreateRefused = $true }
+        if (-not $secondCreateRefused) {
+            $Failures.Add('journal proof: a second CreateNew succeeded, so the first journal is not created exactly once') | Out-Null
+        }
+
+        $existing = @([System.IO.File]::ReadAllText($journal) | ConvertFrom-Json)
+        $merged = @($existing) + @([pscustomobject]@{ owner = 'owner-2'; epoch = 2; item = 'item-B'; state = 'attempt_started' })
+        $payload = ($merged | ConvertTo-Json -Compress -Depth 5)
+        $stream = [System.IO.File]::Open($temp, [System.IO.FileMode]::Create, [System.IO.FileAccess]::Write, [System.IO.FileShare]::None)
+        try {
+            $bytes = [System.Text.Encoding]::UTF8.GetBytes($payload)
+            $stream.Write($bytes, 0, $bytes.Length)
+            $stream.Flush($true)
+        }
+        finally { $stream.Dispose() }
+        [System.IO.File]::Replace($temp, $journal, $null)
+
+        $readBack = @([System.IO.File]::ReadAllText($journal) | ConvertFrom-Json)
+        $keptFirst = @($readBack | Where-Object { $_.item -eq 'item-A' -and $_.state -eq 'attempt_started' }).Count -eq 1
+        $addedSecond = @($readBack | Where-Object { $_.item -eq 'item-B' -and $_.state -eq 'attempt_started' }).Count -eq 1
+        if (-not $keptFirst) {
+            $Failures.Add('journal proof: the update dropped the earlier owner''s attempt_started row') | Out-Null
+        }
+        if (-not $addedSecond) {
+            $Failures.Add('journal proof: the update did not persist the new attempt_started row') | Out-Null
+        }
+
+        if ($replaceRefused -and $created -and $secondCreateRefused -and $keptFirst -and $addedSecond) {
+            Write-Host '  PASS journal create/update proof (Replace refused a missing destination, CreateNew made the first journal exactly once, and the merged update kept both attempt_started rows)'
+            return $true
+        }
+
+        Write-Host '  FAIL journal create/update proof'
+        return $true
+    }
+    finally {
+        if (Test-Path -LiteralPath $dir) {
+            Remove-Item -LiteralPath $dir -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
+}
+
+$script:LeaseContenderScript = @'
+param([string] $Dir, [string] $Token, [string] $ResultPath, [string] $StartAtUtc)
+
+Set-StrictMode -Version Latest
+$ErrorActionPreference = 'Stop'
+
+$lease = Join-Path $Dir 'pr.lease.json'
+$journal = Join-Path $Dir 'pr.journal.json'
+$outcome = 'denied'
+$reason = 'not-attempted'
+
+try {
+    $startAt = [datetime]::Parse($StartAtUtc, [cultureinfo]::InvariantCulture, [System.Globalization.DateTimeStyles]::RoundtripKind)
+    while ([datetime]::UtcNow -lt $startAt) { }
+
+    $observed = [System.IO.File]::ReadAllBytes($lease)
+    $record = [System.Text.Encoding]::UTF8.GetString($observed) | ConvertFrom-Json
+    $nextEpoch = [int] $record.epoch + 1
+    $claimPath = Join-Path $Dir ('pr.takeover.' + $nextEpoch + '.claim')
+
+    $claim = $null
+    try {
+        $claim = [System.IO.File]::Open($claimPath, [System.IO.FileMode]::CreateNew, [System.IO.FileAccess]::Write, [System.IO.FileShare]::None)
+    }
+    catch {
+        $reason = 'claim-lost'
+    }
+
+    if ($null -ne $claim) {
+        try {
+            $current = [System.IO.File]::ReadAllBytes($lease)
+            if ([Convert]::ToBase64String($current) -ne [Convert]::ToBase64String($observed)) {
+                $reason = 'record-changed'
+            }
+            else {
+                $next = [ordered]@{ owner = $Token; epoch = $nextEpoch; run = $Token }
+                $payload = ($next | ConvertTo-Json -Compress)
+                $temp = Join-Path $Dir ('pr.lease.' + $Token + '.tmp')
+                $stream = [System.IO.File]::Open($temp, [System.IO.FileMode]::Create, [System.IO.FileAccess]::Write, [System.IO.FileShare]::None)
+                try {
+                    $bytes = [System.Text.Encoding]::UTF8.GetBytes($payload)
+                    $stream.Write($bytes, 0, $bytes.Length)
+                    $stream.Flush($true)
+                }
+                finally { $stream.Dispose() }
+                [System.IO.File]::Replace($temp, $lease, $null)
+
+                $persisted = [System.Text.Encoding]::UTF8.GetString([System.IO.File]::ReadAllBytes($lease)) | ConvertFrom-Json
+                if ($persisted.owner -ne $Token -or [int] $persisted.epoch -ne $nextEpoch) {
+                    $reason = 'read-back-mismatch'
+                }
+                else {
+                    # lease.fence, then journal-before-send with a re-read and merge.
+                    $fence = [System.Text.Encoding]::UTF8.GetString([System.IO.File]::ReadAllBytes($lease)) | ConvertFrom-Json
+                    if ($fence.owner -ne $Token -or [int] $fence.epoch -ne $nextEpoch) {
+                        $reason = 'fence-rejected'
+                    }
+                    else {
+                        $rows = @([System.IO.File]::ReadAllText($journal) | ConvertFrom-Json)
+                        $rows = @($rows) + @([pscustomobject]@{ owner = $Token; epoch = $nextEpoch; item = 'item-B'; state = 'attempt_started' })
+                        $journalTemp = Join-Path $Dir ('pr.journal.' + $Token + '.tmp')
+                        $stream = [System.IO.File]::Open($journalTemp, [System.IO.FileMode]::Create, [System.IO.FileAccess]::Write, [System.IO.FileShare]::None)
+                        try {
+                            $bytes = [System.Text.Encoding]::UTF8.GetBytes(($rows | ConvertTo-Json -Compress -Depth 5))
+                            $stream.Write($bytes, 0, $bytes.Length)
+                            $stream.Flush($true)
+                        }
+                        finally { $stream.Dispose() }
+                        [System.IO.File]::Replace($journalTemp, $journal, $null)
+                        $outcome = 'won'
+                        $reason = 'takeover-complete'
+                    }
+                }
+            }
+        }
+        finally { $claim.Dispose() }
+    }
+}
+catch {
+    $reason = 'error: ' + $_.Exception.Message
+}
+
+[System.IO.File]::WriteAllText($ResultPath, ([ordered]@{ token = $Token; outcome = $outcome; reason = $reason } | ConvertTo-Json -Compress))
+'@
+
+function Invoke-LeaseTakeoverProof {
+    param([System.Collections.Generic.List[string]] $Failures)
+
+    $pwsh = (Get-Process -Id $PID).Path
+    if ([string]::IsNullOrWhiteSpace($pwsh)) {
+        Write-Host '  SKIP two-process lease takeover proof (cannot resolve the current PowerShell host)'
+        return $false
+    }
+
+    $dir = Join-Path ([System.IO.Path]::GetTempPath()) ('validate-skills-lease-' + [Guid]::NewGuid().ToString('n'))
+    New-Item -ItemType Directory -Path $dir -Force | Out-Null
+
+    try {
+        $lease = Join-Path $dir 'pr.lease.json'
+        $journal = Join-Path $dir 'pr.journal.json'
+        # An expired epoch-1 record left behind by a crashed run, plus its unfinished row.
+        [System.IO.File]::WriteAllText($lease, '{"owner":"owner-0","epoch":1,"run":"run-0"}')
+        [System.IO.File]::WriteAllText($journal, '[{"owner":"owner-0","epoch":1,"item":"item-A","state":"attempt_started"}]')
+
+        $contender = Join-Path $dir 'contender.ps1'
+        [System.IO.File]::WriteAllText($contender, $script:LeaseContenderScript)
+
+        $startAt = [datetime]::UtcNow.AddSeconds(2).ToString('o')
+        $processes = @()
+        foreach ($token in @('owner-A', 'owner-B')) {
+            $resultPath = Join-Path $dir ("result-$token.json")
+            $processes += Start-Process -FilePath $pwsh -PassThru -WindowStyle Hidden -ArgumentList @(
+                '-NoProfile', '-NonInteractive', '-File', $contender, '-Dir', $dir, '-Token', $token,
+                '-ResultPath', $resultPath, '-StartAtUtc', $startAt
+            )
+        }
+        foreach ($process in $processes) { $process.WaitForExit(60000) | Out-Null }
+
+        $results = @()
+        foreach ($token in @('owner-A', 'owner-B')) {
+            $resultPath = Join-Path $dir ("result-$token.json")
+            if (-not (Test-Path -LiteralPath $resultPath -PathType Leaf)) {
+                $Failures.Add("lease proof: contender '$token' produced no result file") | Out-Null
+                continue
+            }
+            $results += ([System.IO.File]::ReadAllText($resultPath) | ConvertFrom-Json)
+        }
+
+        $winners = @($results | Where-Object { $_.outcome -eq 'won' })
+        $exactlyOneWinner = $winners.Count -eq 1
+        if (-not $exactlyOneWinner) {
+            $Failures.Add("lease proof: expected exactly one takeover winner but observed $($winners.Count)") | Out-Null
+        }
+
+        $persisted = [System.IO.File]::ReadAllText($lease) | ConvertFrom-Json
+        $leaseMatchesWinner = $exactlyOneWinner -and $persisted.owner -eq $winners[0].token -and [int] $persisted.epoch -eq 2
+        if (-not $leaseMatchesWinner) {
+            $Failures.Add('lease proof: the persisted lease record does not name the single winner at the higher epoch') | Out-Null
+        }
+
+        $rows = @([System.IO.File]::ReadAllText($journal) | ConvertFrom-Json)
+        $priorRowKept = @($rows | Where-Object { $_.item -eq 'item-A' -and $_.state -eq 'attempt_started' }).Count -eq 1
+        $winnerRows = @($rows | Where-Object { $_.item -eq 'item-B' -and $_.state -eq 'attempt_started' })
+        $exactlyOneWinnerRow = $winnerRows.Count -eq 1
+        if (-not $priorRowKept) {
+            $Failures.Add('lease proof: the takeover clobbered the crashed run''s attempt_started row') | Out-Null
+        }
+        if (-not $exactlyOneWinnerRow) {
+            $Failures.Add("lease proof: expected exactly one new attempt_started row but observed $($winnerRows.Count)") | Out-Null
+        }
+
+        # A loser that still believes it holds the lease must fail the fence and write nothing.
+        $staleFencePasses = ($persisted.owner -eq 'owner-0' -and [int] $persisted.epoch -eq 1)
+        if ($staleFencePasses) {
+            $Failures.Add('lease proof: a stale epoch-1 owner would still pass lease.fence') | Out-Null
+        }
+
+        if ($exactlyOneWinner -and $leaseMatchesWinner -and $priorRowKept -and $exactlyOneWinnerRow -and -not $staleFencePasses) {
+            Write-Host "  PASS two-process lease takeover proof (winner $($winners[0].token) at epoch 2; the other contender recorded '$(@($results | Where-Object { $_.outcome -ne 'won' })[0].reason)', no attempt_started row was lost, and the stale owner fails the fence)"
+            return $true
+        }
+
+        Write-Host '  FAIL two-process lease takeover proof'
+        return $true
+    }
+    finally {
+        if (Test-Path -LiteralPath $dir) {
+            Remove-Item -LiteralPath $dir -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
+}
+
 function Invoke-SelfTest {
     param([string] $Root)
 
@@ -2598,6 +3582,7 @@ function Invoke-SelfTest {
     $sandbox = Join-Path ([System.IO.Path]::GetTempPath()) ('validate-skills-selftest-' + [Guid]::NewGuid().ToString('n'))
     $failures = [System.Collections.Generic.List[string]]::new()
     $historyProofRan = $false
+    $leaseProofRan = $false
     $negatives = Get-NegativeFixtures
 
     try {
@@ -2626,6 +3611,8 @@ function Invoke-SelfTest {
         }
 
         $historyProofRan = Invoke-HistoryScanProof -Failures $failures
+        Invoke-JournalCreateProof -Failures $failures | Out-Null
+        $leaseProofRan = Invoke-LeaseTakeoverProof -Failures $failures
     }
     finally {
         if (Test-Path -LiteralPath $sandbox) {
@@ -2635,7 +3622,8 @@ function Invoke-SelfTest {
 
     if ($failures.Count -eq 0) {
         $proofNote = if ($historyProofRan) { ' and the history-aware secret-scan proof held' } else { ' (history-aware secret-scan proof skipped: no git)' }
-        Write-Host "SELF-TEST PASS: clean fixture accepted, $($negatives.Count) negative fixtures rejected$proofNote."
+        $leaseNote = if ($leaseProofRan) { ', the journal create/update proof and the two-process lease takeover proof held' } else { ', the journal create/update proof held (lease takeover proof skipped)' }
+        Write-Host "SELF-TEST PASS: clean fixture accepted, $($negatives.Count) negative fixtures rejected$proofNote$leaseNote."
         return 0
     }
 
