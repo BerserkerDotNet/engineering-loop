@@ -7,160 +7,145 @@
 
 ## Summary and decisions
 
-Ship one plugin extension at `extensions/loop-execution-visualizer/extension.mjs`, using
-Node 22+ built-ins only. It contributes namespaced report/control tools and an accessible
-canvas backed by loopback HTTP/SSE. Every shipped skill uses one shared, versioned contract;
-skill-specific text declares only its DAG and semantic transitions. Extension processes
-append immutable records to the host-provided plugin-data directory (expected
-`COPILOT_PLUGIN_DATA`; no discovery-folder/home-directory fallback).
+Ship one Node 22+ built-ins-only plugin extension at
+`extensions/loop-execution-visualizer/extension.mjs`. Namespaced tools, verified hooks/events
+and an accessible loopback/SSE canvas share versioned contracts and immutable host plugin
+data. A pinned Orchestrator controller lane sits above the horizontal child-stage DAG.
+Workflow state is independent from host activity: an idle host can be waiting on children,
+and only orchestrator-authoritative `run.outcome` can complete the run.
 
-Verified hooks/events supply lifecycle; skill reports add meaning. Target processes consume
-authorized outbox records through local `session.send`. Layout follows Azure/GitHub pipeline
-graphs, correlation follows OpenTelemetry, and discovery/detail follows Temporal Visibility.
-
-Tokens bind asserted app IDs but do not prove host authorization; content/control fail closed
-until Slice 0 proves host-equivalent project authorization. Full authorized content remains
-default with bounded retention, not redaction/delete UI. Caller IDs, user-scope fallback,
-discovery-folder storage and AI-credit-only currency remain rejected.
+Child failures, loss and expected-envelope gaps open durable incidents. While its session
+exists, the orchestrator extension wakes it through local `session.send`; otherwise the UI
+shows `Orchestrator unavailable - recovery pending` and replay occurs on resume. This is
+recovery notification, not approval, authority or an impossible host-closed guarantee.
 
 ## Requirements and current path matrix
 
 | Requirement | Mechanism | Verification |
 |---|---|---|
-| FR1-FR3, EF3, AC1, AC6 | Normative append-only DAG/attempt/state schemas preserve planned and dynamically-added nodes, dependencies, parallelism, focus, propagation and replacements; telemetry health is separate. | Both skill fixtures add and update a node live, retain every attempt, and replay the same graph. |
-| FR4-FR6, C3, AC2 | Independently authorize metadata, content and control; ordered events expose reported model/content/progress/history/output/references or `Unavailable`. | Same-repo/different-project, forged identity and authorized detail tests. |
-| FR7-FR8, EF2, AC3 | Authorized durable outbox, target-local exact-body `session.send`, TTL and one terminal audit state; never approval/authority. | Real child plus duplicate/stale/restart/failure matrix; ledger unchanged. |
-| FR9-FR10, AC4 | Wall-clock run interval; deduplicated actual/estimated/partial cost with captured price basis. | Overlap/wait fake clock and hand-calculated cost fixtures. |
-| EF1, C1-C2, AC5, AC7 | Direct callbacks persist/stream immediately; 2-second heartbeat marks `connection_lost` after 5 seconds without inventing failure; reporting stays optional. | Error, process-kill, recovery, disabled-extension and malformed/delayed telemetry tests. |
-| C4, AC8 | Semantic SVG plus list equivalent, keyboard focus, ARIA relationships/live regions, app tokens, forced colors and reduced motion. | Browser runtime, keyboard and accessibility snapshots. |
+| FR1-FR3, EF3, AC1/6 | Append-only planned/dynamic DAG, controller lane, nested attempts and explicit run outcome preserve topology, parallelism and history. | Both skill fixtures add/update/replay nodes while controller remains nonterminal. |
+| FR4-FR6, C3, AC2 | Independent metadata/content/control authorization; ordered controller/stage inspectors expose all reported data or `Unavailable`. | Identity-bound detail and orchestrator/child inspection tests. |
+| FR7-FR8, EF2, AC3 | Target-local outbox and incident wake paths use exact bodies, TTL, audit states and never alter workflow authority. | Real delivery, incident injection and unchanged-ledger tests. |
+| FR9-FR10, AC4 | Wall-clock elapsed and deduplicated actual/estimated/partial currency preserve captured price basis. | Overlap/wait and historical cost calculations. |
+| EF1, C1-C2, AC5/7 | Direct callbacks persist/stream; 2-second heartbeats produce health-only loss after 5 seconds; absence is optional. | Error/kill/recovery/disabled-extension tests. |
+| C4, AC8 | Text/icon states, semantic graph/list, keyboard controls, live regions, high contrast and reduced motion. | Browser and accessibility runtime evidence. |
 
-Both skills coordinate app sessions, ledgers and sequenced envelopes but lack shared
-telemetry. Verified SDK surfaces are plugin extensions, canvas, runtime identity, hooks/events,
-model listing and usage metrics; some events are ephemeral and the iframe has no host bridge.
+Both skills already coordinate app sessions, ledgers, approvals, recovery and sequenced
+terminal envelopes. The extension adds observation/recovery without replacing those rules.
 
 ## End-to-end flow and entry points
 
-1. Each Phase 0 registers canonical run/project/orchestrator identity and the planned DAG.
-   For an unplanned stage, only the active orchestrator appends `dag.node_added` before
-   `create_session`; `dag.declared` and history stay immutable. Every child gets an attempt
-   on a known node and one-use token. All artifact, critic, wait, refinement, retry,
-   replacement, implementation, authority/PR, terminal and retro paths map to shared events.
-2. `onSessionStart` consumes the token and binds the host-trusted runtime session ID and
-   working directory to coordinator-asserted app project-session ID, canonical
-   project/repository and attempt. Resume may rebind a new runtime ID only with a fresh
-   orchestrator-issued token; replacement revokes the old attempt/token. Replay fails.
-3. Each enrolled extension directly subscribes to Slice-0-verified `onSessionStart`,
+1. Each Phase 0 registers canonical run/project/orchestrator identity, initial DAG and
+   expected child/status/sequence ledger. Only the active orchestrator may append immutable
+   `dag.node_added` before an unplanned `create_session`; attempts bind to known logical nodes.
+   Every child receives a one-use enrollment token. All artifact, critic, wait, retry,
+   replacement, implementation, delivery and retro paths map to shared events.
+2. `onSessionStart` token-binds host runtime ID/working directory to asserted app
+   project-session, project/repository, node and attempt. Resume requires a fresh
+   orchestrator token; replacement revokes the prior attempt/token.
+3. Enrolled processes subscribe directly to Slice-0-verified `onSessionStart`,
    `user.message`, `assistant.message`, tool start/complete, `onPostToolUseFailure`,
    `session.idle`, `session.error`, `onErrorOccurred`, `onSessionEnd` and
-   `session.shutdown`. Callbacks append before returning and trigger SSE; normal revisions
-   coalesce at most 100 ms, while errors/loss bypass coalescing. Target callback-to-visible
-   revision is <=1 second locally. Semantic reports add phase/progress/DAG/outcome.
-4. Opening from the active orchestrator deep-links to its current run; Back/All runs opens
-   filtered history. A top summary shows skill/run, overall state, Live/health, wall time,
-   cost basis/coverage and freshness. The primary graph is horizontal left-to-right with
-   zoom, pan, Fit graph and equivalent keyboard traversal.
-5. Compact logical-stage cards show name, state text/icon, model, duration, cost
-   actual/estimated/partial label, plan progress, freshness/health and focus. Attempts expand
-   inside one card; failed/replaced history remains. Dynamic cards use neutral "Added during
-   run" with reason/source. Selection opens a resizable right inspector without resetting the
-   graph. Tabs are Overview, Plan, Prompt, Timeline, Messages, Usage/Cost, Outputs and
-   Diagnostics; authorized content is full and missing fields say `Unavailable`. A persistent
-   composer targets orchestrator or active child and shows pending/delivered/failed. Under
-   720 px the inspector overlays full-width; closing restores graph viewport. A
-   keyboard-operable splitter sizes wider layouts.
-6. The target process claims an authorized outbox item, revalidates attempt/TTL, sends exact
-   bytes locally, and marks delivered only on host message-ID acceptance. Failures are
-   terminally audited, never inferred.
+   `session.shutdown`. Callbacks append before returning and trigger SSE. Normal revisions
+   coalesce <=100 ms; errors/incidents/loss bypass coalescing; callback-to-visible target is
+   <=1 second locally.
+4. Opening from the active orchestrator deep-links to the current run; Back/All runs opens
+   filtered history. The top summary shows skill/run, run state, Live/health, wall time, cost
+   basis/coverage, freshness and incident count. A pinned controller card (not a DAG node)
+   above the
+   left-to-right DAG shows orchestrator model/session, workflow phase/focus, child-state
+   counts, pending approvals/input/incidents, elapsed/cost, freshness and separate host activity.
+   Dashed/labeled controller ownership/notification relations are not dependency edges.
+5. Compact stage cards show name, state text/icon, model, duration, cost label, plan
+   progress, health and focus. Attempts expand inside one card. Dynamic nodes have neutral
+   `Added during run` reason/source. Selection opens a resizable right inspector with
+   Overview, Plan, Prompt, Timeline, Messages, Usage/Cost, Outputs and Diagnostics; full authorized content is default and missing fields say `Unavailable`. Selecting the
+   controller shows equivalent orchestrator and incident/recovery history. The persistent
+   composer targets orchestrator or active child and shows pending/delivered/failed. Graph
+   zoom/pan/Fit, traversal and splitter are keyboard equivalent; below 720 px the inspector
+   overlays full-width and closing restores viewport.
+6. On authoritative child failure, 5-second loss, or expected terminal-envelope gap, append
+   an incident. The enrolled orchestrator process claims it and calls its local
+   `session.send` with an unguessable machine marker plus exact run/node/attempt/event/context.
+   Host message-ID acceptance means delivered, not processed. The skill validates the marker,
+   expected child/status/sequence and orchestrator epoch; only that validated machine incident
+   envelope is accepted. It acknowledges once, inspects
+   authoritative state, applies existing retry/replacement/block/input rules, then resolves
+   or retains it.
 
-Phase 0 checks once for the reporter. If absent, the skill omits enrollment/reporting and
-runs unchanged without missing-tool retries.
+Phase 0 checks once for reporter availability. If absent, enrollment/reporting is omitted and
+the workflow runs unchanged without missing-tool retries.
 
 ## Contracts and invariants
 
-Checked-in `contracts/v1/{event,run,dag,outbox}.schema.json`, `states.json` and
-`coverage.json` are normative.
+Checked-in `contracts/v1/{event,run,dag,outbox,incident}.schema.json`, `states.json`,
+`authority.json` and `coverage.json` are normative.
 
 | Contract | Rules |
 |---|---|
-| Event types | v1 enumerates `run.registered`, `dag.declared`, `dag.node_added`, `attempt.created/replaced`, `session.enrolled`, `lifecycle.active/idle/error/end/heartbeat/connection_lost/recovered`, `workflow.state`, `progress.updated`, `content.reported`, `run.focus/outcome`, `reference.added`, `usage.call/checkpoint`, `message.pending/delivered/failed`, and `telemetry.gap`; each schema defines authority and payload. |
-| Identity/authority | Host trusts `runtimeSessionId`/`workingDirectory`; coordinator asserts then token-binds app session/project/repository, attempt and hashed one-use token. Caller identity is ignored. Metadata requires canonical project match, content proven host authorization, and control the active orchestrator canvas/target; otherwise fail closed. |
-| Event/order | Required UUID, run/source/attempt, positive source sequence, type, times, payload and causal parents. Writer resumes at max+1 with exclusive create. Source sequence and causal edges order events; ties use receive time/source/sequence/UUID. Exact duplicates are idempotent; conflicts, unknown major and malformed records are quarantined visibly. |
-| DAG/state | Orchestrator-only immutable `dag.node_added` requires unique stable node, known same-run dependencies, reason/source, initial `not_started`/`creating_queued`, and causal parent. Reject self-edge, cycle, conflict, cross-run/unknown dependency or inactive orchestrator. Concurrent additions use causal order then source sequence/UUID; racing dependencies name the addition event. Attempts bind to that node/event; retries/replacements never create logical nodes. States are `not_started`, `creating_queued`, `in_progress`, `waiting_input`, `waiting_approval`, `blocked`, `completed`, `failed`, `cancelled`, `skipped`, `superseded`. Legal transitions require queued before progress; waits/blocked may resume; terminals require reason, skipped is pre-start, superseded requires replacement, and terminal attempts are immutable. Only active orchestrator events set topology, focus, propagation and run outcome. |
-| Failure/liveness authority | Active targets append heartbeat every 2 seconds. At 5 seconds without a fresh ordered heartbeat, or on a Slice-0-proven provider/session-loss signal, append `connection_lost` with detected/last-seen times, attempt, last event/state and diagnostic; workflow state stays unchanged. `onErrorOccurred(recoverable=false)`, `onSessionEnd(reason=error)`, or `session.shutdown(shutdownType=error)` authoritatively sets the attempt `failed`; `session.error` preserves and prominently renders its full available payload but requires one of those terminal signals, while tool failure affects only that operation. Error payload is local, authorized, escaped and never stdout. Only orchestrator rules propagate failure/run outcome. |
-| Canvas interaction | Graph state owns viewport, selection, expanded attempts and inspector size across live revisions/navigation. Cards summarize logical nodes; inspector tabs expose ordered attempt data. Authoritative failure shows Failed plus short reason on card and safe payload in Diagnostics. Silent loss keeps workflow state and shows separate Connection lost health; recovery remains in Timeline. All controls, relationships and delivery feedback have keyboard/screen-reader/text-icon equivalents. |
-| Reporter results | `accepted`, `duplicate`, `disabled`; errors `schema_invalid`, `unauthorized`, `unknown_run`, `sequence_conflict`, `stale_attempt`, `token_invalid`, `storage_unavailable`. No success-shaped fallback. |
+| Identity/authority | Host trusts runtime ID/working directory; coordinator asserts then token-binds app session/project/repository, node, attempt and orchestrator epoch. Caller identity is ignored. Metadata requires canonical project match, content proven host authorization, and control active controller/target; otherwise fail closed. |
+| Event/order | Required UUID, run/source/attempt, positive source sequence, type, times, payload and causal parents. Exclusive immutable writes resume at max+1. Source sequence/causality order events; ties use receive time/source/sequence/UUID. Exact duplicates are idempotent; conflicts/malformed records are quarantined visibly. |
+| DAG/state | `dag.node_added` requires unique stable node, known same-run dependencies, reason/source, initial `not_started`/`creating_queued`, and causal parent. Reject self-edge, cycle, conflict, unknown/cross-run dependency or inactive orchestrator. Attempts/retries/replacements remain within that node. Only the controller sets topology, focus, propagation and outcome. |
+| Controller | Workflow states are `initializing`, `scheduling`, `waiting_children`, `waiting_user`, `reconciling`, `recovering`, `delivering`, `retrospective`, `blocked`, `terminal`. Host activity is separately `active`, `idle`, `connection_lost`, `ended`, `error`. Idle/end-of-turn/assistant completion never completes controller/run. Render `Waiting on N children - host idle`. Only explicit valid `run.outcome` after the skill completion contract sets terminal completed/failed/cancelled; child terminals cannot. |
+| Child failure/liveness | Heartbeat every 2 seconds. Five seconds without ordered heartbeat appends health-only `connection_lost` with times, attempt, last event/state and diagnostic. `onErrorOccurred(recoverable=false)`, `onSessionEnd(reason=error)` or shutdown error authoritatively fails the attempt; `session.error` preserves/render payload but requires a terminal authority signal. Tool failure is operation-only. Orchestrator alone propagates failure/outcome. Recovery appends `recovered`, clears current health and retains outage history. |
+| Incident | Immutable `incident.opened/delivery_attempted/delivered/acknowledged/resolved` records carry incident/run/node/attempt/failure-event IDs, kind, severity, times, retry state and orchestrator epoch. Kinds include authoritative failure, connection loss and expected-envelope gap. Lease permits one active delivery; retries at 1/2/4/8 seconds while available, then remain pending for resume. Ack/resolution are idempotent. No duplicate injection while acknowledged/processing. Incident content cannot satisfy approval, delivery authority, push or terminal envelope. |
 
-`coverage.json` discovers every shipped multi-session skill and maps launch, each
-`create_session`, dynamic-node decision, child/wait/approval/retry/replacement/terminal path
-to event types. Both current skills must append topology before any unplanned child.
-`validate-skills.ps1` rejects an unmapped skill, missing entry point, illegal schema/state,
-or duplicated per-skill reporting logic.
+An expected-envelope incident opens only when the ledger has an exact expected
+child/status/sequence, the child becomes idle with no active work and no matching envelope
+after a 2-second settle window, and it is not in a declared input/approval wait. This avoids
+failing long-running children and wakes the orchestrator to issue the existing
+produced-versus-not-produced nudge.
 
-Invalid topology returns a typed error and appends health/audit evidence without mutating the
-DAG or blocking the skill. Attempt/enrollment before `dag.node_added` stays unresolved by
-event/node identity until that valid event arrives; projection never synthesizes a node.
+If orchestrator heartbeat is stale or local `session.send` rejects, retain the incident,
+append delivery failure, set controller workflow `recovering` with health
+`orchestrator_unavailable`, and show the required recovery-pending warning with age/children.
+Resume/rebind replays pending incidents deterministically by opened time/UUID and preserves
+outage/delivery history. No host means no completion claim.
+Authoritative failures and recovery-pending changes bypass coalescing and receive prioritized,
+non-disruptive live-region announcements; controller/activity distinctions are never color-only.
 
-Persist live `assistant.usage`; checkpoint monotonic `usage.getMetrics` at enrollment, calls,
-idle, shutdown and reload. Itemized calls win; only positive blind-window deltas supplement
-them. Persist captured `model.list` price/batch/discount/category/tier/source/effective time,
-formula and estimate so history never reprices. Explicit provider ISO currency alone is
-`actual`; published conversion/token pricing is `estimated`; missing rates make totals
-partial/unavailable while AI/nano-AIU/premium units remain usage.
+`coverage.json` maps every shipped skill's launch, controller transition, child creation,
+dynamic node, wait, expected envelope, incident acknowledgement/recovery, retry/replacement
+and terminal entry point. Validation rejects unmapped skills or duplicated reporting logic.
 
-Host plugin data uses checksum-framed immutable event files, exclusive create,
-temp+fsync+rename manifests and rebuildable catalogs. Expiring locks cover only outbox/
-revisions; corruption is quarantined. Limits are 1 MiB/event, 100 MiB/run, 1 GiB total and
-90-day terminal retention; prune oldest terminal, never active runs, else reject and show
-gaps. Schema readers migrate copied data; missing roots remain gaps. Cleanup is documented
-manual plugin-data removal, not session deletion.
-Watchdogs ignore stale/duplicate/out-of-order heartbeats. Resume/rebind appends
-`recovered` plus heartbeat, clears current health, and retains the outage interval.
+Usage events persist live; monotonic usage checkpoints at enrollment/calls/idle/shutdown/
+reload add only positive blind-window deltas after itemized calls. Captured model price,
+category/tier/source/effective time/formula/estimate prevents repricing. Explicit ISO billing
+alone is `actual`; published conversion/token pricing is `estimated`; missing rates are
+partial/unavailable. AI/nano-AIU/premium units remain usage.
 
-Loopback bootstrap is one-use; first load exchanges it for a short-TTL instance credential
-held in iframe memory, bound to instance/run/project and rotated on rehydrate. Enforce
-loopback bind, strict Origin/Fetch-Metadata, CSRF, CSP/frame/content headers, route/body
-limits, constant-time token checks and replay rejection.
+Host plugin data uses checksum-framed immutable files, exclusive create, fsync/rename
+manifests, rebuildable projections, mutable-only expiring locks and quarantine. Limits:
+1 MiB/event, 100 MiB/run, 1 GiB total, 90-day terminal retention. One-use loopback bootstrap
+exchanges for rotating short-TTL instance credentials; enforce Origin/Fetch-Metadata, CSRF,
+CSP/frame headers, route/body limits, constant-time checks and replay rejection.
 
 ## Implementation map and risks
 
-| Slice | Changed areas | Gate/risk control |
+| Slice | Changed areas | Gate |
 |---|---|---|
-| 0 packaging/auth | Current `plugin.json`; `extensions/...`; README release commands | Install fixture with no project/user copy; prove exact conventional plugin path/manifest, plugin-scoped ID/log, canvas, plugin-data path, named SDK hooks/events and host authorization. If unsupported, return BLOCKED before skill edits; no user fallback. |
-| 1 contracts/store | `extensions/.../contracts`, storage/projector/cost/outbox | `node:test`, no network/dependencies; dynamic-DAG contract/mutation tests, Windows multiprocess/crash stress and deterministic rebuild. |
-| 2 complete skill wiring | Both SKILL files and every phase prompt; coverage manifest; validator/self-tests | Shared calls only; optional absence path; planned and dynamic child entry points mapped before creation. |
-| 3 canvas/runtime | Direct subscriptions, watchdog, canvas/SSE/assets, target consumer | Slice 0 proves exact 1.0.78-2 event names/payloads (no private Tauri state); runtime proves <=1-second live updates, priority errors/loss, dynamic DAG, messages and accessibility. |
+| 0 platform proof | Plugin manifest/path/data, exact SDK hooks/events/payloads, host auth | Install plugin-only fixture; unsupported capability returns BLOCKED before skill edits. |
+| 1 contracts/store | Schemas, projector, watchdog, incidents, usage, outbox | `node:test`, multiprocess/crash/replay/mutation coverage; no dependencies/network. |
+| 2 skill wiring | Both skills/prompts, coverage manifest, validator/self-tests | Map controller, expected-envelope and incident recovery through existing rules. |
+| 3 canvas/runtime | Controller/DAG UI, inspector/composer, SSE/accessibility | Real multi-session wake, recovery, responsive and visual evidence. |
 
 ## Verification
 
-Use the production extension and deterministic real multi-session fixtures for both skills.
-Open from an active run, verify its deep link and Back/All runs filters; assert summary and
-every card field, focus, neutral dynamic label and expandable attempts. Exercise mouse and
-keyboard zoom/pan/Fit, card traversal, splitter resize, all inspector tabs, full/unavailable
-content, composer target selection and delivery states. At wide and sub-720 px widths verify
-graph/inspector resize or overlay restores viewport. Capture Failed/card reason/Diagnostics
-payload versus last-state plus Connection lost and Timeline recovery, including prompt ARIA
-announcements and non-color high-contrast/reduced-motion behavior.
-Prove plugin install/open/action/UI screenshots and SSE; append an independent and a
-dependency-linked dynamic node, observe immediate neutral labeling/layout/details, then
-queued -> active -> idle/end when a child never semantically reports. Contract and mutation
-tests cover duplicate node IDs, unknown/cross-run dependencies, self-edge, cycle,
-unauthorized child/canvas additions, racing additions, attempt-before-topology reconciliation,
-restart/replay determinism, and rejected-addition health without workflow blockage. Measure
-callback-to-canvas latency; verify full authorized error payload and authoritative failed
-state; kill a target without an event and require `connection_lost` within 5 seconds but not
-failed; restart/rebind and retain outage history. Cover stale/duplicate/out-of-order
-heartbeats, concurrent failures, and the extension-disabled unchanged workflow. Test exact
-message bytes, concurrency, wrong args, duplicate,
-deny/error/timeout, provider kill, restart and stale replacement yield exactly one terminal
-outbox state. Exercise forged IDs, same repo/different project, sibling worktree, replay
-token, resumed runtime, replaced attempt and non-orchestrator canvas. Capture usage before
-attach, during attach, model switch, reload and resume; compare checkpoints, cache/category
-math, no double count, unchanged historical estimate after price changes, and no false
-`actual`. Inject out-of-order/malformed/checksum failures and Windows writer crashes; prove
-zero accepted-event loss, quarantine, rebuild, bounded retention, install/update/disable/
-reinstall gaps, no discovery collision or socket without an open canvas. Run keyboard,
-screen-reader, forced-color and reduced-motion browser checks. Existing validator and
-`-SelfTest` remain release commands; no nonexistent CI is assumed.
+Verify three running critics show controller `waiting_children` and host `idle`, never
+Completed. Normal COMPLETE wakes/reconciles. Authoritative child error followed by process
+death opens an incident, shows exact safe error, wakes idle orchestrator, validates/acks and
+applies recovery. Silent kill creates `connection_lost` within 5 seconds but not failed.
+Idle without expected envelope produces exactly one incident and nudge. With orchestrator
+unavailable, warning remains recovery-pending; resume replays once. Exercise duplicate,
+restart, epoch, stale/out-of-order heartbeat and concurrent-failure idempotency; prove
+incident injection cannot alter approvals, authority, sequence, identity or outcome. Measure
+detection-to-visible and detection-to-wake (<=1 second locally after incident creation).
+
+Also verify current-run/back navigation, controller lane/relations/selection, summary/card
+fields, nested attempts, dynamic nodes, all inspector tabs, composer targets/states,
+zoom/pan/Fit/traversal, wide splitter and narrow overlay, error/loss/recovery rendering,
+screen-reader/live-region priority, high contrast and reduced motion. Retain prior identity,
+cost, DAG race, storage crash, packaging and disabled-extension tests.
 
 ## Open design questions
 
