@@ -7,112 +7,144 @@
 
 ## Summary and decisions
 
-Ship one plugin-owned Node ESM extension, `extensions/loop-execution-visualizer/`, with a
-`loop-execution-visualizer` canvas, loopback renderer/SSE server, and globally unique
-report/control tools. Every skill calls the same versioned reporter; skill-specific code
-declares only its DAG and transitions. An append-only store under
-`$COPILOT_HOME/extensions/loop-execution-visualizer/artifacts/` correlates events from all
-session processes. This is necessary because `joinSession` and `session.rpc.usage` are
-session-scoped and the iframe has no privileged host bridge. UI messaging therefore queues
-through the run's orchestrator session and its existing `send_session_message` tool, observed
-by extension hooks. The visualizer never interprets a message as approval or authority.
+Ship one plugin extension at `extensions/loop-execution-visualizer/extension.mjs`, using
+Node 22+ built-ins only. It contributes namespaced report/control tools and an accessible
+canvas backed by loopback HTTP/SSE. Every shipped skill uses one shared, versioned contract;
+skill-specific text declares only its DAG and semantic transitions. Extension processes
+append immutable records to the host-provided plugin-data directory (expected
+`COPILOT_PLUGIN_DATA`; no discovery-folder/home-directory fallback).
 
-Pipeline blocks follow
+Deterministic hooks/events supply lifecycle; skill reports add meaning. Target extension
+processes consume authorized outbox records and call their own `session.send`, avoiding an
+orchestrator-model relay. Pipeline layout follows
 [Azure](https://learn.microsoft.com/en-us/azure/devops/pipelines/process/stages) and
-[GitHub](https://docs.github.com/en/actions/how-tos/monitor-workflows/use-the-visualization-graph)
-dependency/status conventions; event correlation follows
-[OpenTelemetry](https://opentelemetry.io/docs/concepts/signals/traces/) trace/parent/link
-concepts. Discovery is an eventually consistent index, while an opened run consumes its
-append-only history directly, matching
-[Temporal](https://docs.temporal.io/visibility)'s visibility-versus-detail split.
+[GitHub](https://docs.github.com/en/actions/how-tos/monitor-workflows/use-the-visualization-graph);
+correlation follows [OpenTelemetry](https://opentelemetry.io/docs/concepts/signals/traces/);
+discovery/detail consistency follows [Temporal](https://docs.temporal.io/visibility).
+
+The stricter identity finding overrides the earlier token-only claim: tokens bind asserted
+app IDs but cannot prove host authorization. Full content/control fail closed unless Slice 0
+proves a host-equivalent app-project-session mapping. Full reported content remains the
+authorized default, but bounded retention/size limits reduce persistence exposure without
+redaction or a delete UI. Rejected: caller-supplied app IDs, user-scope fallback,
+extension-discovery storage, and replacing required estimated currency with AI credits.
 
 ## Requirements and current path matrix
 
-| Requirement | Design mechanism | Verification |
+| Requirement | Mechanism | Verification |
 |---|---|---|
-| FR1-FR3, AC1, AC6 | Versioned run/DAG/attempt events preserve dependencies, parallel nodes, focus, reasons, propagation, retries, replacements, and every required workflow state; health is derived separately. | Run both skill fixtures; live transition changes one labeled block without refresh; compare complete attempt lineage. |
-| FR4-FR6, AC2 | Ordered event detail includes configured/actual model, full reported content, plan/steps, messages, outputs, references, timing, cost, source and attempt; absent fields render `Unavailable`. | Select every fixture node and compare DOM/action snapshot to source events, including authorization-denied content. |
-| FR7-FR8, AC3 | Durable outbox targets the bound orchestrator or current active child; orchestrator relays children through `send_session_message`; hooks record pending/delivered/failed. Visualizer envelopes are explicitly non-authoritative. | Deliver to a real child; exercise duplicate, stale, terminal, superseded, unauthorized and tool-failure cases; prove approval/authority state unchanged. |
-| FR9-FR10, AC4 | Run elapsed is `terminalAt ?? now - startedAt`; it includes waits and never sums attempts. Per-call usage is deduplicated; actual-currency records win, otherwise a versioned local price catalog estimates known token categories in ISO currency. | Fake-clock overlapping/waiting run plus hand-calculated priced, unpriced, missing and actual-cost fixtures. |
-| EF1-EF3, C2, AC5, AC7 | Last-known immutable events remain visible; freshness/parse/connectivity health and partial coverage are separate. Reporter absence is non-blocking and pre-adoption data stays unavailable. | Disable/reload extension; inject delay, malformed/out-of-order records, expired cursor and replacement; underlying skill still finishes. |
-| C1, C3-C4, AC8 | Plugin-shipped extension covers any registered skill; local host/project binding gates reads and sends. Semantic HTML/SVG, list fallback, keyboard roving focus, ARIA relationships/live regions, tokens, high contrast and reduced motion provide equivalent access. | Installed-plugin discovery test plus keyboard, screen-reader snapshot, forced-colors and reduced-motion runtime passes. |
+| FR1-FR3, EF3, AC1, AC6 | Normative DAG/attempt/state schemas preserve dependencies, parallelism, focus, propagation and replacements; telemetry health is separate. | Both skill fixtures update one block live and retain every attempt. |
+| FR4-FR6, C3, AC2 | Independently authorize metadata, content and control; ordered events expose reported model/content/progress/history/output/references or `Unavailable`. | Same-repo/different-project, forged identity and authorized detail tests. |
+| FR7-FR8, EF2, AC3 | Authorized durable outbox, target-local exact-body `session.send`, TTL and one terminal audit state; never approval/authority. | Real child plus duplicate/stale/restart/failure matrix; ledger unchanged. |
+| FR9-FR10, AC4 | Wall-clock run interval; deduplicated actual/estimated/partial cost with captured price basis. | Overlap/wait fake clock and hand-calculated cost fixtures. |
+| EF1, C1-C2, AC5, AC7 | Lifecycle backbone, immutable last-known data, visible gaps/quarantine/freshness; reporting is capability-gated and optional. | Disabled/reloaded extension and malformed/delayed telemetry; skills still finish. |
+| C4, AC8 | Semantic SVG plus list equivalent, keyboard focus, ARIA relationships/live regions, app tokens, forced colors and reduced motion. | Browser runtime, keyboard and accessibility snapshots. |
 
-Today both `skills/*/SKILL.md` coordinate `create_session`, `get_session`,
-`send_session_message`, `ask_user`, SQL ledgers, run IDs and sequenced terminal envelopes,
-but expose no cross-session UI or common telemetry. `plugin.json` publishes both skills;
-`tests/validate-skills.ps1` structurally validates their independent contracts. The installed
-SDK supports plugin-source extensions, `createCanvas`, session events/history,
-`model.getCurrent/list`, and `usage.getMetrics`; canvas APIs are experimental and the iframe
-must use loopback HTTP.
+Both `skills/*/SKILL.md` currently coordinate `create_session`, `get_session`,
+`send_session_message`, `ask_user`, SQL ledgers, run IDs and sequenced envelopes, but have no
+shared telemetry. The SDK provides plugin-source extensions, `createCanvas`, tool/hook
+runtime identity, session events, `model.list`, and `usage.getMetrics`; usage/idle events can
+be ephemeral and the canvas iframe has no privileged host bridge.
 
 ## End-to-end flow and entry points
 
-1. At run establishment, the coordinator calls `loop_visualizer_register_run` with schema
-   version, repository/project, skill, run identity, planned DAG and configured models. The
-   tool binds the orchestrator app ID to `invocation.sessionId` and writes the run manifest.
-2. After each child creation, the coordinator registers its app session ID, role, attempt,
-   dependencies and one-time enrollment token. The child calls `loop_visualizer_report`;
-   the handler binds its runtime ID, validates source/sequence/state, and atomically appends
-   an event. Extension instances also backfill then subscribe to host-exposed user,
-   assistant, tool and `assistant.usage` events; unexposed content remains unavailable.
-3. The canvas filters the catalog, folds valid events into a read model, serves it over
-   loopback JSON, and pushes revisions over SSE. Selecting a block retains the graph and
-   opens ordered details.
-4. A message POST is enabled only when the canvas is attached to the bound orchestrator and
-   creates one outbox ID after rechecking project, orchestrator, current
-   attempt and nonterminal target. For the orchestrator, `session.send` delivers it locally.
-   For a child, `session.send` asks the orchestrator to invoke `send_session_message` with a
-   machine marker and exact target/body. `onPreToolUse` validates that marker against the
-   outbox; success/failure hooks finalize delivery.
+1. Engineering-loop Phase 0 and issue-resolution Phase 0 register the run, canonical
+   repository/project, orchestrator app ID and complete planned DAG. Before every
+   `create_session`, they create an attempt and one-use enrollment token; kickoff carries the
+   opaque token. Design/RCA/plan, all critics, approval/input waits, refinements, retries,
+   replacements/invalidation, implementation/validation, authority/PR, terminal and retro
+   paths map to shared semantic events.
+2. `onSessionStart` consumes the token and binds the host-trusted runtime session ID and
+   working directory to coordinator-asserted app project-session ID, canonical
+   project/repository and attempt. Resume may rebind a new runtime ID only with a fresh
+   orchestrator-issued token; replacement revokes the old attempt/token. Replay fails.
+3. Verified `onSessionStart`, `user.message`, `assistant.message`, tool start/complete,
+   `session.idle`, `session.error`, `onErrorOccurred`, `onSessionEnd` and `session.shutdown`
+   persist exposed content/events and emit
+   enrolled/active/idle/error/end/heartbeat. Semantic reports provide phase, workflow state,
+   plan, artifacts, lineage, DAG and orchestrator-only outcome. Projection precedence is:
+   explicit orchestrator workflow state > semantic child state > lifecycle activity;
+   lifecycle never invents approval, phase or success.
+4. The canvas rebuilds the run, filters discovery, and streams revisions. Graph selection
+   retains context and opens details. Only the canvas-owning process starts loopback/SSE
+   lazily; it closes on last canvas/session end. Reporter processes open no listener and use
+   bounded, coalesced scans.
+5. An authorized orchestrator canvas writes an outbox item. The enrolled target process
+   claims it, revalidates active attempt/TTL, passes the byte-exact body to local
+   `session.send`, and records `delivered` only when the host returns a message ID
+   (acceptance, not processing). Timeout, send error, session error/end, stale target,
+   provider loss or restart reconciliation becomes `failed`; never inferred success.
 
-| Entry point | Existing path | Required change |
-|---|---|---|
-| Engineering-loop launch/preflight/ledger | Phase 0 | Register run and full planned requirements, design, three-critic, implementation and retro DAG. |
-| Requirements/design/critic launches and reports | Phases 1-3; `create_session`; child envelopes | Register attempt before kickoff; report queued, active, input wait, blocked/terminal, progress/content and references. |
-| Critic retry/replacement/reconciliation | Phase 3 | Link attempts; mark replaced attempt failed/superseded without overwriting it; report parallel focus and reconciliation. |
-| Design and implementation approval/refinement | Phases 4 and 6; `ask_user` | Report waiting-for-approval and resumed/refined state; only `ask_user` changes approval. |
-| Implementation replacement, validation, PR, terminal, retro | Phases 5, 7, 8 | Report invalidation lineage, steps, outputs, `PR_AUTHORIZED`/PR as references only, final outcome and retros. |
-| Issue-resolution capability/evidence intake | Phases 0-1 | Register run/DAG; report capability block and one-at-a-time reproduction wait. |
-| RCA/plan, critiques, approvals and recovery | Phases 2-6 | Report artifact attempts, contaminated/replacement critics, reconciliation, waits/refinements and authority epoch as non-message state. |
-| Implementation/invalidation/delivery | Phases 7-8 | Preserve cause/plan invalidation graph, superseded implementation, validation, secret scan, authority handshake, push/PR outcome. |
-| Issue recovery/retro/completion | Recovery, Phase 9 | Report resumed last-known state, all retro children and explicit terminal outcome. |
-| Extension open/filter/select/message/reload | New canvas/actions/HTTP routes | Authorize, render, stream, enqueue, audit, close servers, and rehydrate idempotently. |
+At Phase 0 each skill checks once for the shared reporter. If absent it records telemetry
+disabled, omits enrollment and all semantic-report instructions/calls, and follows the
+unchanged workflow without missing-tool retries.
 
 ## Contracts and invariants
 
-| Component | Input | Responsibility | Output | Consumer |
-|---|---|---|---|---|
-| Reporter v1 | `runId`, `sourceSeq`, `eventId`, `type`, `attemptId`, optional `causes`, payload | JSON-schema validation; bind runtime/app session; require a positive unique per-source sequence; accept delayed gap fills; idempotently accept exact duplicate; quarantine malformed or same-sequence conflicts. Only orchestrator may declare DAG, overall state or terminal outcome. | Atomic immutable event plus catalog revision | Fold/projector |
-| Run store | Manifest, events, usage, outbox | Write temp then rename; never edit history; per-run project/repository authorization metadata; retain until user removes the owning session/plugin data. | Discovery summary and ordered history | Canvas |
-| Projector | Valid v1 events | Order each source by sequence, preserve receive/reported timestamps, use causal links across sources, derive freshness only. Never infer missing workflow state/outcome. | Graph/detail read model with telemetry health | Renderer/SSE |
-| Usage aggregator | Persisted `assistant.usage` IDs, model list, local price catalog | Key calls by `(runtimeSessionId, providerCallId/apiCallId/eventId)`; never combine call events with aggregate metrics. Label actual only for host-reported currency amount. Estimate `tokens * currencyPerToken` using model/category/tier-specific catalog entries; record catalog version, source, effective time, currency and calculation time; exclude unknown categories/models/tiers and mark partial/unavailable. | Session/run amount, basis, coverage, updated time | Summary/details |
-| Control outbox | Authorized run, active target, body, UUID | Reject stale/duplicate/terminal/superseded targets; prefix `VISUALIZER_MESSAGE:<id>`; preserve draft/error. Marker messages cannot match approval, authority, terminal-envelope or delivery-attestation contracts. | Pending/delivered/failed audit event | UI and skill |
+Checked-in `contracts/v1/{event,run,dag,outbox}.schema.json`, `states.json` and
+`coverage.json` are normative.
 
-Schemas use additive semantic versions: readers accept known minor fields, quarantine unknown
-major versions, and retain raw records. Enrollment tokens are random, single-use and stored
-hashed; handler identity comes from `invocation.sessionId`, never caller data. Content stays
-on the local host, is HTML-escaped, is not logged to stdout/exported, and is returned only
-when the canvas repository/project binding matches. Extension crash/reload replays files and
-outbox state; no success fallback. Removal leaves skills unchanged. Rollback removes reporter
-calls and the extension; old telemetry remains inert and deletable with plugin data.
+| Contract | Rules |
+|---|---|
+| Event types | v1 enumerates `run.registered`, `dag.declared`, `attempt.created/replaced`, `session.enrolled`, `lifecycle.active/idle/error/end/heartbeat`, `workflow.state`, `progress.updated`, `content.reported`, `run.focus/outcome`, `reference.added`, `usage.call/checkpoint`, `message.pending/delivered/failed`, and `telemetry.gap`; each schema defines authority and payload. |
+| Identity/authority | Distinct `runtimeSessionId` (host trusted), `workingDirectory` (host trusted), `appProjectSessionId` and project/repository (coordinator asserted then token-bound), `attemptId`, and hashed one-use token. Caller identity fields are ignored. Metadata requires matching canonical project/repository; content requires proven host project authorization; control additionally requires the bound active orchestrator canvas and active target. Otherwise fail closed. |
+| Event/order | Required UUID `eventId`, run/source/attempt IDs, positive source sequence, type, receive/reported time, payload and optional causal parents. Writer resumes at scanned max+1 and uses exclusive create. Source sequence orders one source; causal edges order sources; unrelated display ties use receive time, source ID, sequence, event ID. Duplicate identity+bytes is idempotent; conflicts/unknown major/malformed records are quarantined and health-visible. |
+| DAG/state | Node/dependency references must exist and be acyclic. States are `not_started`, `creating_queued`, `in_progress`, `waiting_input`, `waiting_approval`, `blocked`, `completed`, `failed`, `cancelled`, `skipped`, `superseded`. Legal path is not-started -> queued -> in-progress; in-progress may enter/leave waits or blocked; any nonterminal may reach a reasoned terminal, while skipped is pre-start and superseded requires a replacement link. Terminal attempts are immutable. Only orchestrator events set topology, focus, propagation and explicit run outcome; no inferred terminal run. |
+| Reporter results | `accepted`, `duplicate`, `disabled`; errors `schema_invalid`, `unauthorized`, `unknown_run`, `sequence_conflict`, `stale_attempt`, `token_invalid`, `storage_unavailable`. No success-shaped fallback. |
+
+`coverage.json` discovers every shipped multi-session skill and maps launch, each
+`create_session`, child/wait/approval/retry/replacement/terminal path to event types.
+`validate-skills.ps1` rejects an unmapped skill, missing entry point, illegal schema/state,
+or duplicated per-skill reporting logic.
+
+Each live `assistant.usage` event is persisted immediately. Monotonic
+`usage.getMetrics` checkpoints occur at enrollment, observed calls, idle, shutdown and
+reload. Reconciliation attributes itemized calls first, then records only positive aggregate
+deltas for blind intervals, never summing both. Coverage records attach/reload gaps.
+`model.list` price, batch size, discount/promo, category/tier, source/effective time,
+currency formula inputs and computed estimate are stored beside each event; history never
+reprices. Explicit provider ISO-currency billing alone is `actual`. Published conversion or
+token pricing produces clearly labeled `estimated`; AI-credit/nano-AIU/premium units remain
+host usage. Missing rates/categories are excluded and make currency partial/unavailable.
+
+Storage uses host-resolved plugin data, immutable checksum-framed file-per-event names
+containing run/source/sequence/event ID, exclusive create, same-volume temp+fsync+rename for
+manifests, and rebuildable catalogs. Locks cover only outbox claims/revisions, with owner,
+expiry and stale recovery. Corruption is quarantined. Limits: 1 MiB/event, 100 MiB/run,
+1 GiB total, terminal runs retained 90 days; prune oldest terminal runs, never active runs.
+If still full, reject new payloads and show gaps. Updates migrate copied plugin data by
+schema reader; missing prior roots/install sources remain truthful gaps. Cleanup is manual
+removal of documented plugin data; session deletion is not claimed to remove telemetry.
+
+Loopback bootstrap is one-use; first load exchanges it for a short-TTL instance credential
+held in iframe memory, bound to instance/run/project and rotated on rehydrate. Enforce
+loopback bind, strict Origin/Fetch-Metadata, CSRF, CSP/frame/content headers, route/body
+limits, constant-time token checks and replay rejection.
 
 ## Implementation map and risks
 
-| Vertical slice / risk | Upstream and changed areas | Downstream consumer | Mitigation |
-|---|---|---|---|
-| Plugin/runtime | `plugin.json`, marketplace version, `extensions/loop-execution-visualizer/{extension.mjs,lib,assets,prices.json}` | Installed extension controller/canvas | Prove plugin-source discovery first; pin/feature-detect experimental SDK APIs and show unavailable health rather than crash. |
-| Shared reporting | Both `SKILL.md` files and all phase prompts | Reporter/store/projector | One tool/schema implementation; reporter calls are optional when absent; validator forbids duplicated state logic and checks every entry point. |
-| Renderer/control | Canvas open/actions, loopback HTTP/SSE, hooks | Accessible graph/details/outbox | Bind `127.0.0.1:0`, CSRF nonce and origin checks, size limits, no arbitrary target/path, idempotent rehydrate/close. |
-| Validation | `tests/validate-skills.ps1`; new contract, integration, renderer and installed-plugin fixtures | Release workflow | Preserve existing self-tests; add negative fixtures for missing reports, schema drift, authority bypass and package omission. |
+| Slice | Changed areas | Gate/risk control |
+|---|---|---|
+| 0 packaging/auth | Current `plugin.json`; `extensions/...`; README release commands | Install fixture with no project/user copy; prove exact conventional plugin path/manifest, plugin-scoped ID/log, canvas, plugin-data path, named SDK hooks/events and host authorization. If unsupported, return BLOCKED before skill edits; no user fallback. |
+| 1 contracts/store | `extensions/.../contracts`, storage/projector/cost/outbox | `node:test`, no network/dependencies; Windows multiprocess/crash stress and deterministic rebuild. |
+| 2 complete skill wiring | Both SKILL files and every phase prompt; coverage manifest; validator/self-tests | Shared calls only; optional absence path; all producer/consumer entry points mapped. |
+| 3 canvas/runtime | Canvas, loopback/SSE/assets, target consumer | Real extension/runtime/message/accessibility evidence; namespaced plugin/tool/canvas IDs prevent collisions. |
 
 ## Verification
 
-| Proof | Exact path/state/object observed | Boundary or failure it catches |
-|---|---|---|
-| Contract/integration | Load production `extension.mjs`; run deterministic engineering-loop and issue-resolution reporters through real tool handlers; inspect persisted events and projected DAG/outbox/cost. | Producer-to-consumer wiring, identity, ordering, attempts, deduplication, cost and malformed input. |
-| Runtime canvas | Install fixture plugin, reload, inspect, call `list_canvas_capabilities`, `open_canvas`, invalid-input open and actions; navigate returned loopback URL and capture graph/detail screenshots. | Actual packaging, provider lifecycle, validation, SSE, theme and visible UI. |
-| Real multi-session control | Create orchestrator plus child, transition/wait/replace/complete, send one canvas message and observe real `send_session_message` hook result and unchanged approval ledger. | Authorized delivery, stale/duplicate prevention and non-authority invariant. |
-| Resilience/accessibility | Kill/reload provider, delay/reorder/corrupt events, remove price/usage, run keyboard/screen-reader/forced-colors/reduced-motion checks, then resume. | Last-known preservation, health separation, partial totals, recovery and AC8 parity. |
+Use the production extension and deterministic real multi-session fixtures for both skills.
+Prove plugin install/open/action/UI screenshots and SSE; queued -> active -> idle/end when a
+child never semantically reports; exact message bytes, concurrency, wrong args, duplicate,
+deny/error/timeout, provider kill, restart and stale replacement yield exactly one terminal
+outbox state. Exercise forged IDs, same repo/different project, sibling worktree, replay
+token, resumed runtime, replaced attempt and non-orchestrator canvas. Capture usage before
+attach, during attach, model switch, reload and resume; compare checkpoints, cache/category
+math, no double count, unchanged historical estimate after price changes, and no false
+`actual`. Inject out-of-order/malformed/checksum failures and Windows writer crashes; prove
+zero accepted-event loss, quarantine, rebuild, bounded retention, install/update/disable/
+reinstall gaps, no discovery collision or socket without an open canvas. Run keyboard,
+screen-reader, forced-color and reduced-motion browser checks. Existing validator and
+`-SelfTest` remain release commands; no nonexistent CI is assumed.
 
 ## Open design questions
 
