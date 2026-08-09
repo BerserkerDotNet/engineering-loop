@@ -14,19 +14,14 @@ skill-specific text declares only its DAG and semantic transitions. Extension pr
 append immutable records to the host-provided plugin-data directory (expected
 `COPILOT_PLUGIN_DATA`; no discovery-folder/home-directory fallback).
 
-Direct verified hooks/events supply live lifecycle; skill reports add meaning. Target
-processes consume authorized outbox records through local `session.send`. Layout follows
-[Azure](https://learn.microsoft.com/en-us/azure/devops/pipelines/process/stages)/
-[GitHub](https://docs.github.com/en/actions/how-tos/monitor-workflows/use-the-visualization-graph),
-correlation follows [OpenTelemetry](https://opentelemetry.io/docs/concepts/signals/traces/),
-and discovery/detail consistency follows [Temporal](https://docs.temporal.io/visibility).
+Verified hooks/events supply lifecycle; skill reports add meaning. Target processes consume
+authorized outbox records through local `session.send`. Layout follows Azure/GitHub pipeline
+graphs, correlation follows OpenTelemetry, and discovery/detail follows Temporal Visibility.
 
-The stricter identity finding overrides the earlier token-only claim: tokens bind asserted
-app IDs but cannot prove host authorization. Full content/control fail closed unless Slice 0
-proves a host-equivalent app-project-session mapping. Full reported content remains the
-authorized default, but bounded retention/size limits reduce persistence exposure without
-redaction or a delete UI. Rejected: caller-supplied app IDs, user-scope fallback,
-extension-discovery storage, and replacing required estimated currency with AI credits.
+Tokens bind asserted app IDs but do not prove host authorization; content/control fail closed
+until Slice 0 proves host-equivalent project authorization. Full authorized content remains
+default with bounded retention, not redaction/delete UI. Caller IDs, user-scope fallback,
+discovery-folder storage and AI-credit-only currency remain rejected.
 
 ## Requirements and current path matrix
 
@@ -60,18 +55,22 @@ model listing and usage metrics; some events are ephemeral and the iframe has no
    `session.shutdown`. Callbacks append before returning and trigger SSE; normal revisions
    coalesce at most 100 ms, while errors/loss bypass coalescing. Target callback-to-visible
    revision is <=1 second locally. Semantic reports add phase/progress/DAG/outcome.
-4. The canvas rebuilds the run, filters discovery, and streams revisions. A dynamic node
-   appears immediately as `not_started` or `creating_queued`, with a neutral "Added during
-   run" text/icon and addition reason/source in accessible details and filters. It retains
-   dependency layout and complete topology history. Error/loss updates announce promptly in
-   a non-disruptive ARIA live region and use text/icon, never color alone. Only the canvas-owning process starts
-   loopback/SSE lazily; it closes on last canvas/session end. Reporter processes open no
-   listener and use bounded, coalesced scans.
-5. An authorized orchestrator canvas writes an outbox item. The enrolled target process
-   claims it, revalidates active attempt/TTL, passes the byte-exact body to local
-   `session.send`, and records `delivered` only when the host returns a message ID
-   (acceptance, not processing). Timeout, send error, session error/end, stale target,
-   provider loss or restart reconciliation becomes `failed`; never inferred success.
+4. Opening from the active orchestrator deep-links to its current run; Back/All runs opens
+   filtered history. A top summary shows skill/run, overall state, Live/health, wall time,
+   cost basis/coverage and freshness. The primary graph is horizontal left-to-right with
+   zoom, pan, Fit graph and equivalent keyboard traversal.
+5. Compact logical-stage cards show name, state text/icon, model, duration, cost
+   actual/estimated/partial label, plan progress, freshness/health and focus. Attempts expand
+   inside one card; failed/replaced history remains. Dynamic cards use neutral "Added during
+   run" with reason/source. Selection opens a resizable right inspector without resetting the
+   graph. Tabs are Overview, Plan, Prompt, Timeline, Messages, Usage/Cost, Outputs and
+   Diagnostics; authorized content is full and missing fields say `Unavailable`. A persistent
+   composer targets orchestrator or active child and shows pending/delivered/failed. Under
+   720 px the inspector overlays full-width; closing restores graph viewport. A
+   keyboard-operable splitter sizes wider layouts.
+6. The target process claims an authorized outbox item, revalidates attempt/TTL, sends exact
+   bytes locally, and marks delivered only on host message-ID acceptance. Failures are
+   terminally audited, never inferred.
 
 Phase 0 checks once for the reporter. If absent, the skill omits enrollment/reporting and
 runs unchanged without missing-tool retries.
@@ -84,10 +83,11 @@ Checked-in `contracts/v1/{event,run,dag,outbox}.schema.json`, `states.json` and
 | Contract | Rules |
 |---|---|
 | Event types | v1 enumerates `run.registered`, `dag.declared`, `dag.node_added`, `attempt.created/replaced`, `session.enrolled`, `lifecycle.active/idle/error/end/heartbeat/connection_lost/recovered`, `workflow.state`, `progress.updated`, `content.reported`, `run.focus/outcome`, `reference.added`, `usage.call/checkpoint`, `message.pending/delivered/failed`, and `telemetry.gap`; each schema defines authority and payload. |
-| Identity/authority | Distinct `runtimeSessionId` (host trusted), `workingDirectory` (host trusted), `appProjectSessionId` and project/repository (coordinator asserted then token-bound), `attemptId`, and hashed one-use token. Caller identity fields are ignored. Metadata requires matching canonical project/repository; content requires proven host project authorization; control additionally requires the bound active orchestrator canvas and active target. Otherwise fail closed. |
-| Event/order | Required UUID `eventId`, run/source/attempt IDs, positive source sequence, type, receive/reported time, payload and optional causal parents. Writer resumes at scanned max+1 and uses exclusive create. Source sequence orders one source; causal edges order sources; unrelated display ties use receive time, source ID, sequence, event ID. Duplicate identity+bytes is idempotent; conflicts/unknown major/malformed records are quarantined and health-visible. |
-| DAG/state | `dag.node_added` is an orchestrator-only immutable topology extension with globally stable unique `nodeId`, same-run known dependency IDs, explicit reason/source, initial `not_started` or `creating_queued`, and causal parent. Reject self-edge, cycle, duplicate/conflict, unknown/cross-run dependency or inactive orchestrator. Concurrent additions use causal order, then source sequence/event ID; a dependency on a racing addition requires its event identity as causal parent. Attempts bind to an existing node and its declaration/addition event. Retries/replacements remain attempts of that node, never new logical nodes. States are `not_started`, `creating_queued`, `in_progress`, `waiting_input`, `waiting_approval`, `blocked`, `completed`, `failed`, `cancelled`, `skipped`, `superseded`. Legal path is not-started -> queued -> in-progress; in-progress may enter/leave waits or blocked; any nonterminal may reach a reasoned terminal, while skipped is pre-start and superseded requires a replacement link. Terminal attempts are immutable. Only the bound active orchestrator sets topology, focus, propagation and explicit run outcome; child reports and canvas messages cannot. |
+| Identity/authority | Host trusts `runtimeSessionId`/`workingDirectory`; coordinator asserts then token-binds app session/project/repository, attempt and hashed one-use token. Caller identity is ignored. Metadata requires canonical project match, content proven host authorization, and control the active orchestrator canvas/target; otherwise fail closed. |
+| Event/order | Required UUID, run/source/attempt, positive source sequence, type, times, payload and causal parents. Writer resumes at max+1 with exclusive create. Source sequence and causal edges order events; ties use receive time/source/sequence/UUID. Exact duplicates are idempotent; conflicts, unknown major and malformed records are quarantined visibly. |
+| DAG/state | Orchestrator-only immutable `dag.node_added` requires unique stable node, known same-run dependencies, reason/source, initial `not_started`/`creating_queued`, and causal parent. Reject self-edge, cycle, conflict, cross-run/unknown dependency or inactive orchestrator. Concurrent additions use causal order then source sequence/UUID; racing dependencies name the addition event. Attempts bind to that node/event; retries/replacements never create logical nodes. States are `not_started`, `creating_queued`, `in_progress`, `waiting_input`, `waiting_approval`, `blocked`, `completed`, `failed`, `cancelled`, `skipped`, `superseded`. Legal transitions require queued before progress; waits/blocked may resume; terminals require reason, skipped is pre-start, superseded requires replacement, and terminal attempts are immutable. Only active orchestrator events set topology, focus, propagation and run outcome. |
 | Failure/liveness authority | Active targets append heartbeat every 2 seconds. At 5 seconds without a fresh ordered heartbeat, or on a Slice-0-proven provider/session-loss signal, append `connection_lost` with detected/last-seen times, attempt, last event/state and diagnostic; workflow state stays unchanged. `onErrorOccurred(recoverable=false)`, `onSessionEnd(reason=error)`, or `session.shutdown(shutdownType=error)` authoritatively sets the attempt `failed`; `session.error` preserves and prominently renders its full available payload but requires one of those terminal signals, while tool failure affects only that operation. Error payload is local, authorized, escaped and never stdout. Only orchestrator rules propagate failure/run outcome. |
+| Canvas interaction | Graph state owns viewport, selection, expanded attempts and inspector size across live revisions/navigation. Cards summarize logical nodes; inspector tabs expose ordered attempt data. Authoritative failure shows Failed plus short reason on card and safe payload in Diagnostics. Silent loss keeps workflow state and shows separate Connection lost health; recovery remains in Timeline. All controls, relationships and delivery feedback have keyboard/screen-reader/text-icon equivalents. |
 | Reporter results | `accepted`, `duplicate`, `disabled`; errors `schema_invalid`, `unauthorized`, `unknown_run`, `sequence_conflict`, `stale_attempt`, `token_invalid`, `storage_unavailable`. No success-shaped fallback. |
 
 `coverage.json` discovers every shipped multi-session skill and maps launch, each
@@ -100,24 +100,19 @@ Invalid topology returns a typed error and appends health/audit evidence without
 DAG or blocking the skill. Attempt/enrollment before `dag.node_added` stays unresolved by
 event/node identity until that valid event arrives; projection never synthesizes a node.
 
-Each live `assistant.usage` event is persisted immediately. Monotonic
-`usage.getMetrics` checkpoints occur at enrollment, observed calls, idle, shutdown and
-reload. Reconciliation attributes itemized calls first, then records only positive aggregate
-deltas for blind intervals, never summing both. Coverage records attach/reload gaps.
-`model.list` price, batch size, discount/promo, category/tier, source/effective time,
-currency formula inputs and computed estimate are stored beside each event; history never
-reprices. Explicit provider ISO-currency billing alone is `actual`. Published conversion or
-token pricing produces clearly labeled `estimated`; AI-credit/nano-AIU/premium units remain
-host usage. Missing rates/categories are excluded and make currency partial/unavailable.
+Persist live `assistant.usage`; checkpoint monotonic `usage.getMetrics` at enrollment, calls,
+idle, shutdown and reload. Itemized calls win; only positive blind-window deltas supplement
+them. Persist captured `model.list` price/batch/discount/category/tier/source/effective time,
+formula and estimate so history never reprices. Explicit provider ISO currency alone is
+`actual`; published conversion/token pricing is `estimated`; missing rates make totals
+partial/unavailable while AI/nano-AIU/premium units remain usage.
 
-Storage uses host-resolved plugin data, immutable checksum-framed file-per-event names
-containing run/source/sequence/event ID, exclusive create, same-volume temp+fsync+rename for
-manifests, and rebuildable catalogs. Locks cover only outbox claims/revisions, with owner,
-expiry and stale recovery. Corruption is quarantined. Limits: 1 MiB/event, 100 MiB/run,
-1 GiB total, terminal runs retained 90 days; prune oldest terminal runs, never active runs.
-If still full, reject new payloads and show gaps. Updates migrate copied plugin data by
-schema reader; missing prior roots/install sources remain truthful gaps. Cleanup is manual
-removal of documented plugin data; session deletion is not claimed to remove telemetry.
+Host plugin data uses checksum-framed immutable event files, exclusive create,
+temp+fsync+rename manifests and rebuildable catalogs. Expiring locks cover only outbox/
+revisions; corruption is quarantined. Limits are 1 MiB/event, 100 MiB/run, 1 GiB total and
+90-day terminal retention; prune oldest terminal, never active runs, else reject and show
+gaps. Schema readers migrate copied data; missing roots remain gaps. Cleanup is documented
+manual plugin-data removal, not session deletion.
 Watchdogs ignore stale/duplicate/out-of-order heartbeats. Resume/rebind appends
 `recovered` plus heartbeat, clears current health, and retains the outage interval.
 
@@ -138,6 +133,13 @@ limits, constant-time token checks and replay rejection.
 ## Verification
 
 Use the production extension and deterministic real multi-session fixtures for both skills.
+Open from an active run, verify its deep link and Back/All runs filters; assert summary and
+every card field, focus, neutral dynamic label and expandable attempts. Exercise mouse and
+keyboard zoom/pan/Fit, card traversal, splitter resize, all inspector tabs, full/unavailable
+content, composer target selection and delivery states. At wide and sub-720 px widths verify
+graph/inspector resize or overlay restores viewport. Capture Failed/card reason/Diagnostics
+payload versus last-state plus Connection lost and Timeline recovery, including prompt ARIA
+announcements and non-color high-contrast/reduced-motion behavior.
 Prove plugin install/open/action/UI screenshots and SSE; append an independent and a
 dependency-linked dynamic node, observe immediate neutral labeling/layout/details, then
 queued -> active -> idle/end when a child never semantically reports. Contract and mutation
