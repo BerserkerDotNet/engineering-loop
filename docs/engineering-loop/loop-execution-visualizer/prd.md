@@ -6,8 +6,8 @@
 
 ## Problem and outcome
 
-Users coordinating multi-session skills cannot see the run as one live system, making it
-hard to understand progress, waits, failures, cost, or where to intervene. Authorized users
+Users coordinating multi-session skills cannot see the run as one system, making progress,
+waits, failures, cost, and intervention points unclear. Authorized users
 must be able to discover a run, follow its dependency graph in real time, inspect each
 session, and communicate through a trustworthy additional control surface without weakening
 the orchestrator's authority.
@@ -81,9 +81,10 @@ the orchestrator's authority.
 
 - FR9. Total elapsed time is wall-clock time from run start to now or terminal completion,
   includes waits, and is not the sum of overlapping session durations.
-- FR10. Total cost must state currency, actual or estimated basis, update time, and coverage.
-  Missing/unpriced usage is excluded from the numeric total and makes it visibly partial;
-  session costs must not be double-counted.
+- FR10. Total cost must state currency, update time, coverage, and whether each value is
+  actual or estimated. When actual billing is unavailable, known usage and prices must
+  produce a clearly labeled estimate. Missing/unpriced usage is excluded from the numeric
+  total and makes it visibly partial; session costs must not be double-counted.
 
 ## Constraints and failure behavior
 
@@ -121,10 +122,10 @@ the orchestrator's authority.
   pending-to-delivered result in the audit trail while no approval or authority state changes;
   duplicate, stale, unauthorized, unreachable, superseded, and terminal targets produce the
   EF2 behavior. (G2, FR7-FR8, EF2)
-- AC4. Given sequential, overlapping, and waiting sessions with priced and unpriced usage,
-  the live summary matches FR9 wall-clock time and FR10 non-duplicated cost, basis, currency,
-  freshness, and partial-coverage labels before and after terminal completion. (G3,
-  FR9-FR10)
+- AC4. Given sequential, overlapping, and waiting sessions, the live summary matches FR9
+  wall-clock time; actual billing appears as actual cost, priced usage without billing
+  produces an estimated currency amount, and unpriced or missing usage makes the
+  non-duplicated total visibly partial or unavailable as applicable. (G3, FR9-FR10)
 - AC5. Given delayed or interrupted reporting, the opened run preserves last-known values,
   marks their age/health, and never displays invented terminal state or complete cost; when
   reporting resumes, runtime details reconcile without deleting history. (EF1, C2)
