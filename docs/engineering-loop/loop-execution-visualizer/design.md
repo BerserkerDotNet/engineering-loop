@@ -33,7 +33,7 @@ extension-discovery storage, and replacing required estimated currency with AI c
 
 | Requirement | Mechanism | Verification |
 |---|---|---|
-| FR1-FR3, EF3, AC1, AC6 | Normative DAG/attempt/state schemas preserve dependencies, parallelism, focus, propagation and replacements; telemetry health is separate. | Both skill fixtures update one block live and retain every attempt. |
+| FR1-FR3, EF3, AC1, AC6 | Normative append-only DAG/attempt/state schemas preserve planned and dynamically-added nodes, dependencies, parallelism, focus, propagation and replacements; telemetry health is separate. | Both skill fixtures add and update a node live, retain every attempt, and replay the same graph. |
 | FR4-FR6, C3, AC2 | Independently authorize metadata, content and control; ordered events expose reported model/content/progress/history/output/references or `Unavailable`. | Same-repo/different-project, forged identity and authorized detail tests. |
 | FR7-FR8, EF2, AC3 | Authorized durable outbox, target-local exact-body `session.send`, TTL and one terminal audit state; never approval/authority. | Real child plus duplicate/stale/restart/failure matrix; ledger unchanged. |
 | FR9-FR10, AC4 | Wall-clock run interval; deduplicated actual/estimated/partial cost with captured price basis. | Overlap/wait fake clock and hand-calculated cost fixtures. |
@@ -49,11 +49,13 @@ be ephemeral and the canvas iframe has no privileged host bridge.
 ## End-to-end flow and entry points
 
 1. Engineering-loop Phase 0 and issue-resolution Phase 0 register the run, canonical
-   repository/project, orchestrator app ID and complete planned DAG. Before every
-   `create_session`, they create an attempt and one-use enrollment token; kickoff carries the
-   opaque token. Design/RCA/plan, all critics, approval/input waits, refinements, retries,
-   replacements/invalidation, implementation/validation, authority/PR, terminal and retro
-   paths map to shared semantic events.
+   repository/project, orchestrator app ID and initially planned DAG. If runtime evidence or
+   user feedback requires a previously unplanned stage, only the bound active orchestrator
+   appends `dag.node_added` before `create_session`; the original `dag.declared` and prior
+   topology remain immutable. Before every child creation, it creates an attempt for a known
+   logical node and a one-use enrollment token. Design/RCA/plan, all critics, approval/input
+   waits, refinements, retries, replacements/invalidation, implementation/validation,
+   authority/PR, terminal and retro paths map to shared semantic events.
 2. `onSessionStart` consumes the token and binds the host-trusted runtime session ID and
    working directory to coordinator-asserted app project-session ID, canonical
    project/repository and attempt. Resume may rebind a new runtime ID only with a fresh
@@ -65,10 +67,12 @@ be ephemeral and the canvas iframe has no privileged host bridge.
    plan, artifacts, lineage, DAG and orchestrator-only outcome. Projection precedence is:
    explicit orchestrator workflow state > semantic child state > lifecycle activity;
    lifecycle never invents approval, phase or success.
-4. The canvas rebuilds the run, filters discovery, and streams revisions. Graph selection
-   retains context and opens details. Only the canvas-owning process starts loopback/SSE
-   lazily; it closes on last canvas/session end. Reporter processes open no listener and use
-   bounded, coalesced scans.
+4. The canvas rebuilds the run, filters discovery, and streams revisions. A dynamic node
+   appears immediately as `not_started` or `creating_queued`, with a neutral "Added during
+   run" text/icon and addition reason/source in accessible details and filters. It retains
+   dependency layout and complete topology history. Only the canvas-owning process starts
+   loopback/SSE lazily; it closes on last canvas/session end. Reporter processes open no
+   listener and use bounded, coalesced scans.
 5. An authorized orchestrator canvas writes an outbox item. The enrolled target process
    claims it, revalidates active attempt/TTL, passes the byte-exact body to local
    `session.send`, and records `delivered` only when the host returns a message ID
@@ -86,16 +90,24 @@ Checked-in `contracts/v1/{event,run,dag,outbox}.schema.json`, `states.json` and
 
 | Contract | Rules |
 |---|---|
-| Event types | v1 enumerates `run.registered`, `dag.declared`, `attempt.created/replaced`, `session.enrolled`, `lifecycle.active/idle/error/end/heartbeat`, `workflow.state`, `progress.updated`, `content.reported`, `run.focus/outcome`, `reference.added`, `usage.call/checkpoint`, `message.pending/delivered/failed`, and `telemetry.gap`; each schema defines authority and payload. |
+| Event types | v1 enumerates `run.registered`, `dag.declared`, `dag.node_added`, `attempt.created/replaced`, `session.enrolled`, `lifecycle.active/idle/error/end/heartbeat`, `workflow.state`, `progress.updated`, `content.reported`, `run.focus/outcome`, `reference.added`, `usage.call/checkpoint`, `message.pending/delivered/failed`, and `telemetry.gap`; each schema defines authority and payload. |
 | Identity/authority | Distinct `runtimeSessionId` (host trusted), `workingDirectory` (host trusted), `appProjectSessionId` and project/repository (coordinator asserted then token-bound), `attemptId`, and hashed one-use token. Caller identity fields are ignored. Metadata requires matching canonical project/repository; content requires proven host project authorization; control additionally requires the bound active orchestrator canvas and active target. Otherwise fail closed. |
 | Event/order | Required UUID `eventId`, run/source/attempt IDs, positive source sequence, type, receive/reported time, payload and optional causal parents. Writer resumes at scanned max+1 and uses exclusive create. Source sequence orders one source; causal edges order sources; unrelated display ties use receive time, source ID, sequence, event ID. Duplicate identity+bytes is idempotent; conflicts/unknown major/malformed records are quarantined and health-visible. |
-| DAG/state | Node/dependency references must exist and be acyclic. States are `not_started`, `creating_queued`, `in_progress`, `waiting_input`, `waiting_approval`, `blocked`, `completed`, `failed`, `cancelled`, `skipped`, `superseded`. Legal path is not-started -> queued -> in-progress; in-progress may enter/leave waits or blocked; any nonterminal may reach a reasoned terminal, while skipped is pre-start and superseded requires a replacement link. Terminal attempts are immutable. Only orchestrator events set topology, focus, propagation and explicit run outcome; no inferred terminal run. |
+| DAG/state | `dag.node_added` is an orchestrator-only immutable topology extension with globally stable unique `nodeId`, same-run known dependency IDs, explicit reason/source, initial `not_started` or `creating_queued`, and causal parent. Reject self-edge, cycle, duplicate/conflict, unknown/cross-run dependency or inactive orchestrator. Concurrent additions use causal order, then source sequence/event ID; a dependency on a racing addition requires its event identity as causal parent. Attempts bind to an existing node and its declaration/addition event. Retries/replacements remain attempts of that node, never new logical nodes. States are `not_started`, `creating_queued`, `in_progress`, `waiting_input`, `waiting_approval`, `blocked`, `completed`, `failed`, `cancelled`, `skipped`, `superseded`. Legal path is not-started -> queued -> in-progress; in-progress may enter/leave waits or blocked; any nonterminal may reach a reasoned terminal, while skipped is pre-start and superseded requires a replacement link. Terminal attempts are immutable. Only the bound active orchestrator sets topology, focus, propagation and explicit run outcome; child reports and canvas messages cannot. |
 | Reporter results | `accepted`, `duplicate`, `disabled`; errors `schema_invalid`, `unauthorized`, `unknown_run`, `sequence_conflict`, `stale_attempt`, `token_invalid`, `storage_unavailable`. No success-shaped fallback. |
 
 `coverage.json` discovers every shipped multi-session skill and maps launch, each
-`create_session`, child/wait/approval/retry/replacement/terminal path to event types.
+`create_session`, dynamic-node decision, child/wait/approval/retry/replacement/terminal path
+to event types. Both current skills must append topology before any unplanned child.
 `validate-skills.ps1` rejects an unmapped skill, missing entry point, illegal schema/state,
 or duplicated per-skill reporting logic.
+
+Invalid topology returns `schema_invalid`, `unauthorized`, `unknown_run` or
+`sequence_conflict`, appends a health/audit rejection without mutating the DAG, and never
+blocks the underlying skill. If attempt/enrollment records are observed before their
+`dag.node_added` record, projection holds them as unresolved by referenced event/node
+identity and exposes delayed topology health; it attaches them when the valid topology
+event arrives and never synthesizes a node.
 
 Each live `assistant.usage` event is persisted immediately. Monotonic
 `usage.getMetrics` checkpoints occur at enrollment, observed calls, idle, shutdown and
@@ -126,15 +138,20 @@ limits, constant-time token checks and replay rejection.
 | Slice | Changed areas | Gate/risk control |
 |---|---|---|
 | 0 packaging/auth | Current `plugin.json`; `extensions/...`; README release commands | Install fixture with no project/user copy; prove exact conventional plugin path/manifest, plugin-scoped ID/log, canvas, plugin-data path, named SDK hooks/events and host authorization. If unsupported, return BLOCKED before skill edits; no user fallback. |
-| 1 contracts/store | `extensions/.../contracts`, storage/projector/cost/outbox | `node:test`, no network/dependencies; Windows multiprocess/crash stress and deterministic rebuild. |
-| 2 complete skill wiring | Both SKILL files and every phase prompt; coverage manifest; validator/self-tests | Shared calls only; optional absence path; all producer/consumer entry points mapped. |
-| 3 canvas/runtime | Canvas, loopback/SSE/assets, target consumer | Real extension/runtime/message/accessibility evidence; namespaced plugin/tool/canvas IDs prevent collisions. |
+| 1 contracts/store | `extensions/.../contracts`, storage/projector/cost/outbox | `node:test`, no network/dependencies; dynamic-DAG contract/mutation tests, Windows multiprocess/crash stress and deterministic rebuild. |
+| 2 complete skill wiring | Both SKILL files and every phase prompt; coverage manifest; validator/self-tests | Shared calls only; optional absence path; planned and dynamic child entry points mapped before creation. |
+| 3 canvas/runtime | Canvas, loopback/SSE/assets, target consumer | Real extension/runtime/message/accessibility evidence; live dynamic-node SSE and neutral planned/added distinction; namespaced IDs prevent collisions. |
 
 ## Verification
 
 Use the production extension and deterministic real multi-session fixtures for both skills.
-Prove plugin install/open/action/UI screenshots and SSE; queued -> active -> idle/end when a
-child never semantically reports; exact message bytes, concurrency, wrong args, duplicate,
+Prove plugin install/open/action/UI screenshots and SSE; append an independent and a
+dependency-linked dynamic node, observe immediate neutral labeling/layout/details, then
+queued -> active -> idle/end when a child never semantically reports. Contract and mutation
+tests cover duplicate node IDs, unknown/cross-run dependencies, self-edge, cycle,
+unauthorized child/canvas additions, racing additions, attempt-before-topology reconciliation,
+restart/replay determinism, and rejected-addition health without workflow blockage. Test exact
+message bytes, concurrency, wrong args, duplicate,
 deny/error/timeout, provider kill, restart and stale replacement yield exactly one terminal
 outbox state. Exercise forged IDs, same repo/different project, sibling worktree, replay
 token, resumed runtime, replaced attempt and non-orchestrator canvas. Capture usage before
