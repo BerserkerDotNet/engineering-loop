@@ -126,9 +126,17 @@ discovers every skill directory that contains a `SKILL.md` rather than assuming 
 fixed list, then checks required resources, unique skill frontmatter, the exact
 model tables, the approval gates, revision-bound critiques, the delivery
 vocabulary and authority handshake, the review workflow's entry guard, locator
-grammar, credential-terminal allowlist, bundle admission and citation rules,
-anchors, approval serializers, lease and outcome classification, the
-operation-to-command-contract bijection, prohibited actions, that each skill is
+grammar, credential-terminal preflight and allowlist, the ordered Azure DevOps
+probe, bundle admission and citation rules, immutable revision resolution, the
+single merge-base diff-base revision per provider and the pinned-diff anchors, the
+transmitted provider Accept and API-version headers,
+approval serializers and response projectors, lease fencing, journal creation, and
+outcome classification, the review-decision predicate, the
+operation-to-command-contract bijection, that every live certification row quotes
+its committed PRD acceptance criterion and mandates no scenario the committed
+requirements and approved design do not enumerate, that the recorded persistent
+cap fixture keeps its read-only paging-ceiling evidence and moves no adapter row,
+prohibited actions, that each skill is
 self-contained and never references another, and that every skill states the
 shared safety baseline in its own `SKILL.md`.
 
@@ -143,15 +151,59 @@ contract in turn, and requires the validator to reject every broken fixture; it
 never writes into this repository.
 
 The contract checks are structural: they parse Markdown and prove the skills state
-their rules. They execute no agent, provider adapter, terminal, lease, or network
+their rules. They execute no agent, provider adapter, terminal, or network
 operation, so they prove nothing about run-time agent or provider behavior;
 claiming provider behavior requires live certification against explicitly
-authorized disposable fixtures. The one executable check is the history-aware
-secret-scan proof inside `-SelfTest`: it builds a throwaway Git repository whose
-earlier commit contains a synthetic token that a later commit removes, then shows
-that the final aggregate diff no longer sees that token while the per-commit scan
-prescribed by `skills/issue-resolution` still finds it in published history. The
-proof is skipped, and reported as skipped, when no `git` executable is available.
+authorized disposable fixtures. `-SelfTest` adds executable proofs, each run
+in a throwaway directory and each reported as skipped when its prerequisite is
+missing:
+
+- The history-aware secret-scan proof builds a throwaway Git repository whose
+  earlier commit contains a synthetic token that a later commit removes, then
+  shows that the final aggregate diff no longer sees that token while the
+  per-commit scan prescribed by `skills/issue-resolution` still finds it in
+  published history. It is skipped when no `git` executable is available.
+- The journal create/update proof evaluates the real `lease.fence` predicate
+  immediately before the create, requiring it to admit the current owner and reject
+  a stale writer, then shows that `[System.IO.File]::Replace` refuses a missing
+  destination, so the first journal really does need the exclusive `CreateNew` open
+  that `journal.create` prescribes, that a second `CreateNew` fails, and that a
+  merged replacement keeps an earlier owner's `attempt_started` row.
+- The two-process lease takeover proof repeatedly starts two real competing
+  processes against one already expired lease and releases them through a
+  rendezvous, so both race the same record rather than running in sequence. Each
+  repetition requires exactly one winner at a strictly higher epoch, the loser to
+  stop for a contention reason it could only reach after racing for the claim, the
+  loser to write nothing, and no lost `attempt_started` row. It then evaluates
+  `lease.fence` against the persisted winning record and requires the pre-takeover
+  owner's token and epoch to be rejected while the winner's own token and epoch is
+  admitted. A final case plants a claim abandoned by a contender that no longer
+  exists and requires a later contender to reclaim that epoch exactly once, so a
+  crashed contender cannot permanently poison it. It is skipped when no PowerShell
+  host executable can be resolved.
+- The malformed takeover claim proof covers the crash window between the claim's
+  `CreateNew` and its flush. A zero-length claim, a truncated JSON claim, a claim
+  whose JSON carries none of the required fields, and a well-formed claim naming a
+  process that is no longer running are each reclaimed exactly once by a real child
+  process. A well-formed claim naming a process that is still running, with its
+  exact recorded start time, is refused: the contender stops, the claim survives
+  byte-identical, and the lease is not taken.
+- The malformed initial lease proof covers the same crash window at the first
+  transition, where `lease.acquire` creates the lease before it flushes the owner
+  record. Two real competing processes race an empty lease file and then a torn one;
+  each race must end with exactly one valid acquirer whose persisted record passes
+  `lease.fence` for its own token while rejecting the identity that never finished
+  writing. A third case seeds a complete record and requires both contenders to
+  defer to expiry and takeover, leaving that record byte-identical, so a parseable
+  record is never deleted as malformed. Repeated adversarial rounds then hold one
+  contender inside its classification while the other completes the record, and
+  require the completed record to survive: recovery is a single exclusive ownership
+  transition, so a delayed contender has no deletion window in which to erase a lease
+  another contender finished.
+
+These proofs exercise the local file-system primitives that `lease.*` and
+`journal.*` prescribe. They still execute no provider adapter, so they prove
+nothing about GitHub or Azure DevOps run-time behavior.
 
 ## Release
 

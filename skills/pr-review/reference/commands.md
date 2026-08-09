@@ -24,9 +24,10 @@ Each block declares exactly these fields, in this order:
 | `input` | request input mode, or `n/a` |
 | `output` | what the caller must read back |
 
-The parity capability set is `identity`, `repository`, `pull-request`, `revision`, `tree`,
-`item`, `changes`, `blob`, `inventory`, `decision`, `inline-create`, and `general-create`. Both
-provider adapters cover all twelve, so neither provider offers a reduced flow.
+The parity capability set is `identity`, `repository`, `pull-request`, `revision`, `merge-base`,
+`tree`, `item`, `changes`, `blob`, `inventory`, `decision`, `inline-create`, and
+`general-create`. Both provider adapters cover all thirteen, so neither provider offers a reduced
+flow.
 
 `method` is the exact command form, so a declared header must actually be transmitted by it.
 Every provider block sends its declared `accept` in `method`, and every GitHub block also sends
@@ -44,6 +45,20 @@ resolved to content in exactly one way: resolve the pinned commit to its tree, r
 inside that tree or through the pinned single-path item read, then read the resulting
 content-addressed blob. Never resolve a path through a branch name, a tag, `HEAD`, a fetch, or a
 working tree. A missing, truncated, or ambiguous immutable resolution blocks the run.
+
+Exactly one revision per provider is the diff base, and it is the merge base of the pull request,
+never the tip of the target branch. On GitHub the diff base is `merge_base_commit.sha` from
+`github.merge-base-read`; `base.sha` is a snapshot the provider recorded when the pull request was
+opened or last synchronized, so it may equal the comparison merge base, may lag it, or may differ
+from it, which makes it not authoritative for deterministic diff reconstruction and never a diff
+base. On Azure DevOps the diff base is the highest pinned iteration's `commonRefCommit.commitId`
+from `ado.iteration-list`; `lastMergeTargetCommit.commitId` is only the target-branch tip and is
+never a diff base. A target branch that advanced after the pull request was opened makes the tip
+differ from the merge base, so a base-side path resolved at the tip can be absent, can carry
+unrelated later content, and can produce anchors the provider will reject. Because `base.sha` may
+coincide with the comparison merge base on one pull request and not on the next, observing that
+the two agree is never evidence that `base.sha` may be used. Every base-side blob, every
+unchanged-context blob, and every `diff.compute` base input resolves at the diff base alone.
 
 ## GitHub adapter
 
@@ -83,7 +98,20 @@ api-version: 2022-11-28
 accept: application/vnd.github+json
 paging: n/a
 input: n/a
-output: immutable PR `id`, `number`, `head.sha` as the pinned source revision, `base.sha` as the pinned base revision, `merge_commit_sha`, `state`
+output: immutable PR `id`, `number`, `head.sha` as the pinned source revision, `base.sha` as a non-authoritative base snapshot only, `merge_commit_sha`, `state`; `base.sha` is never the diff base, because the provider recorded it when the pull request was opened or last synchronized and it may equal, may lag, or may differ from the comparison merge base, so the diff base is `merge_base_commit.sha` from `github.merge-base-read` and only that revision resolves base-side and unchanged-context content
+```
+
+```contract:merge-base-read:github:v1
+operation: github.merge-base-read
+adapter: github
+capability: merge-base
+method: gh api --hostname github.com --method GET --header "Accept: application/vnd.github+json" --header "X-GitHub-Api-Version: 2022-11-28"
+resource: /repos/{owner}/{repo}/compare/{base_sha}...{head_sha}
+api-version: 2022-11-28
+accept: application/vnd.github+json
+paging: n/a
+input: n/a
+output: `merge_base_commit.sha`, bound as the sole GitHub diff-base revision and fed to `github.commit-read`, `github.tree-read`, `github.item-read`, every base-side `github.blob-read`, and the base side of `diff.compute`; `{base_sha}` and `{head_sha}` are the full 40-character `base.sha` and `head.sha` this run already pinned, so the comparison itself is immutable and reproducible, supplying `base.sha` as one endpoint of this comparison is the only sanctioned use of it and is never a use of it as a diff base, a `merge_base_commit.sha` that is absent or not a full 40-character SHA blocks, and the paginated `files` array of this response is never read because it carries the same omitted or truncated `patch` as the file list
 ```
 
 ```contract:commit-read:github:v1
@@ -96,7 +124,7 @@ api-version: 2022-11-28
 accept: application/vnd.github+json
 paging: n/a
 input: n/a
-output: the commit `sha` and its root `tree.sha`; `{commit_sha}` must be the full 40-character pinned base or source revision and never a branch, tag, or `HEAD`, and a returned `sha` that differs from the requested one blocks
+output: the commit `sha` and its root `tree.sha`; `{commit_sha}` must be the full 40-character pinned diff-base or source revision and never a branch, tag, or `HEAD`, and a returned `sha` that differs from the requested one blocks
 ```
 
 ```contract:tree-read:github:v1
@@ -135,7 +163,7 @@ api-version: 2022-11-28
 accept: application/vnd.github+json
 paging: per_page=100 and follow the `Link` `rel="next"` cursor until it is absent; require monotonic progress and unique `filename` values
 input: n/a
-output: per change `status`, `filename`, `previous_filename`, `sha`, `additions`, `deletions`, `changes`; `sha` is the source-side blob only, so the base-side blob of every changed path is resolved through `github.commit-read`, `github.tree-read`, and `github.item-read` against `base.sha`, and the returned `patch` is never used because it is omitted or truncated for large files
+output: per change `status`, `filename`, `previous_filename`, `sha`, `additions`, `deletions`, `changes`; `sha` is the source-side blob only, so the base-side blob of every changed path is resolved through `github.commit-read`, `github.tree-read`, and `github.item-read` against the `merge_base_commit.sha` returned by `github.merge-base-read` and never against `base.sha`, and the returned `patch` is never used because it is omitted or truncated for large files
 ```
 
 ```contract:blob-read:github:v1
@@ -275,7 +303,7 @@ api-version: 7.1
 accept: application/json
 paging: n/a
 input: n/a
-output: immutable `pullRequestId`, `repository.id`, `repository.project.id`, `lastMergeSourceCommit.commitId` as the pinned source revision, `lastMergeTargetCommit.commitId` as the pinned base revision, `status`
+output: immutable `pullRequestId`, `repository.id`, `repository.project.id`, `lastMergeSourceCommit.commitId` as the pinned source revision, `lastMergeTargetCommit.commitId` as the target-branch tip only, `status`; `lastMergeTargetCommit.commitId` is never the diff base, because the target branch advances independently of the pull request, so the diff base is the highest pinned iteration's `commonRefCommit.commitId` from `ado.iteration-list` and only that revision resolves base-side and unchanged-context content
 ```
 
 ```contract:commit-read:ado:v1
@@ -288,7 +316,7 @@ api-version: 7.1
 accept: application/json
 paging: n/a
 input: n/a
-output: the commit `commitId` and its `treeId`; `<commit-id>` must be a full pinned base or source revision and never a branch, tag, or `HEAD`, and a returned `commitId` that differs from the requested one blocks
+output: the commit `commitId` and its `treeId`; `<commit-id>` must be a full pinned diff-base or source revision and never a branch, tag, or `HEAD`, and a returned `commitId` that differs from the requested one blocks
 ```
 
 ```contract:tree-read:ado:v1
@@ -320,14 +348,14 @@ output: the single-path `objectId`, `gitObjectType`, and `isFolder` at the pinne
 ```contract:iteration-list:ado:v2
 operation: ado.iteration-list
 adapter: ado
-capability: changes
+capability: merge-base
 method: az devops invoke --organization https://dev.azure.com/<org> --detect false --api-version 7.1 --area git --resource pullRequestIterations --route-parameters project=<project-id> repositoryId=<repository-id> pullRequestId=<pull-request-id> --http-method GET --accept-media-type application/json --only-show-errors
 resource: git/repositories/{repositoryId}/pullRequests/{pullRequestId}/iterations
 api-version: 7.1
 accept: application/json
 paging: consume the response `value` array and require unique iteration `id` values
 input: n/a
-output: every iteration `id`, `sourceRefCommit.commitId`, `targetRefCommit.commitId`, `commonRefCommit.commitId`; the highest `id` is the pinned iteration and its `commonRefCommit.commitId` is the pinned base revision for unchanged context
+output: every iteration `id`, `sourceRefCommit.commitId`, `targetRefCommit.commitId`, `commonRefCommit.commitId`; the highest `id` is the pinned iteration and its `commonRefCommit.commitId` is the merge base, bound as the sole Azure DevOps diff-base revision and fed to `ado.commit-read`, `ado.tree-read`, `ado.item-read`, every base-side `ado.blob-read`, and the base side of `diff.compute`; `targetRefCommit.commitId` and `lastMergeTargetCommit.commitId` are target-branch tips and are never a diff base, and an absent or empty `commonRefCommit.commitId` on the highest iteration blocks
 ```
 
 ```contract:iteration-change-list:ado:v2
@@ -340,7 +368,7 @@ api-version: 7.1
 accept: application/json
 paging: follow the service-returned `nextTop` and `nextSkip` until both are zero, require monotonic `$skip` progress and unique `changeTrackingId` values, and never assume a fixed page size; only a certification run may override `$top`
 input: n/a
-output: per change `changeTrackingId`, `changeId`, `changeType`, `item.path`, `originalPath`, `item.objectId`, `item.originalObjectId`, `item.isFolder`, `item.gitObjectType`
+output: per change `changeTrackingId`, `changeId`, `changeType`, `item.path`, `originalPath`, `item.objectId`, `item.originalObjectId`, `item.isFolder`, `item.gitObjectType`; the base side of a changed path is either `item.originalObjectId` read directly with `ado.blob-read`, or the path resolved at the pinned `commonRefCommit.commitId` diff base, and the two must agree, because this iteration was computed against that same merge base
 ```
 
 ```contract:blob-read:ado:v2
@@ -414,13 +442,13 @@ output: created thread `id` with no thread context, and comment `id`, `content`,
 operation: terminal.preflight
 adapter: local
 capability: n/a
-method: before any secret entry, and in a throwaway shell that never holds the credential, confirm that a visible interactive terminal can be opened, that the session is interactive so `Read-Host -AsSecureString` cannot silently fall through, that process-scoped environment injection works on a disposable variable, and then evaluate `(Get-PSReadLineOption).HistorySaveStyle` and `(Get-PSReadLineOption).HistorySavePath`, plus on Windows `Get-ItemProperty 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\PowerShell\Transcription' -ErrorAction SilentlyContinue` and its `HKCU` counterpart, or on Unix the effective `Transcript` configuration
+method: before any secret entry, and in a throwaway shell that never holds the credential, confirm that a visible interactive terminal can be opened, that the session is interactive so `Read-Host -AsSecureString` cannot silently fall through, that process-scoped environment injection works on a disposable variable, then create a disposable directory holding one disposable file under the run-scoped temporary root, run the exact `acl.apply` command on both, read the effective permissions back with the reader for the explicitly detected platform, `icacls <path>` on Windows, `stat -c %a <path>` on Linux, or `stat -f %Lp <path>` on macOS and BSD, require them to match the `acl.apply` contract with directory mode `700` and file mode `600`, and remove the disposable path, and then evaluate `(Get-PSReadLineOption).HistorySaveStyle` and `(Get-PSReadLineOption).HistorySavePath`, plus on Windows `Get-ItemProperty 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\PowerShell\Transcription' -ErrorAction SilentlyContinue` and its `HKCU` counterpart, or on Unix the effective `Transcript` configuration
 resource: the host, before any credential terminal exists
 api-version: n/a
 accept: n/a
 paging: n/a
 input: n/a
-output: proven-capable, or blocked before secret entry; a missing visible terminal, a non-interactive session, an unavailable secure prompt, or absent process-scoped injection blocks, and transcription counts as proven off only when the policy is readable and `EnableTranscripting` is absent or `0` — an unreadable policy is not proven off and blocks, and a mandatory host or group policy is never overridden, disabled, or worked around
+output: proven-capable, or blocked before secret entry; a missing visible terminal, a non-interactive session, an unavailable secure prompt, or absent process-scoped injection blocks, an `acl.apply` that cannot be applied or whose read-back does not match the contract blocks because bundle directories, child copies, and frozen request bodies would then be unprotected, a host whose platform cannot be identified or whose permission read-back cannot be executed is unverifiable and blocks rather than being assumed to be GNU, the disposable probe path is always removed whether it passed or failed, and transcription counts as proven off only when the policy is readable and `EnableTranscripting` is absent or `0` — an unreadable policy is not proven off and blocks, and a mandatory host or group policy is never overridden, disabled, or worked around
 ```
 
 ```contract:launch:terminal:v2
@@ -494,13 +522,13 @@ output: the credential is cleared and the terminal closed; the run enters `block
 operation: bundle.seal
 adapter: local
 capability: n/a
-method: resolve every changed and context path to a blob through the immutable resolution above, read each blob, run `diff.compute` for every text entry, then write `manifest.json` and the content-addressed blobs into run-scoped session or temporary storage and digest the manifest with `hash.compute`
+method: resolve every changed and context path to a blob through the immutable resolution above, taking exactly one diff-base revision — `merge_base_commit.sha` on GitHub, the highest pinned iteration's `commonRefCommit.commitId` on Azure DevOps — read each blob, run `diff.compute` for every text entry, then write `manifest.json` and the content-addressed blobs into run-scoped session or temporary storage and digest the manifest with `hash.compute`
 resource: run-scoped storage outside every checkout and outside the Git common directory
 api-version: n/a
 accept: n/a
 paging: n/a
-input: provider-read blobs resolved at the pinned base and source revisions, or an exact local blob whose SHA matches the pinned object
-output: `bundle_digest` over the manifest and every entry digest, plus version `v<n>`, and the `diff.compute` result recorded per entry so anchors never depend on checkout state or on a provider patch; approved additional context reseals `v(n+1)`
+input: provider-read blobs resolved at the single pinned diff-base revision and at the pinned source revision, or an exact local blob whose SHA matches the pinned object; a `base.sha` snapshot or a target-branch tip is never accepted as the diff base, and a manifest whose base-side entries do not all carry that one diff-base revision blocks
+output: `bundle_digest` over the manifest and every entry digest, plus version `v<n>`, the recorded diff-base and source revisions, and the `diff.compute` result recorded per entry so anchors never depend on checkout state or on a provider patch; approved additional context reseals `v(n+1)`
 ```
 
 ```contract:verify:bundle:v1
@@ -536,7 +564,7 @@ operation: diff.compute
 adapter: local
 capability: n/a
 method: for one manifest entry run `git --no-pager -c core.autocrlf=false -c core.safecrlf=false -c diff.renames=false -c diff.noprefix=false diff --no-index --no-color --no-ext-diff --unified=0 -- <base-blob-path> <source-blob-path>` against the two content-addressed bundle blobs and nothing else
-resource: the sealed bundle's base-side and source-side blobs for one manifest entry
+resource: the sealed bundle's base-side and source-side blobs for one manifest entry, where the base-side blob was resolved at the single pinned diff-base revision and nowhere else
 api-version: n/a
 accept: n/a
 paging: n/a
@@ -587,7 +615,7 @@ output: reserialization by the CLI or the service is tolerated only when this in
 
 ## Local: files, hashing, and cleanup
 
-```contract:apply:acl:v1
+```contract:apply:acl:v2
 operation: acl.apply
 adapter: local
 capability: n/a
@@ -598,6 +626,17 @@ accept: n/a
 paging: n/a
 input: n/a
 output: access restricted to the current user plus the unavoidable Windows `Administrators` and `SYSTEM` principals; this never claims protection from privileged operating-system principals
+
+The applied mode is read back with the reader for the detected platform, never with one reader
+tried against every host: `icacls <path>` on Windows, GNU coreutils `stat -c %a <path>` on Linux,
+and `stat -f %Lp <path>` on macOS and every other BSD-derived host, because `-c` is a GNU-only
+format flag that BSD `stat` rejects and `-f` on GNU `stat` reports a filesystem instead of a mode.
+Select the reader from an explicit platform decision — `$IsWindows`, `$IsLinux`, and `$IsMacOS`,
+falling back to `uname -s` for another BSD — and never by running one form and treating its
+failure as permission to try the other, because a failure that is really a permission error would
+then be read as a platform mismatch. Require directory mode `700` and file mode `600` exactly. A
+host whose platform cannot be identified, or whose mode cannot be read back with its own reader,
+is unverifiable and blocks; the approved Unix support is never narrowed to GNU hosts alone.
 ```
 
 ```contract:compute:hash:v1
@@ -633,7 +672,14 @@ under the target project's `git rev-parse --git-common-dir`, in `pr-review/`, ke
 canonical host plus the provider-returned repository and pull-request IDs, so Azure DevOps
 aliases of one pull request collide onto the same key.
 
-```contract:acquire:lease:v1
+Every `[System.IO.File]::Replace` below is called with no backup, which from PowerShell must be
+written as `[System.IO.File]::Replace($temp,$path,[NullString]::Value)`. Passing `$null` there
+does not reach the API as a null: PowerShell binds it to the `string` parameter as an empty
+path, and the call fails with `ArgumentException` before it ever attempts the replacement, which
+would turn a genuine replace failure into an argument error and would make a missing destination
+indistinguishable from a rejected one.
+
+```contract:acquire:lease:v2
 operation: lease.acquire
 adapter: local
 capability: n/a
@@ -644,6 +690,30 @@ accept: n/a
 paging: n/a
 input: an owner record holding run ID, session ID, PID with process start time, OS boot ID, access digest, monotonic epoch, and owner token
 output: held or denied; `CreateNew` is the compare-and-swap, so exactly one contender creates the file and every other receives `IOException` and is denied, and an unwritable Git common directory blocks the run
+
+The create precedes the owner-record flush, so a crash in that window leaves a lease file that
+exists but was never finished, and crash-at-every-transition is an invariant of this design. A
+contender denied by `CreateNew` therefore classifies the existing record before doing anything
+else. A record that is zero-length, is not valid JSON, or parses but is missing any of run ID,
+session ID, PID, process start time, boot ID, monotonic epoch, or owner token is malformed by
+construction, because no writer ever finished it, so it names no owner, proves no liveness, and
+can never be aged out by expiry. Recovery is one exclusive ownership transition, never a delete
+followed by a fresh create. The contender opens the record with `[System.IO.File]::Open($path,[System.IO.FileMode]::Open,[System.IO.FileAccess]::ReadWrite,[System.IO.FileShare]::None)`,
+which proves no writer still holds it; a sharing violation proves a writer is mid-create and this
+contender has lost. Holding that one handle for the whole transition, it reads and classifies the
+content, and only when the content is malformed does it truncate that same file to zero length,
+write the complete owner record through that same handle, flush durably, and close. That single
+exclusive handle is the compare-and-swap, so there is no window in which the record is deleted or
+absent and no second open whose outcome could contradict the classification. `DeleteOnClose` is
+never used here, because it deletes on disposal even when the contender has already learned it
+should not delete, which would let a delayed contender erase a valid record another contender
+finished meanwhile. A contender that classifies the content as complete releases the handle
+without writing a byte, so a record that parses and carries every required field is never deleted
+or overwritten as malformed: it follows the normal expiry, liveness, and `lease.takeover` path even
+when its owner is long gone. Exactly one contender can therefore become the acquirer, because every
+other contender is either denied the exclusive open or opens it after the record has become
+complete. No provider send can ever originate from a malformed record, because `lease.fence` fails
+on one and admits only a completed owner record.
 ```
 
 ```contract:heartbeat:lease:v1
@@ -659,30 +729,64 @@ input: the owner record with an incremented monotonic tick
 output: refreshed liveness; six missed heartbeats, that is 60 seconds, expire the lease
 ```
 
-```contract:takeover:lease:v2
+```contract:takeover:lease:v3
 operation: lease.takeover
 adapter: local
 capability: n/a
-method: compare-and-swap in four ordered steps — first create `<key>.takeover.<new-epoch>.claim` with `[System.IO.FileMode]::CreateNew`, which exactly one contender can win; then re-read the lease and require it to be byte-identical to the expired record this contender observed; then write the new record at a strictly higher monotonic epoch with a fresh owner token to a temporary file, flush, and `[System.IO.File]::Replace` it over the lease; then re-read the persisted lease and require its owner token and epoch to be exactly the ones just written
+method: compare-and-swap in four ordered steps — first claim the new epoch by creating `<key>.takeover.<new-epoch>.claim` with `[System.IO.FileMode]::CreateNew`, `[System.IO.FileShare]::None`, and `[System.IO.FileOptions]::DeleteOnClose`, writing this contender's owner token, PID, process start time, and boot ID, and holding that handle open for the whole takeover; then re-read the lease and require it to be byte-identical to the expired record this contender observed; then write the new record at a strictly higher monotonic epoch with a fresh owner token to a temporary file, flush, and `[System.IO.File]::Replace` it over the lease; then re-read the persisted lease and require its owner token and epoch to be exactly the ones just written
 resource: `<git-common-dir>/pr-review/<key>.lease.json` and its `<key>.takeover.<new-epoch>.claim`
 api-version: n/a
 accept: n/a
 paging: n/a
 input: proof that the recorded PID with that exact process start time is absent and that the recorded app session is not running
 output: ownership at a strictly higher epoch, followed by a fresh inventory and reconciliation of every `attempt_started` item; a contender whose claim creation fails, whose re-read no longer matches the observed expired record, or whose read-back does not return its own token and epoch has lost, writes nothing, and never proceeds, so two contenders can never both believe they took over; a wall-clock change never proves liveness, and a boot-ID change or monotonic loss forbids automatic takeover until the prior boot is proven ended and the prior session proven inactive
+
+The claim is never allowed to outlive the attempt that created it, because a claim that survives
+its contender would make that epoch permanently unclaimable and would deny every later takeover
+forever. `DeleteOnClose` removes it on success, on every abort, and on process death, and a claim
+that still survives a power loss is reclaimed exactly once. A contender whose `CreateNew` fails
+because the file exists opens the existing claim exactly once with
+`[System.IO.File]::Open($path,[System.IO.FileMode]::Open,[System.IO.FileAccess]::ReadWrite,[System.IO.FileShare]::None)`
+and no deletion option. A sharing violation proves a live holder still owns the claim, so this
+contender has lost and stops. A `FileNotFoundException` proves another contender already removed
+it, so this contender retries `CreateNew` exactly once and never deletes anything. A successful
+exclusive open proves no process holds the handle, and only then is the content classified.
+Claim content that is absent, zero-length, not valid JSON, or valid JSON missing any of the owner
+token, PID, process start time, or boot ID is abandoned by construction, because a contender that
+died between its `CreateNew` and its flush leaves exactly that and it names no process whose
+liveness could ever be tested. Content that parses and carries every required field is abandoned
+only when that recorded PID with that exact process start time is absent; a recorded process that
+is still running means the claim is not abandoned, so this contender has lost and never deletes
+it. An abandoned claim is deleted through an exclusive `[System.IO.FileOptions]::DeleteOnClose`
+handle reopened with the same `[System.IO.FileMode]::Open`, `[System.IO.FileAccess]::ReadWrite`,
+and `[System.IO.FileShare]::None`. A sharing violation on that reopen proves another contender
+already re-created the claim and now holds it, so this contender never obtains a handle, deletes
+nothing, and has lost; an absence proves another reclaimer already removed it, so this contender
+retries `CreateNew` exactly once and deletes nothing. The reopened file must still carry the exact
+identity — length, creation time, last write time, and content digest — that the classifying open
+observed, and a mismatch is a lost attempt. That identity check is a defensive assertion and never
+the thing that prevents deletion, because a `DeleteOnClose` handle deletes on disposal whatever the
+check concludes. What actually protects a claim in use is exclusive sharing: a winning contender
+holds its own fresh claim exclusively for its whole takeover, so no other contender can obtain the
+handle at all, and the reclaimer only ever reaches this reopen for a claim it already proved
+unheld. Closing that handle removes the abandoned claim, and the contender then
+retries `CreateNew` exactly once; a second failure means another contender reclaimed it first, so
+this contender has lost. Exclusive sharing makes reclamation itself a compare-and-swap, so two
+reclaimers can never both end up holding the claim, and no contender ever deletes a claim it did
+not first prove abandoned under its own exclusive handle.
 ```
 
-```contract:fence:lease:v1
+```contract:fence:lease:v2
 operation: lease.fence
 adapter: local
 capability: n/a
-method: re-read the lease record from disk and require its persisted owner token and monotonic epoch to equal this run's token and epoch
+method: re-read the lease record from disk, require it to be present, non-empty, valid JSON, and to carry both an owner token and a monotonic epoch, then require those persisted values to equal this run's token and epoch
 resource: `<git-common-dir>/pr-review/<key>.lease.json`
 api-version: n/a
 accept: n/a
 paging: n/a
 input: this run's owner token and monotonic epoch
-output: permission to proceed with exactly the one operation that follows; this fence runs immediately before every provider send and immediately before every journal write, and a run whose token or epoch no longer matches is a stale writer that sends nothing, writes no journal row, releases nothing, records `blocked`, and reports the current holder's run and epoch
+output: permission to proceed with exactly the one operation that follows; this fence runs immediately before every provider send and immediately before every journal write, and a run whose token or epoch no longer matches is a stale writer that sends nothing, writes no journal row, releases nothing, records `blocked`, and reports the current holder's run and epoch; an absent, zero-length, unparseable, or schema-invalid record can match no token and no epoch, so it fails the fence and no provider send and no journal write ever originates from a record a writer never finished
 ```
 
 ```contract:release:lease:v1
@@ -698,17 +802,17 @@ input: the owner token minted at acquisition
 output: released only on an exact owner-token match, so a non-matching token never releases another run's lease
 ```
 
-```contract:create:journal:v1
+```contract:create:journal:v2
 operation: journal.create
 adapter: local
 capability: n/a
-method: create `<key>.journal.json` with `[System.IO.File]::Open($path,[System.IO.FileMode]::CreateNew,[System.IO.FileAccess]::Write,[System.IO.FileShare]::None)`, write the first journal version, call `Flush($true)`, and close
+method: pass `lease.fence`, then create `<key>.journal.json` with `[System.IO.File]::Open($path,[System.IO.FileMode]::CreateNew,[System.IO.FileAccess]::Write,[System.IO.FileShare]::None)`, write the first journal version, call `Flush($true)`, and close
 resource: `<git-common-dir>/pr-review/<key>.journal.json`
 api-version: n/a
 accept: n/a
 paging: n/a
-input: the first journal version, holding at least one row
-output: the first journal exists exactly once; `CreateNew` fails with `IOException` when a journal already exists, and the run then uses `journal.append` instead, because `[System.IO.File]::Replace` requires an existing destination and can therefore never create the first journal
+input: the first journal version, holding at least one row, every row stamped with the writing owner token and monotonic epoch
+output: the first journal exists exactly once; the fence runs immediately before the exclusive create because journal creation is a journal write like any other and a stale writer must never lay down the first version, `CreateNew` fails with `IOException` when a journal already exists, and the run then uses `journal.append` instead, because `[System.IO.File]::Replace` requires an existing destination and fails with `FileNotFoundException` when it is absent, so it can never create the first journal
 ```
 
 ```contract:append:journal:v2

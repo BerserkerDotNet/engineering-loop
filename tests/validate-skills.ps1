@@ -19,16 +19,33 @@
     copies, and requires the validator to reject every negative fixture.
 
     The contract checks are structural: they parse Markdown and prove that the skills
-    state their rules. They do not execute any agent, provider adapter, terminal,
-    lease, or network operation, and they therefore prove nothing about run-time
-    agent or provider behavior. Claiming provider behavior requires live
-    certification against explicitly authorized disposable fixtures, which this
-    script neither performs nor simulates. The one executable exception is the
-    history-aware secret-scan proof in -SelfTest, which builds a throwaway Git
-    repository whose earlier commit contains a synthetic token that a later commit
-    removes, then demonstrates that the final aggregate diff misses that token while
-    the per-commit scan prescribed by skills/issue-resolution detects it. That proof
-    is skipped, and reported as skipped, when no git executable is on PATH.
+    state their rules. They do not execute any agent, provider adapter, terminal, or
+    network operation, and they therefore prove nothing about run-time agent or
+    provider behavior. Claiming provider behavior requires live certification against
+    explicitly authorized disposable fixtures, which this script neither performs nor
+    simulates.
+
+    -SelfTest additionally runs three executable proofs, all against throwaway paths
+    under the temporary directory and never against the inspected repository. The
+    history-aware secret-scan proof builds a throwaway Git repository whose earlier
+    commit contains a synthetic token that a later commit removes, then demonstrates
+    that the final aggregate diff misses that token while the per-commit scan
+    prescribed by skills/issue-resolution detects it; it is skipped, and reported as
+    skipped, when no git executable is on PATH. The journal proof exercises the local
+    file primitives that skills/pr-review prescribes for journal.create and
+    journal.append. The lease proof races real child processes over a local expired
+    lease record to exercise the local file primitives prescribed for lease.takeover
+    and lease.fence, then proves that a takeover claim abandoned by a crash is
+    reclaimed exactly once whether it is absent, zero-length, torn, schema-invalid, or
+    a well-formed record naming a dead process, that a claim whose exact recorded
+    process is still alive is never reclaimed, and that the same crash window at
+    lease.acquire recovers to exactly one valid acquirer while a complete record is
+    never deleted as malformed, including repeated adversarial rounds in which one
+    contender is held inside its classification while another completes the record;
+    it is skipped when no PowerShell host executable can be
+    resolved. These proofs cover only local filesystem behavior. They involve no
+    provider, no credential, and no network, so they prove nothing about provider
+    run-time behavior.
 
 .PARAMETER RepoRoot
     Repository root to validate. Defaults to the parent directory of this script.
@@ -318,8 +335,8 @@ $script:ContractFields = @(
 # Parity capabilities every provider adapter must cover, so neither provider offers a reduced
 # acquisition, review, approval, posting, or recovery flow.
 $script:ContractCapabilities = @(
-    'identity', 'repository', 'pull-request', 'revision', 'tree', 'item', 'changes', 'blob',
-    'inventory', 'decision', 'inline-create', 'general-create'
+    'identity', 'repository', 'pull-request', 'revision', 'merge-base', 'tree', 'item', 'changes',
+    'blob', 'inventory', 'decision', 'inline-create', 'general-create'
 )
 
 $script:ContractProviderAdapters = @('github', 'ado')
@@ -1396,13 +1413,19 @@ function Test-ReviewContractBlocks {
         'grammar-stated'   = 'Every contract is one fenced block whose info string is\s*`contract:<kind>:<adapter-or-local-area>:v<n>`\.'
         'tag-unique'       = 'The pair `<kind>:<adapter-or-local-area>` is\s*unique across this repository'
         'version-bumped'   = '`<n>` is bumped whenever a block''s meaning changes'
-        'capability-set'   = 'The parity capability set is `identity`, `repository`, `pull-request`, `revision`, `tree`,\s*`item`, `changes`, `blob`, `inventory`, `decision`, `inline-create`, and `general-create`\.'
-        'parity-stated'    = 'Both\s*provider adapters cover all twelve, so neither provider offers a reduced flow\.'
+        'capability-set'   = 'The parity capability set is `identity`, `repository`, `pull-request`, `revision`, `merge-base`,\s*`tree`, `item`, `changes`, `blob`, `inventory`, `decision`, `inline-create`, and\s*`general-create`\.'
+        'parity-stated'    = 'Both provider adapters cover all thirteen, so neither provider offers a reduced\s*flow\.'
         'headers-transmitted' = '`method` is the exact command form, so a declared header must actually be transmitted by it\.\s*Every provider block sends its declared `accept` in `method`, and every GitHub block also sends\s*its declared `api-version` as an `X-GitHub-Api-Version` header\.'
         'undeclared-media-defect' = 'A declared media type that the\s*command never sends is a defect'
         'immutable-resolution' = 'A path is\s*resolved to content in exactly one way: resolve the pinned commit to its tree, resolve the path\s*inside that tree or through the pinned single-path item read, then read the resulting\s*content-addressed blob\.'
         'no-mutable-ref'   = 'Never resolve a path through a branch name, a tag, `HEAD`, a fetch, or a\s*working tree\.'
         'resolution-blocks' = 'A missing, truncated, or ambiguous immutable resolution blocks the run\.'
+        'diff-base-is-merge-base' = 'Exactly one revision per provider is the diff base, and it is the merge base of the pull request,\s*never the tip of the target branch\.'
+        'github-diff-base' = 'On GitHub the diff base is `merge_base_commit\.sha` from\s*`github\.merge-base-read`; `base\.sha` is a snapshot the provider recorded when the pull request was\s*opened or last synchronized, so it may equal the comparison merge base, may lag it, or may differ\s*from it, which makes it not authoritative for deterministic diff reconstruction and never a diff\s*base\.'
+        'ado-diff-base'    = 'On Azure DevOps the diff base is the highest pinned iteration''s `commonRefCommit\.commitId`\s*from `ado\.iteration-list`; `lastMergeTargetCommit\.commitId` is only the target-branch tip and is\s*never a diff base\.'
+        'diff-base-rationale' = 'A target branch that advanced after the pull request was opened makes the tip\s*differ from the merge base, so a base-side path resolved at the tip can be absent, can carry\s*unrelated later content, and can produce anchors the provider will reject\.'
+        'base-sha-agreement-not-evidence' = 'Because `base\.sha` may\s*coincide with the comparison merge base on one pull request and not on the next, observing that\s*the two agree is never evidence that `base\.sha` may be used\.'
+        'diff-base-scope'  = 'Every base-side blob, every\s*unchanged-context blob, and every `diff\.compute` base input resolves at the diff base alone\.'
         'ado-accept-media-type' = '`--accept-media-type` is the response media type and is what carries each block''s declared\s*`accept`\.'
         'ado-encoding-is-input' = '`--encoding` describes the `--in-file` request body only, so it appears on write blocks\s*and never stands in for an Accept header\.'
         'no-verbose-debug' = 'No block may pass `--verbose` or `--debug`\.'
@@ -1681,12 +1704,16 @@ function Test-ReviewResolutionAndDiff {
 
     $required = [ordered]@{
         'pinned-only'       = 'Resolve every path to content only through the pinned revisions, never through a branch, a tag,\s*`HEAD`, a fetch, or a working tree\.'
-        'github-chain'      = 'On GitHub, `github\.pull-request-read` pins `base\.sha` and\s*`head\.sha`, `github\.commit-read` turns each into a root tree, `github\.tree-read` resolves paths\s*inside that tree, and `github\.item-read` resolves a single path when the recursive tree returns\s*`truncated: true`'
-        'ado-chain'         = 'On Azure DevOps, `ado\.pull-request-read` and\s*`ado\.iteration-list` pin the base and source revisions, `ado\.commit-read` returns each `treeId`,\s*`ado\.tree-read` resolves paths, and `ado\.item-read` resolves a single path with\s*`versionType=commit`\.'
+        'diff-base-is-merge-base' = 'Exactly one revision per provider is the diff base, and it is\s*the merge base of the pull request, never the tip of the target branch, because a target branch\s*that advanced after the pull request was opened would resolve base-side paths to unrelated later\s*content or to nothing at all and would produce anchors the provider rejects\.'
+        'github-chain'      = 'On GitHub,\s*`github\.pull-request-read` pins `base\.sha` as a non-authoritative base snapshot and `head\.sha` as\s*the source revision, `github\.merge-base-read` compares that exact pair and returns\s*`merge_base_commit\.sha` as the sole diff base, `github\.commit-read` turns the diff base and the\s*source revision into root trees, `github\.tree-read` resolves paths inside that tree, and\s*`github\.item-read` resolves a single path when the recursive tree returns `truncated: true`'
+        'github-base-sha-is-a-snapshot' = 'GitHub records `base\.sha` when the pull request is opened or last\s*synchronized, so it may equal the comparison merge base, may lag it, or may differ from it, and\s*observing that it agrees with the merge base on one pull request is never evidence that it may be\s*used on the next\.'
+        'ado-chain'         = 'On\s*Azure DevOps, `ado\.pull-request-read` pins `lastMergeSourceCommit\.commitId` as the source\s*revision and `lastMergeTargetCommit\.commitId` as the target-branch tip only, `ado\.iteration-list`\s*pins the highest iteration and its `commonRefCommit\.commitId` as the sole diff base,\s*`ado\.commit-read` returns each `treeId`, `ado\.tree-read` resolves paths, and `ado\.item-read`\s*resolves a single path with `versionType=commit`\.'
+        'tips-are-not-diff-base' = '`base\.sha` and `lastMergeTargetCommit\.commitId` are never a diff base\.'
         'file-list-is-head-only' = '`github\.pull-request-file-list` returns only the source-side blob, so every base-side blob and\s*every unchanged-context blob is resolved through this chain\.'
         'resolution-blocks' = 'A missing, truncated, or ambiguous\s*resolution that neither the tree read nor the single-path item read can settle blocks the run\.'
         'anchors-from-diff' = 'Every anchor comes from `diff\.compute` over the bundle''s own base-side and source-side blobs\.'
         'never-from-checkout' = 'Never derive an anchor from a checkout, an index, a working tree, or a provider-supplied patch,\s*because a provider patch is omitted or truncated for large files\.'
+        'single-diff-base-input' = '`bundle\.seal` and\s*`diff\.compute` take exactly one diff-base revision, so a manifest whose base-side entries do not\s*all carry that one revision blocks\.'
         'context-pinned'    = 'Each of those paths is resolved at the pinned\s*base revision through `item-read` or `tree-read` and read with `blob-read`'
         'context-unresolved' = 'an unchanged-context\s*path that cannot be resolved immutably is omitted from the bundle and recorded as unresolved,\s*never filled in from a checkout'
     }
@@ -1734,8 +1761,106 @@ function Test-ReviewResolutionAndDiff {
         }
     }
 
+    # The diff base is the merge base, never the target-branch tip. A tip that advanced after the
+    # pull request was opened resolves base-side paths to unrelated content or to nothing, so the
+    # binding must be exact and single-valued on both providers.
+    if (-not $blocks.ContainsKey('github.merge-base-read')) {
+        Add-Violation $Violations 'review-resolution' "There is no 'github.merge-base-read' contract, so GitHub has no immutable merge base and base-side blobs would be read at the base-ref tip."
+    }
+    else {
+        $mergeBase = $blocks['github.merge-base-read']
+        if ($mergeBase.Fields['resource'] -notmatch [regex]::Escape('/compare/{base_sha}...{head_sha}')) {
+            Add-Violation $Violations 'review-resolution' "'github.merge-base-read' does not compare the exact pinned base and head SHA pair, so its result is not immutable."
+        }
+        if ($mergeBase.Fields['capability'] -ne 'merge-base') {
+            Add-Violation $Violations 'review-resolution' "'github.merge-base-read' declares capability '$($mergeBase.Fields['capability'])' instead of 'merge-base'."
+        }
+        $mergeBaseRules = [ordered]@{
+            'sole-diff-base' = '`merge_base_commit.sha`, bound as the sole GitHub diff-base revision'
+            'feeds-chain'    = 'fed to `github.commit-read`, `github.tree-read`, `github.item-read`, every base-side `github.blob-read`, and the base side of `diff.compute`'
+            'immutable-pair' = 'the full 40-character `base.sha` and `head.sha` this run already pinned'
+            'endpoint-only'  = 'supplying `base.sha` as one endpoint of this comparison is the only sanctioned use of it and is never a use of it as a diff base'
+            'absent-blocks'  = 'a `merge_base_commit.sha` that is absent or not a full 40-character SHA blocks'
+        }
+        foreach ($id in $mergeBaseRules.Keys) {
+            if ($mergeBase.Fields['output'] -notmatch [regex]::Escape($mergeBaseRules[$id])) {
+                Add-Violation $Violations 'review-resolution' "'github.merge-base-read' does not bind '$id'."
+            }
+        }
+    }
+    if ($blocks.ContainsKey('github.pull-request-read')) {
+        $prRead = $blocks['github.pull-request-read'].Fields['output']
+        if ($prRead -notmatch [regex]::Escape('`base.sha` as a non-authoritative base snapshot only')) {
+            Add-Violation $Violations 'review-resolution' "'github.pull-request-read' still names 'base.sha' as a pinned base revision instead of a non-authoritative base snapshot."
+        }
+        if ($prRead -notmatch [regex]::Escape('`base.sha` is never the diff base')) {
+            Add-Violation $Violations 'review-resolution' "'github.pull-request-read' does not forbid using 'base.sha' as the diff base."
+        }
+        # The old justification claimed base.sha is the base-ref tip. It is not: GitHub records it
+        # when the pull request is opened or last synchronized, so it may equal the merge base, lag
+        # it, or differ from it. A false justification invites resolving base-side content at the
+        # live base-ref tip, which is the exact defect this binding exists to prevent.
+        if ($prRead -notmatch [regex]::Escape('it may equal, may lag, or may differ from the comparison merge base')) {
+            Add-Violation $Violations 'review-resolution' "'github.pull-request-read' does not state that 'base.sha' is a snapshot that may equal, lag, or differ from the comparison merge base."
+        }
+        if ($prRead -match 'base-ref tip') {
+            Add-Violation $Violations 'review-resolution' "'github.pull-request-read' calls 'base.sha' a base-ref tip, which is factually wrong and would justify resolving base-side content at the live tip."
+        }
+    }
+    if ($blocks.ContainsKey('github.pull-request-file-list')) {
+        if ($blocks['github.pull-request-file-list'].Fields['output'] -notmatch [regex]::Escape('against the `merge_base_commit.sha` returned by `github.merge-base-read` and never against `base.sha`')) {
+            Add-Violation $Violations 'review-resolution' "'github.pull-request-file-list' resolves base-side blobs at something other than the merge base."
+        }
+    }
+    if ($blocks.ContainsKey('ado.pull-request-read')) {
+        $adoPrRead = $blocks['ado.pull-request-read'].Fields['output']
+        if ($adoPrRead -notmatch [regex]::Escape('`lastMergeTargetCommit.commitId` as the target-branch tip only')) {
+            Add-Violation $Violations 'review-resolution' "'ado.pull-request-read' still names 'lastMergeTargetCommit.commitId' as a pinned base revision instead of the target-branch tip only."
+        }
+        if ($adoPrRead -notmatch [regex]::Escape('the diff base is the highest pinned iteration''s `commonRefCommit.commitId` from `ado.iteration-list`')) {
+            Add-Violation $Violations 'review-resolution' "'ado.pull-request-read' does not redirect the diff base to the highest iteration's 'commonRefCommit.commitId'."
+        }
+    }
+    if (-not $blocks.ContainsKey('ado.iteration-list')) {
+        Add-Violation $Violations 'review-resolution' "There is no 'ado.iteration-list' contract, so Azure DevOps has no pinned merge base."
+    }
+    else {
+        $iterations = $blocks['ado.iteration-list']
+        if ($iterations.Fields['capability'] -ne 'merge-base') {
+            Add-Violation $Violations 'review-resolution' "'ado.iteration-list' declares capability '$($iterations.Fields['capability'])' instead of 'merge-base', so the providers do not cover the diff base at parity."
+        }
+        $iterationRules = [ordered]@{
+            'sole-diff-base' = 'its `commonRefCommit.commitId` is the merge base, bound as the sole Azure DevOps diff-base revision'
+            'feeds-chain'    = 'fed to `ado.commit-read`, `ado.tree-read`, `ado.item-read`, every base-side `ado.blob-read`, and the base side of `diff.compute`'
+            'tips-excluded'  = '`targetRefCommit.commitId` and `lastMergeTargetCommit.commitId` are target-branch tips and are never a diff base'
+            'absent-blocks'  = 'an absent or empty `commonRefCommit.commitId` on the highest iteration blocks'
+        }
+        foreach ($id in $iterationRules.Keys) {
+            if ($iterations.Fields['output'] -notmatch [regex]::Escape($iterationRules[$id])) {
+                Add-Violation $Violations 'review-resolution' "'ado.iteration-list' does not bind '$id'."
+            }
+        }
+    }
+    if ($blocks.ContainsKey('ado.iteration-change-list')) {
+        if ($blocks['ado.iteration-change-list'].Fields['output'] -notmatch [regex]::Escape('either `item.originalObjectId` read directly with `ado.blob-read`, or the path resolved at the pinned `commonRefCommit.commitId` diff base, and the two must agree')) {
+            Add-Violation $Violations 'review-resolution' "'ado.iteration-change-list' does not bind the base side of a changed path to 'item.originalObjectId' or to the pinned diff base."
+        }
+    }
+    if ($blocks.ContainsKey('bundle.seal')) {
+        $seal = $blocks['bundle.seal']
+        if ($seal.Fields['method'] -notmatch [regex]::Escape('taking exactly one diff-base revision — `merge_base_commit.sha` on GitHub, the highest pinned iteration''s `commonRefCommit.commitId` on Azure DevOps')) {
+            Add-Violation $Violations 'review-resolution' "'bundle.seal' does not take exactly one diff-base revision per provider."
+        }
+        if ($seal.Fields['input'] -notmatch [regex]::Escape('a `base.sha` snapshot or a target-branch tip is never accepted as the diff base, and a manifest whose base-side entries do not all carry that one diff-base revision blocks')) {
+            Add-Violation $Violations 'review-resolution' "'bundle.seal' accepts more than one base revision, so 'diff.compute' would have an ambiguous base input."
+        }
+    }
+
     if ($blocks.ContainsKey('diff.compute')) {
         $diff = $blocks['diff.compute']
+        if ($diff.Fields['resource'] -notmatch [regex]::Escape('the base-side blob was resolved at the single pinned diff-base revision and nowhere else')) {
+            Add-Violation $Violations 'review-resolution' "'diff.compute' does not require its base-side blob to come from the single pinned diff-base revision."
+        }
         foreach ($flag in @('--no-index', '--unified=0', 'diff\.renames=false', 'core\.autocrlf=false')) {
             if ($diff.Fields['method'] -notmatch $flag) {
                 Add-Violation $Violations 'review-resolution' "'diff.compute' is not deterministic: its method omits '$($flag -replace '\\', '')'."
@@ -1847,6 +1972,12 @@ function Test-ReviewLeaseAndJournal {
         'stale-writer'   = 'A run whose persisted owner token or monotonic epoch no longer matches is a stale writer:\s*it sends nothing, writes no journal row, releases nothing, and records `blocked`\.'
         'rows-stamped'   = 'Every journal\s*row carries the writing owner token and epoch, and `journal\.append` re-reads and merges before\s*replacing, so a full-journal write can never drop or downgrade another owner''s row\.'
         'journal-create' = 'The first journal is created with `journal\.create` using `CreateNew`, because\s*`\[System\.IO\.File\]::Replace` requires an existing destination and can never create it\.'
+        'journal-create-fenced' = 'Creating\s*the first journal is a journal write like any other, so `journal\.create` passes `lease\.fence`\s*immediately before its exclusive create and a stale writer never lays down the first version\.'
+        'claim-lifecycle' = 'The claim never outlives the attempt that created it: it is opened\s*`DeleteOnClose` and exclusively, so success, abort, and process death all remove it, and a claim\s*that survives a power loss is reclaimed exactly once by a contender that can open it\s*exclusively\.'
+        'claim-malformed' = 'A claim whose content is absent, zero-length, unparseable, or missing a required\s*field is abandoned by construction, because a contender that died before its flush leaves exactly\s*that and it names no process whose liveness could be tested; a claim that parses completely is\s*abandoned only when its recorded process with that exact start time is gone, and a live holder''s\s*claim is never deleted\.'
+        'claim-identity'  = 'The deletion runs under an exclusive `DeleteOnClose` handle opened only after that classification, and its identity check is a defensive assertion rather than what\s*prevents deletion, because such a handle deletes on disposal whatever the check concludes; what\s*actually protects a claim in use is exclusive sharing, which already makes it\s*impossible to reclaim a claim a winning contender still holds\.'
+        'acquire-crash'   = 'The create precedes the owner-record flush, so a crash in that window leaves a\s*lease file that exists but was never finished\. A record that is absent, zero-length, unparseable,\s*or missing a required field is malformed by construction, names no owner, and can never be aged\s*out by expiry, so recovery is one exclusive ownership transition rather than a delete and a fresh\s*create: the contender opens the record exclusively, proving no writer still holds it, and while\s*still holding that one handle classifies the content and, only if it is malformed, truncates and\s*writes the complete owner record through the same handle\. That single handle is the\s*compare-and-swap, so no window exists in which the record is absent, and `DeleteOnClose` is never\s*used here because it would delete on disposal even after the contender learned another contender\s*had already written a valid record\. A record that parses completely is never deleted or\s*overwritten as malformed and follows the normal expiry, liveness, and takeover path instead\.\s*`lease\.fence` fails on a malformed record and admits only a completed owner record, so no provider\s*send and no journal write ever originates from one\.'
+        'claim-poison'   = 'A claim left behind would otherwise make\s*that epoch permanently unclaimable and deny every later takeover forever\.'
         'journal-append-later' = 'Every\s*later version goes through `journal\.append`\.'
         'write-loop-fenced' = 'take a complete before inventory, pass\s*`lease\.fence`, append the journal row before sending, pass `lease\.fence` again, send exactly one\s*write'
     }
@@ -1864,6 +1995,17 @@ function Test-ReviewLeaseAndJournal {
         $create = $blocks['journal.create']
         if ($create.Fields['method'] -notmatch 'FileMode\]::CreateNew') {
             Add-Violation $Violations 'review-lease' "'journal.create' does not create the first journal exclusively with 'CreateNew'."
+        }
+        # Creating the first journal is a journal write, so the same fence invariant applies:
+        # without it a stale writer could lay down the very first version unopposed.
+        if ($create.Fields['method'] -notmatch 'pass `lease\.fence`, then create') {
+            Add-Violation $Violations 'review-lease' "'journal.create' does not fence against a stale writer immediately before creating the first journal."
+        }
+        if ($create.Fields['input'] -notmatch [regex]::Escape('every row stamped with the writing owner token and monotonic epoch')) {
+            Add-Violation $Violations 'review-lease' "'journal.create' rows are not stamped with the writing owner token and monotonic epoch."
+        }
+        if ($create.Fields['output'] -notmatch [regex]::Escape('the fence runs immediately before the exclusive create because journal creation is a journal write like any other')) {
+            Add-Violation $Violations 'review-lease' "'journal.create' does not state why the fence precedes the exclusive create."
         }
         if ($create.Fields['method'] -notmatch 'Flush\(\$true\)') {
             Add-Violation $Violations 'review-lease' "'journal.create' does not flush the first journal to disk."
@@ -1902,13 +2044,22 @@ function Test-ReviewLeaseAndJournal {
         if ($fence.Fields['output'] -notmatch 'stale writer that sends nothing') {
             Add-Violation $Violations 'review-lease' "'lease.fence' does not stop a stale writer."
         }
+        # A torn or empty lease record names no owner, so the fence must reject it outright rather
+        # than compare against fields that were never written.
+        if ($fence.Fields['method'] -notmatch [regex]::Escape('require it to be present, non-empty, valid JSON, and to carry both an owner token and a monotonic epoch')) {
+            Add-Violation $Violations 'review-lease' "'lease.fence' does not validate the lease record's presence and schema before comparing it."
+        }
+        if ($fence.Fields['output'] -notmatch [regex]::Escape('an absent, zero-length, unparseable, or schema-invalid record can match no token and no epoch, so it fails the fence')) {
+            Add-Violation $Violations 'review-lease' "'lease.fence' does not fail on a malformed lease record, so a send could originate from a record no writer finished."
+        }
     }
 
     if ($blocks.ContainsKey('lease.takeover')) {
         $takeover = $blocks['lease.takeover']
         $takeoverText = ($takeover.Body -join ' ')
         $takeoverRules = [ordered]@{
-            'claim-createnew' = 'create `<key>.takeover.<new-epoch>.claim` with `[System.IO.FileMode]::CreateNew`'
+            'claim-createnew' = 'creating `<key>.takeover.<new-epoch>.claim` with `[System.IO.FileMode]::CreateNew`, `[System.IO.FileShare]::None`, and `[System.IO.FileOptions]::DeleteOnClose`'
+            'claim-held'      = 'holding that handle open for the whole takeover'
             'reread-expired'  = 'require it to be byte-identical to the expired record this contender observed'
             'higher-epoch'    = 'at a strictly higher monotonic epoch with a fresh owner token'
             'read-back'       = 'require its owner token and epoch to be exactly the ones just written'
@@ -1919,11 +2070,64 @@ function Test-ReviewLeaseAndJournal {
                 Add-Violation $Violations 'review-lease' "'lease.takeover' is not a compare-and-swap: it does not define '$id'."
             }
         }
+
+        # A claim that outlives its contender would make that epoch permanently unclaimable, so
+        # every abort, success, and crash must remove it and a surviving claim must be reclaimable
+        # exactly once.
+        $claimLifecycleRules = [ordered]@{
+            'never-outlives'    = 'The claim is never allowed to outlive the attempt that created it'
+            'poison-rationale'  = 'a claim that survives its contender would make that epoch permanently unclaimable and would deny every later takeover forever'
+            'cleanup-paths'     = '`DeleteOnClose` removes it on success, on every abort, and on process death'
+            'reclaim-exclusive' = 'opens the existing claim exactly once with `[System.IO.File]::Open($path,[System.IO.FileMode]::Open,[System.IO.FileAccess]::ReadWrite,[System.IO.FileShare]::None)` and no deletion option'
+            'sharing-violation' = 'A sharing violation proves a live holder still owns the claim, so this contender has lost and stops'
+            'already-removed'   = 'A `FileNotFoundException` proves another contender already removed it, so this contender retries `CreateNew` exactly once and never deletes anything'
+            'malformed-abandoned' = 'Claim content that is absent, zero-length, not valid JSON, or valid JSON missing any of the owner token, PID, process start time, or boot ID is abandoned by construction'
+            'malformed-why'     = 'a contender that died between its `CreateNew` and its flush leaves exactly that and it names no process whose liveness could ever be tested'
+            'process-absent'    = 'abandoned only when that recorded PID with that exact process start time is absent; a recorded process that is still running means the claim is not abandoned, so this contender has lost and never deletes it'
+            'reclaim-deletes'   = 'deleted through an exclusive `[System.IO.FileOptions]::DeleteOnClose` handle reopened with the same `[System.IO.FileMode]::Open`, `[System.IO.FileAccess]::ReadWrite`, and `[System.IO.FileShare]::None`'
+            'reopen-contended'  = 'A sharing violation on that reopen proves another contender already re-created the claim and now holds it, so this contender never obtains a handle, deletes nothing, and has lost; an absence proves another reclaimer already removed it, so this contender retries `CreateNew` exactly once and deletes nothing'
+            'identity-match'    = 'The reopened file must still carry the exact identity — length, creation time, last write time, and content digest — that the classifying open observed, and a mismatch is a lost attempt'
+            'identity-not-guard' = 'That identity check is a defensive assertion and never the thing that prevents deletion, because a `DeleteOnClose` handle deletes on disposal whatever the check concludes'
+            'exclusivity-first' = 'What actually protects a claim in use is exclusive sharing: a winning contender holds its own fresh claim exclusively for its whole takeover, so no other contender can obtain the handle at all, and the reclaimer only ever reaches this reopen for a claim it already proved unheld'
+            'reclaim-once'      = 'retries `CreateNew` exactly once; a second failure means another contender reclaimed it first, so this contender has lost'
+            'reclaim-is-cas'    = 'Exclusive sharing makes reclamation itself a compare-and-swap, so two reclaimers can never both end up holding the claim, and no contender ever deletes a claim it did not first prove abandoned under its own exclusive handle'
+        }
+        foreach ($id in $claimLifecycleRules.Keys) {
+            if ($takeoverText -notmatch [regex]::Escape($claimLifecycleRules[$id])) {
+                Add-Violation $Violations 'review-lease' "'lease.takeover' leaves a crashed claim able to poison its epoch: it does not define '$id'."
+            }
+        }
     }
 
     if ($blocks.ContainsKey('lease.acquire')) {
-        if ($blocks['lease.acquire'].Fields['output'] -notmatch 'exactly one contender creates the file') {
+        $acquire = $blocks['lease.acquire']
+        $acquireText = ($acquire.Body -join ' ')
+        if ($acquire.Fields['output'] -notmatch 'exactly one contender creates the file') {
             Add-Violation $Violations 'review-lease' "'lease.acquire' does not state that 'CreateNew' admits exactly one contender."
+        }
+
+        # 'CreateNew' precedes the owner-record flush, so a crash in that window leaves a lease
+        # file that exists but names no owner and can never be aged out by expiry. Recovery must be
+        # one exclusive ownership transition: a delete-and-recreate sequence lets a delayed
+        # contender erase the valid record another contender finished meanwhile.
+        $acquireCrashRules = [ordered]@{
+            'crash-window'      = 'The create precedes the owner-record flush, so a crash in that window leaves a lease file that exists but was never finished'
+            'malformed-schema'  = 'A record that is zero-length, is not valid JSON, or parses but is missing any of run ID, session ID, PID, process start time, boot ID, monotonic epoch, or owner token is malformed by construction'
+            'malformed-why'     = 'because no writer ever finished it, so it names no owner, proves no liveness, and can never be aged out by expiry'
+            'single-transition' = 'Recovery is one exclusive ownership transition, never a delete followed by a fresh create'
+            'exclusive-proof'   = 'opens the record with `[System.IO.File]::Open($path,[System.IO.FileMode]::Open,[System.IO.FileAccess]::ReadWrite,[System.IO.FileShare]::None)`, which proves no writer still holds it'
+            'writer-holds'      = 'a sharing violation proves a writer is mid-create and this contender has lost'
+            'same-handle'       = 'Holding that one handle for the whole transition, it reads and classifies the content, and only when the content is malformed does it truncate that same file to zero length, write the complete owner record through that same handle, flush durably, and close'
+            'handle-is-cas'     = 'That single exclusive handle is the compare-and-swap, so there is no window in which the record is deleted or absent and no second open whose outcome could contradict the classification'
+            'no-delete-on-close' = '`DeleteOnClose` is never used here, because it deletes on disposal even when the contender has already learned it should not delete, which would let a delayed contender erase a valid record another contender finished meanwhile'
+            'one-acquirer'      = 'Exactly one contender can therefore become the acquirer, because every other contender is either denied the exclusive open or opens it after the record has become complete'
+            'parseable-kept'    = 'A contender that classifies the content as complete releases the handle without writing a byte, so a record that parses and carries every required field is never deleted or overwritten as malformed: it follows the normal expiry, liveness, and `lease.takeover` path even when its owner is long gone'
+            'fence-blocks'      = 'No provider send can ever originate from a malformed record, because `lease.fence` fails on one and admits only a completed owner record'
+        }
+        foreach ($id in $acquireCrashRules.Keys) {
+            if ($acquireText -notmatch [regex]::Escape($acquireCrashRules[$id])) {
+                Add-Violation $Violations 'review-lease' "'lease.acquire' leaves a torn initial lease record unrecoverable: it does not define '$id'."
+            }
         }
     }
 }
@@ -1934,6 +2138,7 @@ function Test-ReviewProbeAndPreflight {
     $required = [ordered]@{
         'preflight-executed' = 'Run `terminal\.preflight` first and execute its checks; a narrative assurance is not a preflight\.'
         'preflight-scope'    = 'It must prove a visible interactive terminal, a non-echoing secure prompt, process-scoped\s*environment injection, the platform access controls in `acl\.apply`, an effective PSReadLine\s*history policy that saves nothing, and that transcription is off\.'
+        'acl-probe-executed' = 'Prove `acl\.apply` by actually\s*applying it to a disposable probe directory and file, reading the effective permissions back with\s*the reader for the explicitly detected platform, requiring directory `700` and file `600` to match\s*that contract, and then removing the probe path; a host that cannot\s*apply or cannot verify them blocks, because the bundle, the child copies, and every frozen\s*request body depend on those permissions\.'
         'unreadable-not-off' = 'Transcription counts as proven\s*off only when the policy is readable and disabled; an unreadable policy is not proven off\.'
         'preflight-blocks'   = 'Any\s*failure blocks before secret entry and before Azure DevOps acquisition, with no persistent login,\s*no fallback, and no attempt to override a mandatory host or group policy\.'
         'in-terminal-reproof' = 'then re-prove inside that exact terminal that history saving and transcription are\s*disabled'
@@ -1967,6 +2172,45 @@ function Test-ReviewProbeAndPreflight {
         foreach ($id in $preflightRules.Keys) {
             if ($preflightText -notmatch [regex]::Escape($preflightRules[$id])) {
                 Add-Violation $Violations 'review-probe' "'terminal.preflight' does not check '$id'."
+            }
+        }
+
+        # Access-control support must be executed, not asserted: the bundle, every child copy, and
+        # every frozen request body rely on 'acl.apply' actually working on this host.
+        $aclProbeRules = [ordered]@{
+            'disposable-path' = 'create a disposable directory holding one disposable file under the run-scoped temporary root'
+            'applies-acl'     = 'run the exact `acl.apply` command on both'
+            'reads-back'      = 'read the effective permissions back with the reader for the explicitly detected platform, `icacls <path>` on Windows, `stat -c %a <path>` on Linux, or `stat -f %Lp <path>` on macOS and BSD'
+            'requires-match'  = 'require them to match the `acl.apply` contract with directory mode `700` and file mode `600`'
+            'cleans-up'       = 'remove the disposable path'
+            'failure-blocks'  = 'an `acl.apply` that cannot be applied or whose read-back does not match the contract blocks'
+            'unknown-host'    = 'a host whose platform cannot be identified or whose permission read-back cannot be executed is unverifiable and blocks rather than being assumed to be GNU'
+            'cleanup-always'  = 'the disposable probe path is always removed whether it passed or failed'
+        }
+        foreach ($id in $aclProbeRules.Keys) {
+            if ($preflightText -notmatch [regex]::Escape($aclProbeRules[$id])) {
+                Add-Violation $Violations 'review-probe' "'terminal.preflight' claims platform access controls without executing them: it does not define '$id'."
+            }
+        }
+    }
+
+    # 'stat -c' is GNU-only and 'stat -f' means something else there, so one reader for every Unix
+    # would silently narrow the approved support to GNU hosts.
+    if ($blocks.ContainsKey('acl.apply')) {
+        $aclText = ($blocks['acl.apply'].Body -join ' ')
+        $aclPortabilityRules = [ordered]@{
+            'windows-reader' = '`icacls <path>` on Windows'
+            'linux-reader'   = 'GNU coreutils `stat -c %a <path>` on Linux'
+            'bsd-reader'     = '`stat -f %Lp <path>` on macOS and every other BSD-derived host'
+            'why-portable'   = '`-c` is a GNU-only format flag that BSD `stat` rejects and `-f` on GNU `stat` reports a filesystem instead of a mode'
+            'explicit-detect' = 'Select the reader from an explicit platform decision — `$IsWindows`, `$IsLinux`, and `$IsMacOS`, falling back to `uname -s` for another BSD'
+            'no-try-fallback' = 'never by running one form and treating its failure as permission to try the other'
+            'exact-modes'    = 'Require directory mode `700` and file mode `600` exactly'
+            'unknown-blocks' = 'A host whose platform cannot be identified, or whose mode cannot be read back with its own reader, is unverifiable and blocks; the approved Unix support is never narrowed to GNU hosts alone'
+        }
+        foreach ($id in $aclPortabilityRules.Keys) {
+            if ($aclText -notmatch [regex]::Escape($aclPortabilityRules[$id])) {
+                Add-Violation $Violations 'review-probe' "'acl.apply' verification is not portable across Unix hosts: it does not define '$id'."
             }
         }
     }
@@ -2091,6 +2335,18 @@ function Test-ReviewCertificationLedger {
         'top-override'       = 'Paging mechanics may use a small fixture with a certification-only `\$top` override\.'
         'cap-spot-check'     = 'The\s*authoritative 2,000 ceiling gets a separately recorded spot check, refreshed whenever the API\s*version changes\.'
         'cap-fixture-record' = 'without that\s*recorded proof, the paging criterion fails'
+        'rate-limit-not-required' = 'Neither the committed product requirements nor the approved design enumerates provider rate\s*limiting as a required live scenario, so no row requires it and no certification run may generate\s*write volume in order to induce it\.'
+        'no-abusive-traffic' = 'Deliberately exceeding a documented provider limit is abusive\s*traffic against a live service and is never certification evidence\.'
+        'forbidden-403-route' = 'by repeating the exact same operation against the same\s*fixture with a deliberately read-only credential, which creates nothing'
+        'rate-limit-supplemental' = 'A genuine provider rate-limit response observed on a non-mutating read may be recorded as\s*supplemental transport evidence and run through the identical classifier the write loop uses\.'
+        'supplemental-never-certifies' = 'Supplemental transport evidence never moves a row to `enabled` on its own, never substitutes for a\s*criterion or any of its subcases, and never proves write-path behavior or provider parity\.'
+        'no-injection'       = 'Simulated, injected, intercepted, proxied, and locally synthesized provider responses are never\s*evidence\.'
+        'only-sanctioned-deviation' = 'Every certification response comes from the declared provider authority through the\s*exact command form in `reference/commands\.md`, and the certification-only `\$top` paging override\s*recorded above is the only sanctioned deviation from a normal run\.'
+        'cap-fixture-read-only' = 'It is a separate persistent\s*fixture, it is read-only after creation, it is outside every disposable fixture cleanup, it is\s*outside `fixture-ids` and outside every mutation authorization, and it is refreshed whenever the\s*API version changes\.'
+        'cap-fixture-no-write' = 'No manifest authorizes any write against it, and only `GET` reads may target\s*it\.'
+        'cap-ceiling-behavior' = 'A request above the ceiling returns the ceiling and non-zero continuation cursors rather than an\s*error, so a reader that trusts its own requested page size silently loses changes\.'
+        'cap-paging-termination' = 'Paging\s*therefore terminates only when both cursors are zero, never when a page returns fewer entries\s*than requested\.'
+        'cap-moves-no-row'   = 'It is one\s*required spot check, not a criterion and not a matrix, so it moves no row: both rows stay\s*`enabled-uncertified` until every AC1-AC8 row passes\.'
         'status-uncertified' = 'No live AC1-AC8 matrix has been executed for any adapter in this release, because no\s*operator-approved fixture authorization manifest exists\.'
         'status-no-claim'    = 'Do not claim certified provider behavior, and do not perform a\s*certification write, until an operator supplies the manifest and this file records the result\.'
     }
@@ -2104,6 +2360,33 @@ function Test-ReviewCertificationLedger {
         if (-not (Test-Contains $text ('\| `' + [regex]::Escape($field) + '` \| [^|]+ \|'))) {
             Add-Violation $Violations 'review-certification' "$relative no longer requires fixture authorization field '$field'."
         }
+    }
+
+    # The recorded cap fixture is the authoritative ceiling proof. Its identity, API version, and
+    # observed boundary results must all be present, or the paging criterion has no evidence.
+    foreach ($field in @('provider', 'project-id', 'repository-id', 'pull-request-id', 'iteration', 'api-version', 'observed-at', 'authorization')) {
+        if (-not (Test-Contains $text ('\| `' + [regex]::Escape($field) + '` \| [^|]+ \|'))) {
+            Add-Violation $Violations 'review-certification' "$relative records no '$field' for the persistent cap fixture, so the 2,000 ceiling has no recorded proof."
+        }
+    }
+    $capRows = [ordered]@{
+        '1999' = '\| `1999` \| `200` \| `1999` \| `2` \| `1999` \|'
+        '2000' = '\| `2000` \| `200` \| `2000` \| `1` \| `2000` \|'
+        '2001' = '\| `2001` \| `200` \| `2000` \| `1` \| `2000` \|'
+    }
+    foreach ($id in $capRows.Keys) {
+        if (-not (Test-Contains $text $capRows[$id])) {
+            Add-Violation $Violations 'review-certification' "$relative records no observed '`$top=$id' result for the persistent cap fixture."
+        }
+    }
+
+    # Rate limiting is not a committed criterion or an approved-design scenario. Restoring it as a
+    # mandatory live subcase would require a certification run to generate abusive write volume
+    # against a live provider in order to pass. The ledger text is whitespace-normalized to one
+    # line, so the row is bounded by the next criterion cell rather than by a line break.
+    $ac7Row = [regex]::Match($text, '\| AC7 \|(.*?)\| AC8 \|')
+    if ($ac7Row.Success -and $ac7Row.Groups[1].Value -match 'rate.limit') {
+        Add-Violation $Violations 'review-certification' "The 'AC7' row in $relative requires rate limiting as a live subcase, which neither the committed PRD nor the approved design enumerates and which no run can induce without abusive provider traffic."
     }
 
     # Each row must quote the actual committed criterion, not merely carry the label. Derive the
@@ -2971,6 +3254,62 @@ capability: general-create' `
             }
         },
         @{
+            Name  = 'review-certification-rate-limit-storm-required'
+            Apply = {
+                param([string] $Dir)
+                # Restoring rate limiting as a mandatory subcase forces abusive write volume
+                # against a live provider, which neither the PRD nor the approved design requires.
+                Edit-FixtureFile -Path (Join-Path $Dir 'skills/pr-review/reference/certification.md') `
+                    -Find 'a 403 raised by repeating the same operation with a deliberately read-only credential, duplicate identical comments' `
+                    -ReplaceWith 'a 403, rate limiting reached by repeated writes, duplicate identical comments'
+            }
+        },
+        @{
+            Name  = 'review-certification-injection-allowed'
+            Apply = {
+                param([string] $Dir)
+                Edit-FixtureFile -Path (Join-Path $Dir 'skills/pr-review/reference/certification.md') `
+                    -Find 'Simulated, injected, intercepted, proxied, and locally synthesized provider responses are never evidence.' `
+                    -ReplaceWith 'An injected or proxied provider response is acceptable evidence when a live one is inconvenient.'
+            }
+        },
+        @{
+            Name  = 'review-certification-supplemental-evidence-overclaimed'
+            Apply = {
+                param([string] $Dir)
+                Edit-FixtureFile -Path (Join-Path $Dir 'skills/pr-review/reference/certification.md') `
+                    -Find 'Supplemental transport evidence never moves a row to `enabled` on its own, never substitutes for a criterion or any of its subcases, and never proves write-path behavior or provider parity.' `
+                    -ReplaceWith 'Supplemental transport evidence satisfies the criterion it resembles.'
+            }
+        },
+        @{
+            Name  = 'review-certification-cap-fixture-result-dropped'
+            Apply = {
+                param([string] $Dir)
+                Edit-FixtureFile -Path (Join-Path $Dir 'skills/pr-review/reference/certification.md') `
+                    -Find '| `2001` | `200` | `2000` | `1` | `2000` |' `
+                    -ReplaceWith ''
+            }
+        },
+        @{
+            Name  = 'review-certification-cap-fixture-made-mutable'
+            Apply = {
+                param([string] $Dir)
+                Edit-FixtureFile -Path (Join-Path $Dir 'skills/pr-review/reference/certification.md') `
+                    -Find 'No manifest authorizes any write against it, and only `GET` reads may target it.' `
+                    -ReplaceWith 'A manifest may extend to it when convenient.'
+            }
+        },
+        @{
+            Name  = 'review-certification-cap-fixture-moves-row'
+            Apply = {
+                param([string] $Dir)
+                Edit-FixtureFile -Path (Join-Path $Dir 'skills/pr-review/reference/certification.md') `
+                    -Find 'It is one required spot check, not a criterion and not a matrix, so it moves no row: both rows stay `enabled-uncertified` until every AC1-AC8 row passes.' `
+                    -ReplaceWith 'It certifies the Azure DevOps adapter for paging.'
+            }
+        },
+        @{
             Name  = 'review-prompt-allows-mutation'
             Apply = {
                 param([string] $Dir)
@@ -3114,6 +3453,242 @@ resource: /user' `
                 Edit-FixtureFile -Path (Join-Path $Dir 'skills/pr-review/reference/commands.md') `
                     -Find 'require it to be byte-identical to the expired record this contender observed' `
                     -ReplaceWith 'require it to still be expired'
+            }
+        },
+        @{
+            Name  = 'review-takeover-claim-outlives-contender'
+            Apply = {
+                param([string] $Dir)
+                Edit-FixtureFile -Path (Join-Path $Dir 'skills/pr-review/reference/commands.md') `
+                    -Find '`DeleteOnClose` removes it on success, on every abort, and on process death' `
+                    -ReplaceWith 'The claim is left in place for auditing'
+            }
+        },
+        @{
+            Name  = 'review-takeover-claim-not-reclaimable'
+            Apply = {
+                param([string] $Dir)
+                Edit-FixtureFile -Path (Join-Path $Dir 'skills/pr-review/reference/commands.md') `
+                    -Find 'retries `CreateNew` exactly once; a second failure means another contender reclaimed it first, so this contender has lost' `
+                    -ReplaceWith 'report that this epoch can no longer be claimed'
+            }
+        },
+        @{
+            Name  = 'review-takeover-reclaim-ignores-live-holder'
+            Apply = {
+                param([string] $Dir)
+                Edit-FixtureFile -Path (Join-Path $Dir 'skills/pr-review/reference/commands.md') `
+                    -Find 'A sharing violation proves a live holder still owns the claim, so this contender has lost and stops.' `
+                    -ReplaceWith 'A sharing violation is retried until the claim can be opened.'
+            }
+        },
+        @{
+            Name  = 'review-acquire-malformed-not-reclaimable'
+            Apply = {
+                param([string] $Dir)
+                Edit-FixtureFile -Path (Join-Path $Dir 'skills/pr-review/reference/commands.md') `
+                    -Find 'is malformed by construction, because no writer ever finished it, so it names no owner, proves no liveness, and can never be aged out by expiry' `
+                    -ReplaceWith 'is treated as a normal record and left to expire'
+            }
+        },
+        @{
+            Name  = 'review-acquire-deletes-valid-record'
+            Apply = {
+                param([string] $Dir)
+                Edit-FixtureFile -Path (Join-Path $Dir 'skills/pr-review/reference/commands.md') `
+                    -Find 'A contender that classifies the content as complete releases the handle without writing a byte, so a record that parses and carries every required field is never deleted or overwritten as malformed' `
+                    -ReplaceWith 'A record whose owner is long gone is overwritten the same way'
+            }
+        },
+        @{
+            Name  = 'review-acquire-reclaim-deletes-and-recreates'
+            Apply = {
+                param([string] $Dir)
+                Edit-FixtureFile -Path (Join-Path $Dir 'skills/pr-review/reference/commands.md') `
+                    -Find 'Recovery is one exclusive ownership transition, never a delete followed by a fresh create.' `
+                    -ReplaceWith 'Recovery deletes the malformed record and then creates a fresh one.'
+            }
+        },
+        @{
+            Name  = 'review-acquire-reclaim-uses-delete-on-close'
+            Apply = {
+                param([string] $Dir)
+                Edit-FixtureFile -Path (Join-Path $Dir 'skills/pr-review/reference/commands.md') `
+                    -Find '`DeleteOnClose` is never used here, because it deletes on disposal even when the contender has already learned it should not delete, which would let a delayed contender erase a valid record another contender finished meanwhile.' `
+                    -ReplaceWith 'The reclaimer may reopen the record with `DeleteOnClose` and abandon the deletion if the identity changed.'
+            }
+        },
+        @{
+            Name  = 'review-takeover-identity-treated-as-guard'
+            Apply = {
+                param([string] $Dir)
+                Edit-FixtureFile -Path (Join-Path $Dir 'skills/pr-review/reference/commands.md') `
+                    -Find 'That identity check is a defensive assertion and never the thing that prevents deletion, because a `DeleteOnClose` handle deletes on disposal whatever the check concludes.' `
+                    -ReplaceWith 'That identity check is what prevents the deletion.'
+            }
+        },
+        @{
+            Name  = 'review-fence-accepts-malformed-record'
+            Apply = {
+                param([string] $Dir)
+                Edit-FixtureFile -Path (Join-Path $Dir 'skills/pr-review/reference/commands.md') `
+                    -Find 'require it to be present, non-empty, valid JSON, and to carry both an owner token and a monotonic epoch, then require those persisted values to equal' `
+                    -ReplaceWith 'require the persisted values to equal'
+            }
+        },
+        @{
+            Name  = 'review-acl-readback-gnu-only'
+            Apply = {
+                param([string] $Dir)
+                Edit-FixtureFile -Path (Join-Path $Dir 'skills/pr-review/reference/commands.md') `
+                    -Find 'GNU coreutils `stat -c %a <path>` on Linux, and `stat -f %Lp <path>` on macOS and every other BSD-derived host' `
+                    -ReplaceWith '`stat -c %a <path>` on every Unix host'
+            }
+        },
+        @{
+            Name  = 'review-journal-create-unfenced'
+            Apply = {
+                param([string] $Dir)
+                Edit-FixtureFile -Path (Join-Path $Dir 'skills/pr-review/reference/commands.md') `
+                    -Find 'method: pass `lease.fence`, then create `<key>.journal.json`' `
+                    -ReplaceWith 'method: create `<key>.journal.json`'
+            }
+        },
+        @{
+            Name  = 'review-journal-create-rows-unstamped'
+            Apply = {
+                param([string] $Dir)
+                Edit-FixtureFile -Path (Join-Path $Dir 'skills/pr-review/reference/commands.md') `
+                    -Find 'the first journal version, holding at least one row, every row stamped with the writing owner token and monotonic epoch' `
+                    -ReplaceWith 'the first journal version, holding at least one row'
+            }
+        },
+        @{
+            Name  = 'review-preflight-acl-not-executed'
+            Apply = {
+                param([string] $Dir)
+                Edit-FixtureFile -Path (Join-Path $Dir 'skills/pr-review/reference/commands.md') `
+                    -Find 'then create a disposable directory holding one disposable file under the run-scoped temporary root, run the exact `acl.apply` command on both, read the effective permissions back with the reader for the explicitly detected platform, `icacls <path>` on Windows, `stat -c %a <path>` on Linux, or `stat -f %Lp <path>` on macOS and BSD, require them to match the `acl.apply` contract with directory mode `700` and file mode `600`, and remove the disposable path, and then evaluate' `
+                    -ReplaceWith 'then evaluate'
+            }
+        },
+        @{
+            Name  = 'review-preflight-acl-failure-tolerated'
+            Apply = {
+                param([string] $Dir)
+                Edit-FixtureFile -Path (Join-Path $Dir 'skills/pr-review/reference/commands.md') `
+                    -Find 'an `acl.apply` that cannot be applied or whose read-back does not match the contract blocks' `
+                    -ReplaceWith 'an `acl.apply` that cannot be applied is recorded and the run continues'
+            }
+        },
+        @{
+            Name  = 'review-github-diff-base-is-base-sha'
+            Apply = {
+                param([string] $Dir)
+                Edit-FixtureFile -Path (Join-Path $Dir 'skills/pr-review/reference/commands.md') `
+                    -Find 'against the `merge_base_commit.sha` returned by `github.merge-base-read` and never against `base.sha`' `
+                    -ReplaceWith 'against `base.sha`'
+            }
+        },
+        @{
+            Name  = 'review-github-base-tip-called-diff-base'
+            Apply = {
+                param([string] $Dir)
+                Edit-FixtureFile -Path (Join-Path $Dir 'skills/pr-review/reference/commands.md') `
+                    -Find '`base.sha` as a non-authoritative base snapshot only' `
+                    -ReplaceWith '`base.sha` as the pinned base revision'
+            }
+        },
+        @{
+            Name  = 'review-github-base-sha-called-base-ref-tip'
+            Apply = {
+                param([string] $Dir)
+                # The old explanation was factually wrong: base.sha is a snapshot, not the live
+                # base-ref tip. Restoring it justifies resolving base-side content at the tip.
+                Edit-FixtureFile -Path (Join-Path $Dir 'skills/pr-review/reference/commands.md') `
+                    -Find 'because the provider recorded it when the pull request was opened or last synchronized and it may equal, may lag, or may differ from the comparison merge base' `
+                    -ReplaceWith 'because it is the base-ref tip and the target branch advances independently of the pull request'
+            }
+        },
+        @{
+            Name  = 'review-github-base-sha-agreement-treated-as-evidence'
+            Apply = {
+                param([string] $Dir)
+                Edit-FixtureFile -Path (Join-Path $Dir 'skills/pr-review/reference/commands.md') `
+                    -Find 'Because `base.sha` may coincide with the comparison merge base on one pull request and not on the next, observing that the two agree is never evidence that `base.sha` may be used.' `
+                    -ReplaceWith 'A `base.sha` that already equals the comparison merge base may be used directly.'
+            }
+        },
+        @{
+            Name  = 'review-github-merge-base-endpoint-use-unbounded'
+            Apply = {
+                param([string] $Dir)
+                Edit-FixtureFile -Path (Join-Path $Dir 'skills/pr-review/reference/commands.md') `
+                    -Find 'supplying `base.sha` as one endpoint of this comparison is the only sanctioned use of it and is never a use of it as a diff base' `
+                    -ReplaceWith 'the endpoints may be supplied in whatever form is convenient'
+            }
+        },
+        @{
+            Name  = 'review-skill-base-sha-snapshot-explanation-dropped'
+            Apply = {
+                param([string] $Dir)
+                Edit-FixtureFile -Path (Join-Path $Dir 'skills/pr-review/SKILL.md') `
+                    -Find 'GitHub records `base.sha` when the pull request is opened or last synchronized, so it may equal the comparison merge base, may lag it, or may differ from it, and observing that it agrees with the merge base on one pull request is never evidence that it may be used on the next.' `
+                    -ReplaceWith '`base.sha` is the base-ref tip.'
+            }
+        },
+        @{
+            Name  = 'review-github-merge-base-not-pinned-pair'
+            Apply = {
+                param([string] $Dir)
+                Edit-FixtureFile -Path (Join-Path $Dir 'skills/pr-review/reference/commands.md') `
+                    -Find 'resource: /repos/{owner}/{repo}/compare/{base_sha}...{head_sha}' `
+                    -ReplaceWith 'resource: /repos/{owner}/{repo}/compare/{base_ref}...{head_ref}'
+            }
+        },
+        @{
+            Name  = 'review-ado-target-tip-called-diff-base'
+            Apply = {
+                param([string] $Dir)
+                Edit-FixtureFile -Path (Join-Path $Dir 'skills/pr-review/reference/commands.md') `
+                    -Find '`lastMergeTargetCommit.commitId` as the target-branch tip only' `
+                    -ReplaceWith '`lastMergeTargetCommit.commitId` as the pinned base revision'
+            }
+        },
+        @{
+            Name  = 'review-ado-merge-base-unbound'
+            Apply = {
+                param([string] $Dir)
+                Edit-FixtureFile -Path (Join-Path $Dir 'skills/pr-review/reference/commands.md') `
+                    -Find 'its `commonRefCommit.commitId` is the merge base, bound as the sole Azure DevOps diff-base revision' `
+                    -ReplaceWith 'its `commonRefCommit.commitId` is available for unchanged context'
+            }
+        },
+        @{
+            Name  = 'review-bundle-seal-ambiguous-diff-base'
+            Apply = {
+                param([string] $Dir)
+                Edit-FixtureFile -Path (Join-Path $Dir 'skills/pr-review/reference/commands.md') `
+                    -Find 'a `base.sha` snapshot or a target-branch tip is never accepted as the diff base, and a manifest whose base-side entries do not all carry that one diff-base revision blocks' `
+                    -ReplaceWith 'any pinned base revision is accepted'
+            }
+        },
+        @{
+            Name  = 'review-diff-base-side-unpinned'
+            Apply = {
+                param([string] $Dir)
+                Edit-FixtureFile -Path (Join-Path $Dir 'skills/pr-review/reference/commands.md') `
+                    -Find 'where the base-side blob was resolved at the single pinned diff-base revision and nowhere else' `
+                    -ReplaceWith 'whichever base-side blob the manifest recorded'
+            }
+        },
+        @{
+            Name  = 'review-skill-diff-base-is-target-tip'
+            Apply = {
+                param([string] $Dir)
+                Edit-FixtureFile -Path (Join-Path $Dir 'skills/pr-review/SKILL.md') `
+                    -Find '`base.sha` and `lastMergeTargetCommit.commitId` are never a diff base.' `
+                    -ReplaceWith '`base.sha` and `lastMergeTargetCommit.commitId` are the diff base.'
             }
         },
         @{
@@ -3332,17 +3907,39 @@ function Invoke-JournalCreateProof {
     New-Item -ItemType Directory -Path $dir -Force | Out-Null
     $journal = Join-Path $dir 'pr.journal.json'
     $temp = Join-Path $dir 'pr.journal.json.tmp'
+    $lease = Join-Path $dir 'pr.lease.json'
 
     try {
+        [System.IO.File]::WriteAllText($lease, '{"owner":"owner-1","epoch":1,"run":"run-1"}')
         $replaceRefused = $false
+        $replaceRefusal = 'the call unexpectedly succeeded'
         [System.IO.File]::WriteAllText($temp, '[]')
-        try { [System.IO.File]::Replace($temp, $journal, $null) }
-        catch { $replaceRefused = $true }
+        # The backup path must be a real null: '$null' binds to the string parameter as an empty
+        # path and fails argument validation before the replacement is ever attempted.
+        try { [System.IO.File]::Replace($temp, $journal, [NullString]::Value) }
+        catch {
+            $inner = $_.Exception.InnerException
+            $replaceRefused = $inner -is [System.IO.FileNotFoundException]
+            $replaceRefusal = if ($null -ne $inner) { $inner.GetType().FullName } else { $_.Exception.GetType().FullName }
+        }
         if (-not $replaceRefused) {
-            $Failures.Add('journal proof: [System.IO.File]::Replace created a missing destination, so this platform contradicts the journal.create rationale') | Out-Null
+            $Failures.Add("journal proof: [System.IO.File]::Replace did not refuse a missing destination with FileNotFoundException ($replaceRefusal), so this platform contradicts the journal.create rationale") | Out-Null
+        }
+        if (Test-Path -LiteralPath $journal) {
+            $Failures.Add('journal proof: [System.IO.File]::Replace created the missing destination, so journal.create would not be required') | Out-Null
         }
 
         $firstVersion = '[{"owner":"owner-1","epoch":1,"item":"item-A","state":"attempt_started"}]'
+        # 'journal.create' is a journal write, so it passes 'lease.fence' before the exclusive
+        # create. A stale writer must never be able to lay down the first version.
+        $createFencePassed = Test-LeaseFence -LeasePath $lease -Token 'owner-1' -Epoch 1
+        $staleCreateFenceRejected = -not (Test-LeaseFence -LeasePath $lease -Token 'owner-stale' -Epoch 1)
+        if (-not $createFencePassed) {
+            $Failures.Add('journal proof: lease.fence rejected the current owner immediately before journal.create') | Out-Null
+        }
+        if (-not $staleCreateFenceRejected) {
+            $Failures.Add('journal proof: lease.fence admitted a stale writer immediately before journal.create, so the first journal version is unfenced') | Out-Null
+        }
         $stream = [System.IO.File]::Open($journal, [System.IO.FileMode]::CreateNew, [System.IO.FileAccess]::Write, [System.IO.FileShare]::None)
         try {
             $bytes = [System.Text.Encoding]::UTF8.GetBytes($firstVersion)
@@ -3376,7 +3973,7 @@ function Invoke-JournalCreateProof {
             $stream.Flush($true)
         }
         finally { $stream.Dispose() }
-        [System.IO.File]::Replace($temp, $journal, $null)
+        [System.IO.File]::Replace($temp, $journal, [NullString]::Value)
 
         $readBack = @([System.IO.File]::ReadAllText($journal) | ConvertFrom-Json)
         $keptFirst = @($readBack | Where-Object { $_.item -eq 'item-A' -and $_.state -eq 'attempt_started' }).Count -eq 1
@@ -3388,8 +3985,8 @@ function Invoke-JournalCreateProof {
             $Failures.Add('journal proof: the update did not persist the new attempt_started row') | Out-Null
         }
 
-        if ($replaceRefused -and $created -and $secondCreateRefused -and $keptFirst -and $addedSecond) {
-            Write-Host '  PASS journal create/update proof (Replace refused a missing destination, CreateNew made the first journal exactly once, and the merged update kept both attempt_started rows)'
+        if ($replaceRefused -and $created -and $secondCreateRefused -and $keptFirst -and $addedSecond -and $createFencePassed -and $staleCreateFenceRejected) {
+            Write-Host '  PASS journal create/update proof (lease.fence admitted the owner and rejected a stale writer before the create, Replace refused a missing destination, CreateNew made the first journal exactly once, and the merged update kept both attempt_started rows)'
             return $true
         }
 
@@ -3404,7 +4001,15 @@ function Invoke-JournalCreateProof {
 }
 
 $script:LeaseContenderScript = @'
-param([string] $Dir, [string] $Token, [string] $ResultPath, [string] $StartAtUtc)
+param(
+    [string] $Dir,
+    [string] $Token,
+    [string] $ResultPath,
+    [string] $ReadyPath,
+    [string] $GoPath,
+    [string] $ExpiredOwner,
+    [int] $ExpiredEpoch
+)
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
@@ -3413,72 +4018,326 @@ $lease = Join-Path $Dir 'pr.lease.json'
 $journal = Join-Path $Dir 'pr.journal.json'
 $outcome = 'denied'
 $reason = 'not-attempted'
+$reclaimed = $false
+$claim = $null
+
+function Open-Claim {
+    param([string] $Path, [System.IO.FileMode] $Mode, [System.IO.FileAccess] $Access, [System.IO.FileOptions] $Options)
+
+    # Exclusive sharing is what makes both the claim and its reclamation a compare-and-swap:
+    # while one contender holds the handle no other contender can open the file at all.
+    return [System.IO.FileStream]::new($Path, $Mode, $Access, [System.IO.FileShare]::None, 4096, $Options)
+}
 
 try {
-    $startAt = [datetime]::Parse($StartAtUtc, [cultureinfo]::InvariantCulture, [System.Globalization.DateTimeStyles]::RoundtripKind)
-    while ([datetime]::UtcNow -lt $startAt) { }
-
+    # Observe the expired record before signalling readiness. Both contenders therefore enter the
+    # race having seen the same record, so the loser can only lose on a post-claim contention
+    # check and never merely because it arrived after the winner had already replaced the lease.
     $observed = [System.IO.File]::ReadAllBytes($lease)
     $record = [System.Text.Encoding]::UTF8.GetString($observed) | ConvertFrom-Json
-    $nextEpoch = [int] $record.epoch + 1
-    $claimPath = Join-Path $Dir ('pr.takeover.' + $nextEpoch + '.claim')
 
-    $claim = $null
-    try {
-        $claim = [System.IO.File]::Open($claimPath, [System.IO.FileMode]::CreateNew, [System.IO.FileAccess]::Write, [System.IO.FileShare]::None)
+    # 'lease.takeover' may only take over a record proven expired.
+    if ($record.owner -ne $ExpiredOwner -or [int] $record.epoch -ne $ExpiredEpoch) {
+        $reason = 'record-not-expired'
     }
-    catch {
-        $reason = 'claim-lost'
-    }
+    else {
+        $nextEpoch = [int] $record.epoch + 1
+        $claimPath = Join-Path $Dir ('pr.takeover.' + $nextEpoch + '.claim')
+        $claimBody = [System.Text.Encoding]::UTF8.GetBytes(
+            ([ordered]@{ owner = $Token; pid = $PID; started = (Get-Process -Id $PID).StartTime.ToUniversalTime().ToString('o') } | ConvertTo-Json -Compress))
 
-    if ($null -ne $claim) {
+        # Rendezvous: report ready, then spin until the coordinator releases every contender at
+        # once. A wall-clock deadline cannot do this, because process launch alone can outlast it
+        # and the contenders would then run one after another instead of racing.
+        [System.IO.File]::WriteAllText($ReadyPath, $Token)
+        $deadline = [datetime]::UtcNow.AddSeconds(120)
+        while (-not (Test-Path -LiteralPath $GoPath)) {
+            if ([datetime]::UtcNow -gt $deadline) { throw 'rendezvous timed out waiting for the release signal' }
+        }
+
         try {
-            $current = [System.IO.File]::ReadAllBytes($lease)
-            if ([Convert]::ToBase64String($current) -ne [Convert]::ToBase64String($observed)) {
-                $reason = 'record-changed'
+            $claim = Open-Claim -Path $claimPath -Mode ([System.IO.FileMode]::CreateNew) -Access ([System.IO.FileAccess]::Write) -Options ([System.IO.FileOptions]::DeleteOnClose)
+        }
+        catch [System.IO.IOException] {
+            # The claim already exists. It is either held by a live contender, or abandoned by a
+            # power loss; an abandoned claim must be reclaimable or this epoch is poisoned forever.
+            # A crash between CreateNew and the flush leaves a zero-length or torn claim, so
+            # unreadable content is abandoned by construction rather than unrecoverable.
+            $classify = $null
+            $missing = $false
+            try { $classify = Open-Claim -Path $claimPath -Mode ([System.IO.FileMode]::Open) -Access ([System.IO.FileAccess]::ReadWrite) -Options ([System.IO.FileOptions]::None) }
+            catch [System.IO.FileNotFoundException] { $missing = $true; $classify = $null }
+            catch { $classify = $null }
+
+            if ($missing) {
+                # Another reclaimer already removed it, so nothing is deleted here.
+                try {
+                    $claim = Open-Claim -Path $claimPath -Mode ([System.IO.FileMode]::CreateNew) -Access ([System.IO.FileAccess]::Write) -Options ([System.IO.FileOptions]::DeleteOnClose)
+                    $reason = 'claim-reclaimed'
+                    $reclaimed = $true
+                }
+                catch { $reason = 'claim-lost' }
+            }
+            elseif ($null -eq $classify) {
+                $reason = 'claim-lost'
             }
             else {
-                $next = [ordered]@{ owner = $Token; epoch = $nextEpoch; run = $Token }
-                $payload = ($next | ConvertTo-Json -Compress)
-                $temp = Join-Path $Dir ('pr.lease.' + $Token + '.tmp')
-                $stream = [System.IO.File]::Open($temp, [System.IO.FileMode]::Create, [System.IO.FileAccess]::Write, [System.IO.FileShare]::None)
+                $holderAlive = $false
+                $identity = $null
                 try {
-                    $bytes = [System.Text.Encoding]::UTF8.GetBytes($payload)
-                    $stream.Write($bytes, 0, $bytes.Length)
-                    $stream.Flush($true)
-                }
-                finally { $stream.Dispose() }
-                [System.IO.File]::Replace($temp, $lease, $null)
+                    $buffer = [byte[]]::new($classify.Length)
+                    $read = if ($buffer.Length -gt 0) { $classify.Read($buffer, 0, $buffer.Length) } else { 0 }
+                    $identity = [pscustomobject]@{
+                        Length = [int64] $classify.Length
+                        Digest = [BitConverter]::ToString([System.Security.Cryptography.SHA256]::HashData($buffer))
+                    }
 
-                $persisted = [System.Text.Encoding]::UTF8.GetString([System.IO.File]::ReadAllBytes($lease)) | ConvertFrom-Json
-                if ($persisted.owner -ne $Token -or [int] $persisted.epoch -ne $nextEpoch) {
-                    $reason = 'read-back-mismatch'
+                    # Absent, zero-length, unparseable, or schema-invalid content names no process
+                    # whose liveness could ever be tested, so it is abandoned by construction.
+                    $holder = $null
+                    if ($read -gt 0) {
+                        try { $holder = [System.Text.Encoding]::UTF8.GetString($buffer, 0, $read) | ConvertFrom-Json }
+                        catch { $holder = $null }
+                    }
+                    $schemaValid = $null -ne $holder -and
+                        ($holder.PSObject.Properties.Name -contains 'owner') -and
+                        ($holder.PSObject.Properties.Name -contains 'pid') -and
+                        ($holder.PSObject.Properties.Name -contains 'started')
+                    if ($schemaValid) {
+                        $process = Get-Process -Id ([int] $holder.pid) -ErrorAction SilentlyContinue
+                        # ConvertFrom-Json turns an ISO-8601 field into a DateTime, so the recorded
+                        # start time is normalised back to round-trip UTC before it is compared;
+                        # comparing its default rendering would make every live holder look dead.
+                        $recordedStart = if ($holder.started -is [datetime]) { ([datetime] $holder.started).ToUniversalTime().ToString('o') } else { [string] $holder.started }
+                        $holderAlive = $null -ne $process -and
+                            $process.StartTime.ToUniversalTime().ToString('o') -eq $recordedStart
+                    }
+                }
+                finally { $classify.Dispose() }
+
+                if ($holderAlive) {
+                    # A parseable claim whose exact recorded process is alive is never deleted.
+                    $reason = 'claim-holder-alive'
                 }
                 else {
-                    # lease.fence, then journal-before-send with a re-read and merge.
-                    $fence = [System.Text.Encoding]::UTF8.GetString([System.IO.File]::ReadAllBytes($lease)) | ConvertFrom-Json
-                    if ($fence.owner -ne $Token -or [int] $fence.epoch -ne $nextEpoch) {
-                        $reason = 'fence-rejected'
-                    }
-                    else {
-                        $rows = @([System.IO.File]::ReadAllText($journal) | ConvertFrom-Json)
-                        $rows = @($rows) + @([pscustomobject]@{ owner = $Token; epoch = $nextEpoch; item = 'item-B'; state = 'attempt_started' })
-                        $journalTemp = Join-Path $Dir ('pr.journal.' + $Token + '.tmp')
-                        $stream = [System.IO.File]::Open($journalTemp, [System.IO.FileMode]::Create, [System.IO.FileAccess]::Write, [System.IO.FileShare]::None)
+                    $deleted = $false
+                    $vanished = $false
+                    try {
+                        $doomed = Open-Claim -Path $claimPath -Mode ([System.IO.FileMode]::Open) -Access ([System.IO.FileAccess]::ReadWrite) -Options ([System.IO.FileOptions]::DeleteOnClose)
                         try {
-                            $bytes = [System.Text.Encoding]::UTF8.GetBytes(($rows | ConvertTo-Json -Compress -Depth 5))
-                            $stream.Write($bytes, 0, $bytes.Length)
-                            $stream.Flush($true)
+                            $again = [byte[]]::new($doomed.Length)
+                            $reread = if ($again.Length -gt 0) { $doomed.Read($again, 0, $again.Length) } else { 0 }
+                            $sameIdentity = [int64] $doomed.Length -eq $identity.Length -and
+                                [BitConverter]::ToString([System.Security.Cryptography.SHA256]::HashData($again)) -eq $identity.Digest
+                            if (-not $sameIdentity) { $reason = 'claim-identity-mismatch' } else { $deleted = $true }
                         }
-                        finally { $stream.Dispose() }
-                        [System.IO.File]::Replace($journalTemp, $journal, $null)
-                        $outcome = 'won'
-                        $reason = 'takeover-complete'
+                        finally { $doomed.Dispose() }
+                    }
+                    catch [System.IO.FileNotFoundException] { $vanished = $true }
+                    catch { $reason = 'claim-lost' }
+
+                    if ($deleted -or $vanished) {
+                        try {
+                            $claim = Open-Claim -Path $claimPath -Mode ([System.IO.FileMode]::CreateNew) -Access ([System.IO.FileAccess]::Write) -Options ([System.IO.FileOptions]::DeleteOnClose)
+                            $reason = 'claim-reclaimed'
+                            $reclaimed = $true
+                        }
+                        catch { $reason = 'claim-lost' }
                     }
                 }
             }
         }
-        finally { $claim.Dispose() }
+
+        if ($null -ne $claim) {
+            try {
+                $claim.Write($claimBody, 0, $claimBody.Length)
+                $claim.Flush($true)
+
+                $current = [System.IO.File]::ReadAllBytes($lease)
+                if ([Convert]::ToBase64String($current) -ne [Convert]::ToBase64String($observed)) {
+                    $reason = 'record-changed'
+                }
+                else {
+                    $next = [ordered]@{ owner = $Token; epoch = $nextEpoch; run = $Token }
+                    $payload = ($next | ConvertTo-Json -Compress)
+                    $temp = Join-Path $Dir ('pr.lease.' + $Token + '.tmp')
+                    $stream = [System.IO.File]::Open($temp, [System.IO.FileMode]::Create, [System.IO.FileAccess]::Write, [System.IO.FileShare]::None)
+                    try {
+                        $bytes = [System.Text.Encoding]::UTF8.GetBytes($payload)
+                        $stream.Write($bytes, 0, $bytes.Length)
+                        $stream.Flush($true)
+                    }
+                    finally { $stream.Dispose() }
+                    [System.IO.File]::Replace($temp, $lease, [NullString]::Value)
+
+                    $persisted = [System.Text.Encoding]::UTF8.GetString([System.IO.File]::ReadAllBytes($lease)) | ConvertFrom-Json
+                    if ($persisted.owner -ne $Token -or [int] $persisted.epoch -ne $nextEpoch) {
+                        $reason = 'read-back-mismatch'
+                    }
+                    else {
+                        # lease.fence, then journal-before-send with a re-read and merge.
+                        $fence = [System.Text.Encoding]::UTF8.GetString([System.IO.File]::ReadAllBytes($lease)) | ConvertFrom-Json
+                        if ($fence.owner -ne $Token -or [int] $fence.epoch -ne $nextEpoch) {
+                            $reason = 'fence-rejected'
+                        }
+                        else {
+                            $rows = @([System.IO.File]::ReadAllText($journal) | ConvertFrom-Json)
+                            $rows = @($rows) + @([pscustomobject]@{ owner = $Token; epoch = $nextEpoch; item = 'item-B'; state = 'attempt_started' })
+                            $journalTemp = Join-Path $Dir ('pr.journal.' + $Token + '.tmp')
+                            $stream = [System.IO.File]::Open($journalTemp, [System.IO.FileMode]::Create, [System.IO.FileAccess]::Write, [System.IO.FileShare]::None)
+                            try {
+                                $bytes = [System.Text.Encoding]::UTF8.GetBytes(($rows | ConvertTo-Json -Compress -Depth 5))
+                                $stream.Write($bytes, 0, $bytes.Length)
+                                $stream.Flush($true)
+                            }
+                            finally { $stream.Dispose() }
+                            [System.IO.File]::Replace($journalTemp, $journal, [NullString]::Value)
+                            $outcome = 'won'
+                            $reason = 'takeover-complete'
+                        }
+                    }
+                }
+            }
+            finally {
+                # DeleteOnClose: the claim never outlives this attempt, whatever the outcome.
+                $claim.Dispose()
+            }
+        }
+    }
+}
+catch {
+    $reason = 'error: ' + $_.Exception.Message
+}
+
+[System.IO.File]::WriteAllText($ResultPath, ([ordered]@{ token = $Token; outcome = $outcome; reason = $reason; reclaimed = $reclaimed } | ConvertTo-Json -Compress))
+'@
+
+$script:LeaseAcquireContenderScript = @'
+param(
+    [string] $Dir,
+    [string] $Token,
+    [string] $ResultPath,
+    [string] $ReadyPath,
+    [string] $GoPath,
+    [string] $ExpiredOwner,
+    [int] $ExpiredEpoch,
+    [int] $ClassifyDelayMs = 0
+)
+
+Set-StrictMode -Version Latest
+$ErrorActionPreference = 'Stop'
+
+$lease = Join-Path $Dir 'pr.lease.json'
+$outcome = 'denied'
+$reason = 'not-attempted'
+
+function Open-Lease {
+    param([string] $Path, [System.IO.FileMode] $Mode, [System.IO.FileAccess] $Access, [System.IO.FileOptions] $Options)
+
+    return [System.IO.FileStream]::new($Path, $Mode, $Access, [System.IO.FileShare]::None, 4096, $Options)
+}
+
+function Write-OwnerRecord {
+    param([System.IO.FileStream] $Stream, [string] $Token)
+
+    $record = [ordered]@{
+        run     = $Token
+        session = 'session-' + $Token
+        pid     = $PID
+        started = (Get-Process -Id $PID).StartTime.ToUniversalTime().ToString('o')
+        boot    = 'boot-fixture'
+        access  = 'digest-fixture'
+        epoch   = 1
+        owner   = $Token
+    }
+    $bytes = [System.Text.Encoding]::UTF8.GetBytes(($record | ConvertTo-Json -Compress))
+    $Stream.Write($bytes, 0, $bytes.Length)
+    $Stream.Flush($true)
+}
+
+try {
+    # Rendezvous first, so both contenders meet the same on-disk state.
+    [System.IO.File]::WriteAllText($ReadyPath, $Token)
+    $deadline = [datetime]::UtcNow.AddSeconds(120)
+    while (-not (Test-Path -LiteralPath $GoPath)) {
+        if ([datetime]::UtcNow -gt $deadline) { throw 'rendezvous timed out waiting for the release signal' }
+    }
+
+    $acquired = $null
+    try { $acquired = Open-Lease -Path $lease -Mode ([System.IO.FileMode]::CreateNew) -Access ([System.IO.FileAccess]::Write) -Options ([System.IO.FileOptions]::None) }
+    catch [System.IO.IOException] { $acquired = $null }
+
+    if ($null -ne $acquired) {
+        try { Write-OwnerRecord -Stream $acquired -Token $Token } finally { $acquired.Dispose() }
+        $outcome = 'acquired'
+        $reason = 'created'
+    }
+    else {
+        # 'lease.acquire' creates the file before it flushes the owner record, so a crash in that
+        # window leaves a lease that exists but names no owner and can never be aged out. Recovery
+        # is one exclusive ownership transition: the same handle that proves no writer holds the
+        # record is the handle that completes it, so no delete-and-recreate window exists.
+        $classify = $null
+        $missing = $false
+        try { $classify = Open-Lease -Path $lease -Mode ([System.IO.FileMode]::Open) -Access ([System.IO.FileAccess]::ReadWrite) -Options ([System.IO.FileOptions]::None) }
+        catch [System.IO.FileNotFoundException] { $missing = $true }
+        catch { $classify = $null }
+
+        if ($missing) {
+            try {
+                $retry = Open-Lease -Path $lease -Mode ([System.IO.FileMode]::CreateNew) -Access ([System.IO.FileAccess]::Write) -Options ([System.IO.FileOptions]::None)
+                try { Write-OwnerRecord -Stream $retry -Token $Token } finally { $retry.Dispose() }
+                $outcome = 'acquired'
+                $reason = 'reclaimed-malformed'
+            }
+            catch { $reason = 'acquire-lost' }
+        }
+        elseif ($null -eq $classify) {
+            $reason = 'writer-holds'
+        }
+        else {
+            try {
+                $buffer = [byte[]]::new($classify.Length)
+                $read = if ($buffer.Length -gt 0) { $classify.Read($buffer, 0, $buffer.Length) } else { 0 }
+
+                $malformed = $true
+                $record = $null
+                if ($read -gt 0) {
+                    try { $record = [System.Text.Encoding]::UTF8.GetString($buffer, 0, $read) | ConvertFrom-Json }
+                    catch { $record = $null }
+                }
+                if ($null -ne $record) {
+                    $names = $record.PSObject.Properties.Name
+                    $malformed = $false
+                    foreach ($field in @('run', 'session', 'pid', 'started', 'boot', 'epoch', 'owner')) {
+                        if ($names -notcontains $field) { $malformed = $true }
+                    }
+                }
+
+                if ($ClassifyDelayMs -gt 0) {
+                    # Adversarial interleaving: hold the classification for a while, so a delayed
+                    # contender is still inside this branch long after another contender could have
+                    # completed the record. Exclusive sharing must make that impossible, and the
+                    # write below must never be able to erase a record another contender finished.
+                    Start-Sleep -Milliseconds $ClassifyDelayMs
+                }
+
+                if (-not $malformed) {
+                    # A complete record is never deleted or overwritten as malformed: it ages out
+                    # through expiry and 'lease.takeover' instead, even when its owner is gone.
+                    # This handle is released without a single byte being written.
+                    $reason = 'valid-record-present'
+                }
+                else {
+                    $classify.SetLength(0)
+                    $classify.Position = 0
+                    Write-OwnerRecord -Stream $classify -Token $Token
+                    $outcome = 'acquired'
+                    $reason = 'reclaimed-malformed'
+                }
+            }
+            finally { $classify.Dispose() }
+        }
     }
 }
 catch {
@@ -3488,80 +4347,509 @@ catch {
 [System.IO.File]::WriteAllText($ResultPath, ([ordered]@{ token = $Token; outcome = $outcome; reason = $reason } | ConvertTo-Json -Compress))
 '@
 
-function Invoke-LeaseTakeoverProof {
-    param([System.Collections.Generic.List[string]] $Failures)
-
-    $pwsh = (Get-Process -Id $PID).Path
-    if ([string]::IsNullOrWhiteSpace($pwsh)) {
-        Write-Host '  SKIP two-process lease takeover proof (cannot resolve the current PowerShell host)'
-        return $false
+function Resolve-PowerShellHostPath {
+    # The current process is not always a PowerShell executable: when PowerShell is installed as
+    # a dotnet global tool the host process is 'dotnet', which cannot be relaunched with '-File'.
+    # $PSHOME always points at the running PowerShell installation, so prefer it.
+    $names = if ($IsWindows) { @('pwsh.exe', 'powershell.exe') } else { @('pwsh', 'powershell') }
+    foreach ($name in $names) {
+        $candidate = Join-Path $PSHOME $name
+        if (Test-Path -LiteralPath $candidate -PathType Leaf) { return $candidate }
     }
 
-    $dir = Join-Path ([System.IO.Path]::GetTempPath()) ('validate-skills-lease-' + [Guid]::NewGuid().ToString('n'))
-    New-Item -ItemType Directory -Path $dir -Force | Out-Null
+    foreach ($name in @('pwsh', 'powershell')) {
+        $command = Get-Command -Name $name -CommandType Application -ErrorAction SilentlyContinue |
+            Select-Object -First 1
+        if ($null -ne $command -and -not [string]::IsNullOrWhiteSpace($command.Source)) { return $command.Source }
+    }
 
-    try {
-        $lease = Join-Path $dir 'pr.lease.json'
-        $journal = Join-Path $dir 'pr.journal.json'
+    return $null
+}
+
+function Test-LeaseFence {
+    param([string] $LeasePath, [string] $Token, [int] $Epoch)
+
+    # 'lease.fence': re-read the persisted record and require this run's owner token and monotonic
+    # epoch back. This is the real predicate, evaluated against the real file, so a stale owner is
+    # actually rejected rather than assumed to be.
+    $record = [System.Text.Encoding]::UTF8.GetString([System.IO.File]::ReadAllBytes($LeasePath)) | ConvertFrom-Json
+    return ($record.owner -eq $Token -and [int] $record.epoch -eq $Epoch)
+}
+
+function Start-LeaseContender {
+    param(
+        [string] $Pwsh,
+        [string] $ContenderScript,
+        [string] $Dir,
+        [string] $Token,
+        [string] $GoPath,
+        [int] $ClassifyDelayMs = 0
+    )
+
+    $arguments = @(
+        '-NoProfile', '-NonInteractive', '-File', "`"$ContenderScript`"",
+        '-Dir', "`"$Dir`"", '-Token', $Token,
+        '-ResultPath', "`"$(Join-Path $Dir "result-$Token.json")`"",
+        '-ReadyPath', "`"$(Join-Path $Dir "ready-$Token.flag")`"",
+        '-GoPath', "`"$GoPath`"",
+        '-ExpiredOwner', 'owner-0', '-ExpiredEpoch', '1'
+    )
+    # Only the acquire contender accepts a classification delay, so the switch is passed only when
+    # a proof actually asks for the adversarial interleaving.
+    if ($ClassifyDelayMs -gt 0) { $arguments += @('-ClassifyDelayMs', "$ClassifyDelayMs") }
+
+    return Start-Process -FilePath $Pwsh -PassThru -WindowStyle Hidden `
+        -RedirectStandardError (Join-Path $Dir "stderr-$Token.txt") -ArgumentList $arguments
+}
+
+function Invoke-LeaseRace {
+    param(
+        [string] $Pwsh,
+        [string] $Dir,
+        [string] $ContenderScript,
+        [string[]] $Tokens,
+        [string] $ClaimContent,
+        [switch] $PlantEmptyClaim,
+        [switch] $SkipSeed,
+        [hashtable] $ClassifyDelays,
+        [System.Collections.Generic.List[string]] $Failures,
+        [string] $Label
+    )
+
+    $lease = Join-Path $Dir 'pr.lease.json'
+    $journal = Join-Path $Dir 'pr.journal.json'
+    $goPath = Join-Path $Dir 'go.flag'
+    if (-not $SkipSeed) {
         # An expired epoch-1 record left behind by a crashed run, plus its unfinished row.
         [System.IO.File]::WriteAllText($lease, '{"owner":"owner-0","epoch":1,"run":"run-0"}')
         [System.IO.File]::WriteAllText($journal, '[{"owner":"owner-0","epoch":1,"item":"item-A","state":"attempt_started"}]')
+    }
 
+    if (-not [string]::IsNullOrEmpty($ClaimContent)) {
+        # A claim for the next epoch that survived a power loss: the creating process is gone, so
+        # nothing holds the handle, but the file is still on disk. Without reclamation this epoch
+        # would be unclaimable forever and every later takeover would lose.
+        [System.IO.File]::WriteAllText((Join-Path $Dir 'pr.takeover.2.claim'), $ClaimContent)
+    }
+    elseif ($PlantEmptyClaim) {
+        # The narrowest crash window of all: CreateNew succeeded and the flush never happened.
+        [System.IO.File]::WriteAllBytes((Join-Path $Dir 'pr.takeover.2.claim'), [byte[]]::new(0))
+    }
+
+    $processes = @()
+    foreach ($token in $Tokens) {
+        $delay = if ($null -ne $ClassifyDelays -and $ClassifyDelays.ContainsKey($token)) { [int] $ClassifyDelays[$token] } else { 0 }
+        $processes += Start-LeaseContender -Pwsh $Pwsh -ContenderScript $ContenderScript -Dir $Dir -Token $token -GoPath $goPath -ClassifyDelayMs $delay
+    }
+
+    # Release every contender only once all of them are parked on the rendezvous, so they race
+    # the same expired record instead of running one after another.
+    $ready = $false
+    $deadline = [datetime]::UtcNow.AddSeconds(60)
+    while ([datetime]::UtcNow -lt $deadline) {
+        $ready = -not (@($Tokens | Where-Object { -not (Test-Path -LiteralPath (Join-Path $Dir "ready-$_.flag")) }))
+        if ($ready) { break }
+        Start-Sleep -Milliseconds 25
+    }
+    if (-not $ready) {
+        $Failures.Add("lease proof ($Label): the contenders never all reached the rendezvous, so they never raced") | Out-Null
+    }
+    [System.IO.File]::WriteAllText($goPath, 'go')
+
+    $allExited = $true
+    foreach ($process in $processes) {
+        if (-not $process.WaitForExit(120000)) {
+            $allExited = $false
+            $Failures.Add("lease proof ($Label): a contender did not exit within 120 seconds, so the race never completed") | Out-Null
+            try { $process.Kill() } catch { }
+        }
+        elseif ($process.ExitCode -ne 0) {
+            $allExited = $false
+            $Failures.Add("lease proof ($Label): a contender exited with code $($process.ExitCode)") | Out-Null
+        }
+    }
+
+    $results = @()
+    foreach ($token in $Tokens) {
+        $resultPath = Join-Path $Dir "result-$token.json"
+        if (-not (Test-Path -LiteralPath $resultPath -PathType Leaf)) {
+            $errorPath = Join-Path $Dir "stderr-$token.txt"
+            $detail = if (Test-Path -LiteralPath $errorPath -PathType Leaf) {
+                (([System.IO.File]::ReadAllText($errorPath)) -replace '\s+', ' ').Trim()
+            }
+            else { '' }
+            if ([string]::IsNullOrWhiteSpace($detail)) { $detail = 'no standard error output' }
+            $Failures.Add("lease proof ($Label): contender '$token' produced no result file ($detail)") | Out-Null
+            continue
+        }
+        $results += ([System.IO.File]::ReadAllText($resultPath) | ConvertFrom-Json)
+    }
+
+    return [pscustomobject]@{
+        Ready     = $ready
+        AllExited = $allExited
+        Results   = @($results)
+    }
+}
+
+function Test-LeaseRaceOutcome {
+    param(
+        [object] $Race,
+        [string] $Dir,
+        [string[]] $Tokens,
+        [string] $Label,
+        [System.Collections.Generic.List[string]] $Failures
+    )
+
+    $lease = Join-Path $Dir 'pr.lease.json'
+    $journal = Join-Path $Dir 'pr.journal.json'
+    $results = @($Race.Results)
+
+    $bothReported = $results.Count -eq $Tokens.Count
+    if (-not $bothReported) {
+        $Failures.Add("lease proof ($Label): expected $($Tokens.Count) contender outcomes but observed $($results.Count)") | Out-Null
+    }
+
+    $winners = @($results | Where-Object { $_.outcome -eq 'won' })
+    $exactlyOneWinner = $winners.Count -eq 1
+    if (-not $exactlyOneWinner) {
+        $Failures.Add("lease proof ($Label): expected exactly one takeover winner but observed $($winners.Count)") | Out-Null
+    }
+
+    # The loser must have lost after reaching the claim. 'record-not-expired' would mean it never
+    # raced at all, which is exactly the weakness a wall-clock barrier hides.
+    $contentionReasons = @('claim-lost', 'record-changed', 'read-back-mismatch')
+    $losers = @($results | Where-Object { $_.outcome -ne 'won' })
+    $loserReason = if ($losers.Count -ge 1) { [string] $losers[0].reason } else { 'no loser reported' }
+    $loserContended = $bothReported -and $losers.Count -eq ($Tokens.Count - 1) -and
+        -not (@($losers | Where-Object { $contentionReasons -notcontains [string] $_.reason }))
+    if (-not $loserContended) {
+        $Failures.Add("lease proof ($Label): the losing contender did not lose on a post-claim contention check (reason '$loserReason'), so mutual exclusion was never exercised") | Out-Null
+    }
+
+    $persisted = [System.IO.File]::ReadAllText($lease) | ConvertFrom-Json
+    $leaseMatchesWinner = $exactlyOneWinner -and $persisted.owner -eq $winners[0].token -and [int] $persisted.epoch -eq 2
+    if (-not $leaseMatchesWinner) {
+        $Failures.Add("lease proof ($Label): the persisted lease record does not name the single winner at the higher epoch") | Out-Null
+    }
+
+    $rows = @([System.IO.File]::ReadAllText($journal) | ConvertFrom-Json)
+    $priorRowKept = @($rows | Where-Object { $_.item -eq 'item-A' -and $_.state -eq 'attempt_started' }).Count -eq 1
+    $winnerRows = @($rows | Where-Object { $_.item -eq 'item-B' -and $_.state -eq 'attempt_started' })
+    $exactlyOneWinnerRow = $winnerRows.Count -eq 1
+    if (-not $priorRowKept) {
+        $Failures.Add("lease proof ($Label): the takeover clobbered the crashed run's attempt_started row") | Out-Null
+    }
+    if (-not $exactlyOneWinnerRow) {
+        $Failures.Add("lease proof ($Label): expected exactly one new attempt_started row but observed $($winnerRows.Count)") | Out-Null
+    }
+
+    # A real third fence evaluation, not an inference from the assertions above: run the actual
+    # 'lease.fence' predicate with the pre-takeover owner's token and epoch against the persisted
+    # winning record, and require it to be rejected while the winner's own fence still passes.
+    $staleFenceRejected = -not (Test-LeaseFence -LeasePath $lease -Token 'owner-0' -Epoch 1)
+    if (-not $staleFenceRejected) {
+        $Failures.Add("lease proof ($Label): lease.fence accepted the stale epoch-1 owner against the persisted winning record") | Out-Null
+    }
+    $winnerFenceAccepted = $exactlyOneWinner -and (Test-LeaseFence -LeasePath $lease -Token ([string] $winners[0].token) -Epoch 2)
+    if (-not $winnerFenceAccepted) {
+        $Failures.Add("lease proof ($Label): lease.fence rejected the winner's own token and epoch, so the fence is not discriminating") | Out-Null
+    }
+
+    # The claim must never outlive the attempt, or the next epoch is poisoned forever.
+    $claimRemoved = -not (Test-Path -LiteralPath (Join-Path $Dir 'pr.takeover.2.claim'))
+    if (-not $claimRemoved) {
+        $Failures.Add("lease proof ($Label): the takeover claim survived the attempt, so epoch 2 would be permanently unclaimable") | Out-Null
+    }
+
+    $passed = $Race.Ready -and $Race.AllExited -and $bothReported -and $loserContended -and
+        $exactlyOneWinner -and $leaseMatchesWinner -and $priorRowKept -and $exactlyOneWinnerRow -and
+        $staleFenceRejected -and $winnerFenceAccepted -and $claimRemoved
+
+    return [pscustomobject]@{
+        Passed      = $passed
+        Winner      = if ($exactlyOneWinner) { [string] $winners[0].token } else { '<none>' }
+        LoserReason = $loserReason
+    }
+}
+
+function Invoke-ClaimReclamationProof {
+    param([string] $Pwsh, [string] $Root, [System.Collections.Generic.List[string]] $Failures)
+
+    # A contender that dies between 'CreateNew' and its flush leaves a claim whose content cannot
+    # be parsed at all. A reclaimer that assumes parseable owner JSON would leave every such epoch
+    # permanently unclaimable, so unreadable content must be abandoned by construction.
+    $deadPid = 1
+    while ($null -ne (Get-Process -Id $deadPid -ErrorAction SilentlyContinue)) { $deadPid++ }
+    $self = Get-Process -Id $PID
+
+    $cases = @(
+        @{ Name = 'zero-length claim'; Content = ''; Protected = $false }
+        @{ Name = 'truncated JSON claim'; Content = '{"owner":"owner-crashed","pid":'; Protected = $false }
+        @{ Name = 'schema-invalid claim'; Content = '{"note":"no owner, pid, or start time"}'; Protected = $false }
+        @{ Name = 'dead-owner claim'; Protected = $false; Content = ([ordered]@{
+                owner = 'owner-crashed'; pid = $deadPid; started = '2000-01-01T00:00:00.0000000Z'
+            } | ConvertTo-Json -Compress) }
+        @{ Name = 'live-holder claim'; Protected = $true; Content = ([ordered]@{
+                owner = 'owner-live'; pid = $PID; started = $self.StartTime.ToUniversalTime().ToString('o')
+            } | ConvertTo-Json -Compress) }
+    )
+
+    $observed = [System.Collections.Generic.List[string]]::new()
+    $allPassed = $true
+    $index = 0
+    foreach ($case in $cases) {
+        $index++
+        $dir = Join-Path $Root "claim-$index"
+        New-Item -ItemType Directory -Path $dir -Force | Out-Null
         $contender = Join-Path $dir 'contender.ps1'
         [System.IO.File]::WriteAllText($contender, $script:LeaseContenderScript)
+        $claimPath = Join-Path $dir 'pr.takeover.2.claim'
+        $label = "claim reclamation: $($case.Name)"
 
-        $startAt = [datetime]::UtcNow.AddSeconds(2).ToString('o')
-        $processes = @()
-        foreach ($token in @('owner-A', 'owner-B')) {
-            $resultPath = Join-Path $dir ("result-$token.json")
-            $processes += Start-Process -FilePath $pwsh -PassThru -WindowStyle Hidden -ArgumentList @(
-                '-NoProfile', '-NonInteractive', '-File', $contender, '-Dir', $dir, '-Token', $token,
-                '-ResultPath', $resultPath, '-StartAtUtc', $startAt
-            )
+        $race = if ([string]::IsNullOrEmpty([string] $case.Content)) {
+            Invoke-LeaseRace -Pwsh $Pwsh -Dir $dir -ContenderScript $contender -Tokens @('owner-A') -PlantEmptyClaim -Failures $Failures -Label $label
         }
-        foreach ($process in $processes) { $process.WaitForExit(60000) | Out-Null }
+        else {
+            Invoke-LeaseRace -Pwsh $Pwsh -Dir $dir -ContenderScript $contender -Tokens @('owner-A') -ClaimContent ([string] $case.Content) -Failures $Failures -Label $label
+        }
 
-        $results = @()
-        foreach ($token in @('owner-A', 'owner-B')) {
-            $resultPath = Join-Path $dir ("result-$token.json")
-            if (-not (Test-Path -LiteralPath $resultPath -PathType Leaf)) {
-                $Failures.Add("lease proof: contender '$token' produced no result file") | Out-Null
-                continue
+        $planted = if ([string]::IsNullOrEmpty([string] $case.Content)) { [byte[]]::new(0) } else { [System.Text.Encoding]::UTF8.GetBytes([string] $case.Content) }
+        $results = @($race.Results)
+        $reason = if ($results.Count -eq 1) { [string] $results[0].reason } else { 'no result' }
+
+        if ($case.Protected) {
+            # A claim whose exact recorded process is alive must never be deleted, and the
+            # contender must not take the lease behind its back.
+            $refused = $results.Count -eq 1 -and [string] $results[0].outcome -ne 'won' -and $reason -eq 'claim-holder-alive'
+            $survived = (Test-Path -LiteralPath $claimPath -PathType Leaf) -and
+                [Convert]::ToBase64String([System.IO.File]::ReadAllBytes($claimPath)) -eq [Convert]::ToBase64String($planted)
+            $leaseUntouched = [System.IO.File]::ReadAllText((Join-Path $dir 'pr.lease.json')) -eq '{"owner":"owner-0","epoch":1,"run":"run-0"}'
+            if (-not $refused) {
+                $Failures.Add("lease proof ($label): the contender did not refuse a claim whose recorded process is alive (reason '$reason')") | Out-Null
             }
-            $results += ([System.IO.File]::ReadAllText($resultPath) | ConvertFrom-Json)
+            if (-not $survived) {
+                $Failures.Add("lease proof ($label): a live holder's claim was deleted or altered") | Out-Null
+            }
+            if (-not $leaseUntouched) {
+                $Failures.Add("lease proof ($label): the contender took the lease despite losing the claim") | Out-Null
+            }
+            if (-not ($race.Ready -and $race.AllExited -and $refused -and $survived -and $leaseUntouched)) { $allPassed = $false }
+            $observed.Add("$($case.Name) -> refused, claim intact") | Out-Null
+        }
+        else {
+            $outcome = Test-LeaseRaceOutcome -Race $race -Dir $dir -Tokens @('owner-A') -Label $label -Failures $Failures
+            $reclaimed = $results.Count -eq 1 -and [bool] $results[0].reclaimed -and [string] $results[0].outcome -eq 'won'
+            if (-not $reclaimed) {
+                $Failures.Add("lease proof ($label): the abandoned claim was not reclaimed exactly once (reason '$reason'), so that epoch stays poisoned") | Out-Null
+            }
+            if (-not ($outcome.Passed -and $reclaimed)) { $allPassed = $false }
+            $observed.Add("$($case.Name) -> reclaimed exactly once, $reason") | Out-Null
+        }
+    }
+
+    return [pscustomobject]@{ Passed = $allPassed; Observed = ($observed -join '; ') }
+}
+
+function Invoke-LeaseAcquireProof {
+    param([string] $Pwsh, [string] $Root, [System.Collections.Generic.List[string]] $Failures)
+
+    # 'lease.acquire' creates the lease before it flushes the owner record, so the same crash
+    # window exists at the very first transition. A torn record names no owner and can never
+    # expire, so without reclamation the lease would be unusable forever.
+    $completeRecord = ([ordered]@{
+        run = 'run-0'; session = 'session-0'; pid = 999999; started = '2000-01-01T00:00:00.0000000Z'
+        boot = 'boot-fixture'; access = 'digest-fixture'; epoch = 1; owner = 'owner-0'
+    } | ConvertTo-Json -Compress)
+
+    $cases = @(
+        @{ Name = 'empty initial lease'; Seed = ''; Malformed = $true }
+        @{ Name = 'torn initial lease'; Seed = '{"run":"run-0","session":"session-0","pid":'; Malformed = $true }
+        @{ Name = 'complete initial lease'; Seed = $completeRecord; Malformed = $false }
+    )
+
+    $tokens = @('owner-A', 'owner-B')
+    $observed = [System.Collections.Generic.List[string]]::new()
+    $allPassed = $true
+    $index = 0
+    foreach ($case in $cases) {
+        $index++
+        $dir = Join-Path $Root "acquire-$index"
+        New-Item -ItemType Directory -Path $dir -Force | Out-Null
+        $contender = Join-Path $dir 'contender.ps1'
+        [System.IO.File]::WriteAllText($contender, $script:LeaseAcquireContenderScript)
+        $lease = Join-Path $dir 'pr.lease.json'
+        [System.IO.File]::WriteAllBytes($lease, [System.Text.Encoding]::UTF8.GetBytes([string] $case.Seed))
+        $label = "lease acquire: $($case.Name)"
+
+        $race = Invoke-LeaseRace -Pwsh $Pwsh -Dir $dir -ContenderScript $contender -Tokens $tokens -SkipSeed -Failures $Failures -Label $label
+        $results = @($race.Results)
+        $reasons = @($results | ForEach-Object { [string] $_.reason })
+        $acquirers = @($results | Where-Object { [string] $_.outcome -eq 'acquired' })
+
+        if ($case.Malformed) {
+            $exactlyOne = $acquirers.Count -eq 1
+            if (-not $exactlyOne) {
+                $Failures.Add("lease proof ($label): expected exactly one valid acquirer but observed $($acquirers.Count)") | Out-Null
+            }
+
+            $valid = $false
+            $fenced = $false
+            if (Test-Path -LiteralPath $lease -PathType Leaf) {
+                $text = [System.IO.File]::ReadAllText($lease)
+                $record = $null
+                try { $record = $text | ConvertFrom-Json } catch { $record = $null }
+                $valid = $null -ne $record -and $exactlyOne -and
+                    [string] $record.owner -eq [string] $acquirers[0].token -and [int] $record.epoch -eq 1
+                # The reclaimed record must now pass the real fence for its owner and reject the
+                # stale identity that never finished writing.
+                $fenced = $valid -and (Test-LeaseFence -LeasePath $lease -Token ([string] $acquirers[0].token) -Epoch 1) -and
+                    -not (Test-LeaseFence -LeasePath $lease -Token 'owner-0' -Epoch 1)
+            }
+            if (-not $valid) {
+                $Failures.Add("lease proof ($label): the persisted lease is not a complete record owned by the single acquirer") | Out-Null
+            }
+            if (-not $fenced) {
+                $Failures.Add("lease proof ($label): lease.fence does not admit the acquirer and reject the unfinished writer against the reclaimed record") | Out-Null
+            }
+            if (-not ($race.Ready -and $race.AllExited -and $exactlyOne -and $valid -and $fenced)) { $allPassed = $false }
+            $observed.Add("$($case.Name) -> one acquirer ($(($reasons | Sort-Object -Unique) -join '/'))") | Out-Null
+        }
+        else {
+            # Both outcomes leave the record untouched: one contender classifies it while the other
+            # is locked out by the exclusive open, and neither ever deletes a complete record.
+            $noneAcquired = $acquirers.Count -eq 0
+            $allowed = @('valid-record-present', 'writer-holds')
+            $deferred = $results.Count -eq $tokens.Count -and
+                -not (@($results | Where-Object { $allowed -notcontains [string] $_.reason })) -and
+                @($results | Where-Object { [string] $_.reason -eq 'valid-record-present' }).Count -ge 1
+            $untouched = (Test-Path -LiteralPath $lease -PathType Leaf) -and [System.IO.File]::ReadAllText($lease) -eq [string] $case.Seed
+            if (-not $noneAcquired) {
+                $Failures.Add("lease proof ($label): a contender overwrote a complete lease record instead of deferring to expiry and takeover") | Out-Null
+            }
+            if (-not $deferred) {
+                $Failures.Add("lease proof ($label): a contender did not defer to expiry and takeover (reasons '$($reasons -join ", ")')") | Out-Null
+            }
+            if (-not $untouched) {
+                $Failures.Add("lease proof ($label): a complete lease record was deleted as malformed") | Out-Null
+            }
+            if (-not ($race.Ready -and $race.AllExited -and $noneAcquired -and $deferred -and $untouched)) { $allPassed = $false }
+            $observed.Add("$($case.Name) -> both deferred, record byte-identical") | Out-Null
+        }
+    }
+
+    # Adversarial interleaving, repeated: one contender is held inside its classification for far
+    # longer than the other needs to complete the record. The delayed contender must never be able
+    # to delete or overwrite the winner's finished record, which the previous delete-and-recreate
+    # recovery could do because DeleteOnClose deletes on disposal whatever the identity check finds.
+    $repetitions = 5
+    $delayedWinners = [System.Collections.Generic.List[string]]::new()
+    for ($round = 1; $round -le $repetitions; $round++) {
+        $dir = Join-Path $Root "acquire-delayed-$round"
+        New-Item -ItemType Directory -Path $dir -Force | Out-Null
+        $contender = Join-Path $dir 'contender.ps1'
+        [System.IO.File]::WriteAllText($contender, $script:LeaseAcquireContenderScript)
+        $lease = Join-Path $dir 'pr.lease.json'
+        [System.IO.File]::WriteAllBytes($lease, [byte[]]::new(0))
+        $label = "lease acquire: delayed contender, round $round"
+
+        $race = Invoke-LeaseRace -Pwsh $Pwsh -Dir $dir -ContenderScript $contender -Tokens $tokens -SkipSeed `
+            -ClassifyDelays @{ 'owner-B' = 1500 } -Failures $Failures -Label $label
+        $results = @($race.Results)
+        $acquirers = @($results | Where-Object { [string] $_.outcome -eq 'acquired' })
+        $exactlyOne = $acquirers.Count -eq 1
+
+        $survived = $false
+        if ($exactlyOne -and (Test-Path -LiteralPath $lease -PathType Leaf)) {
+            $record = $null
+            try { $record = [System.IO.File]::ReadAllText($lease) | ConvertFrom-Json } catch { $record = $null }
+            $survived = $null -ne $record -and [string] $record.owner -eq [string] $acquirers[0].token -and
+                (Test-LeaseFence -LeasePath $lease -Token ([string] $acquirers[0].token) -Epoch 1)
         }
 
-        $winners = @($results | Where-Object { $_.outcome -eq 'won' })
-        $exactlyOneWinner = $winners.Count -eq 1
-        if (-not $exactlyOneWinner) {
-            $Failures.Add("lease proof: expected exactly one takeover winner but observed $($winners.Count)") | Out-Null
+        if (-not $exactlyOne) {
+            $Failures.Add("lease proof ($label): expected exactly one valid acquirer but observed $($acquirers.Count)") | Out-Null
+        }
+        if (-not $survived) {
+            $Failures.Add("lease proof ($label): the winner's completed record did not survive the delayed contender, so a late reclaimer can still erase a valid lease") | Out-Null
+        }
+        if (-not ($race.Ready -and $race.AllExited -and $exactlyOne -and $survived)) { $allPassed = $false }
+        if ($exactlyOne) { $delayedWinners.Add([string] $acquirers[0].token) | Out-Null }
+    }
+    $observed.Add("delayed contender ($repetitions rounds, winners $($delayedWinners -join ', '), record survived every round)") | Out-Null
+
+    return [pscustomobject]@{ Passed = $allPassed; Observed = ($observed -join '; ') }
+}
+
+function Invoke-LeaseTakeoverProof {
+    param([System.Collections.Generic.List[string]] $Failures)
+
+    $pwsh = Resolve-PowerShellHostPath
+    if ([string]::IsNullOrWhiteSpace($pwsh)) {
+        Write-Host '  SKIP two-process lease takeover proof (cannot resolve a PowerShell host executable)'
+        return $false
+    }
+
+    $root = Join-Path ([System.IO.Path]::GetTempPath()) ('validate-skills-lease-' + [Guid]::NewGuid().ToString('n'))
+    New-Item -ItemType Directory -Path $root -Force | Out-Null
+
+    try {
+        $tokens = @('owner-A', 'owner-B')
+        $repetitions = 5
+        $winners = [System.Collections.Generic.List[string]]::new()
+        $reasons = [System.Collections.Generic.List[string]]::new()
+        $allPassed = $true
+
+        # Repeat the race: a single run can pass by scheduling luck, and repetition is what shows
+        # the winner is not fixed by launch order.
+        for ($i = 1; $i -le $repetitions; $i++) {
+            $dir = Join-Path $root "race-$i"
+            New-Item -ItemType Directory -Path $dir -Force | Out-Null
+            $contender = Join-Path $dir 'contender.ps1'
+            [System.IO.File]::WriteAllText($contender, $script:LeaseContenderScript)
+
+            $race = Invoke-LeaseRace -Pwsh $pwsh -Dir $dir -ContenderScript $contender -Tokens $tokens -Failures $Failures -Label "race $i"
+            $outcome = Test-LeaseRaceOutcome -Race $race -Dir $dir -Tokens $tokens -Label "race $i" -Failures $Failures
+            if (-not $outcome.Passed) { $allPassed = $false }
+            $winners.Add($outcome.Winner) | Out-Null
+            $reasons.Add($outcome.LoserReason) | Out-Null
         }
 
-        $persisted = [System.IO.File]::ReadAllText($lease) | ConvertFrom-Json
-        $leaseMatchesWinner = $exactlyOneWinner -and $persisted.owner -eq $winners[0].token -and [int] $persisted.epoch -eq 2
-        if (-not $leaseMatchesWinner) {
-            $Failures.Add('lease proof: the persisted lease record does not name the single winner at the higher epoch') | Out-Null
+        # Crashed-claim recovery: the same race, but epoch 2 already carries a claim abandoned by
+        # a process that no longer exists. Exactly one contender must still take over.
+        $crashDir = Join-Path $root 'crashed-claim'
+        New-Item -ItemType Directory -Path $crashDir -Force | Out-Null
+        $crashContender = Join-Path $crashDir 'contender.ps1'
+        [System.IO.File]::WriteAllText($crashContender, $script:LeaseContenderScript)
+
+        $strandedPid = 1
+        while ($null -ne (Get-Process -Id $strandedPid -ErrorAction SilentlyContinue)) { $strandedPid++ }
+        $strandedClaim = ([ordered]@{ owner = 'owner-crashed'; pid = $strandedPid; started = '2000-01-01T00:00:00.0000000Z' } | ConvertTo-Json -Compress)
+
+        $crashRace = Invoke-LeaseRace -Pwsh $pwsh -Dir $crashDir -ContenderScript $crashContender -Tokens $tokens -ClaimContent $strandedClaim -Failures $Failures -Label 'crashed-claim recovery'
+        $crashOutcome = Test-LeaseRaceOutcome -Race $crashRace -Dir $crashDir -Tokens $tokens -Label 'crashed-claim recovery' -Failures $Failures
+        if (-not $crashOutcome.Passed) { $allPassed = $false }
+
+        # Exactly one contender must reclaim the abandoned claim, and it must be the winner: a
+        # contender that won without reclaiming would mean the plant never took effect.
+        $reclaimed = @($crashRace.Results | Where-Object { [bool] $_.reclaimed })
+        $recoveryProven = $crashOutcome.Passed -and $reclaimed.Count -eq 1 -and [string] $reclaimed[0].outcome -eq 'won'
+        if (-not $recoveryProven) {
+            $Failures.Add('lease proof (crashed-claim recovery): no contender recovered the abandoned epoch-2 claim, so a crash before the lease replace poisons that epoch permanently') | Out-Null
+            $allPassed = $false
         }
 
-        $rows = @([System.IO.File]::ReadAllText($journal) | ConvertFrom-Json)
-        $priorRowKept = @($rows | Where-Object { $_.item -eq 'item-A' -and $_.state -eq 'attempt_started' }).Count -eq 1
-        $winnerRows = @($rows | Where-Object { $_.item -eq 'item-B' -and $_.state -eq 'attempt_started' })
-        $exactlyOneWinnerRow = $winnerRows.Count -eq 1
-        if (-not $priorRowKept) {
-            $Failures.Add('lease proof: the takeover clobbered the crashed run''s attempt_started row') | Out-Null
-        }
-        if (-not $exactlyOneWinnerRow) {
-            $Failures.Add("lease proof: expected exactly one new attempt_started row but observed $($winnerRows.Count)") | Out-Null
-        }
+        # Malformed claims and malformed initial lease records are the same crash window at two
+        # different transitions, so both are proven here.
+        $claimProof = Invoke-ClaimReclamationProof -Pwsh $pwsh -Root $root -Failures $Failures
+        if (-not $claimProof.Passed) { $allPassed = $false }
+        $acquireProof = Invoke-LeaseAcquireProof -Pwsh $pwsh -Root $root -Failures $Failures
+        if (-not $acquireProof.Passed) { $allPassed = $false }
 
-        # A loser that still believes it holds the lease must fail the fence and write nothing.
-        $staleFencePasses = ($persisted.owner -eq 'owner-0' -and [int] $persisted.epoch -eq 1)
-        if ($staleFencePasses) {
-            $Failures.Add('lease proof: a stale epoch-1 owner would still pass lease.fence') | Out-Null
-        }
-
-        if ($exactlyOneWinner -and $leaseMatchesWinner -and $priorRowKept -and $exactlyOneWinnerRow -and -not $staleFencePasses) {
-            Write-Host "  PASS two-process lease takeover proof (winner $($winners[0].token) at epoch 2; the other contender recorded '$(@($results | Where-Object { $_.outcome -ne 'won' })[0].reason)', no attempt_started row was lost, and the stale owner fails the fence)"
+        if ($allPassed) {
+            Write-Host "  PASS two-process lease takeover proof ($repetitions rendezvous races, winners $($winners -join ', '); losers stopped with $(($reasons | Select-Object -Unique) -join ', '); stale owner-0/epoch-1 rejected by lease.fence while the winner passed; abandoned epoch-2 claim reclaimed and exactly one winner)"
+            Write-Host "  PASS malformed takeover claim proof ($($claimProof.Observed))"
+            Write-Host "  PASS malformed initial lease proof ($($acquireProof.Observed))"
             return $true
         }
 
@@ -3569,8 +4857,8 @@ function Invoke-LeaseTakeoverProof {
         return $true
     }
     finally {
-        if (Test-Path -LiteralPath $dir) {
-            Remove-Item -LiteralPath $dir -Recurse -Force -ErrorAction SilentlyContinue
+        if (Test-Path -LiteralPath $root) {
+            Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
         }
     }
 }
@@ -3622,7 +4910,7 @@ function Invoke-SelfTest {
 
     if ($failures.Count -eq 0) {
         $proofNote = if ($historyProofRan) { ' and the history-aware secret-scan proof held' } else { ' (history-aware secret-scan proof skipped: no git)' }
-        $leaseNote = if ($leaseProofRan) { ', the journal create/update proof and the two-process lease takeover proof held' } else { ', the journal create/update proof held (lease takeover proof skipped)' }
+        $leaseNote = if ($leaseProofRan) { ', the journal create/update proof, the two-process lease takeover proof, and the malformed claim and malformed initial lease proofs held' } else { ', the journal create/update proof held (lease takeover proof skipped)' }
         Write-Host "SELF-TEST PASS: clean fixture accepted, $($negatives.Count) negative fixtures rejected$proofNote$leaseNote."
         return 0
     }
@@ -3651,4 +4939,3 @@ if ($SelfTest) {
 }
 
 exit (Invoke-SkillValidation -Root $RepoRoot)
-

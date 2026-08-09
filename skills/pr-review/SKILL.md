@@ -192,7 +192,12 @@ Used only when the chosen Azure DevOps adapter is `az devops`. Follow
 Run `terminal.preflight` first and execute its checks; a narrative assurance is not a preflight.
 It must prove a visible interactive terminal, a non-echoing secure prompt, process-scoped
 environment injection, the platform access controls in `acl.apply`, an effective PSReadLine
-history policy that saves nothing, and that transcription is off. Transcription counts as proven
+history policy that saves nothing, and that transcription is off. Prove `acl.apply` by actually
+applying it to a disposable probe directory and file, reading the effective permissions back with
+the reader for the explicitly detected platform, requiring directory `700` and file `600` to match
+that contract, and then removing the probe path; a host that cannot
+apply or cannot verify them blocks, because the bundle, the child copies, and every frozen
+request body depend on those permissions. Transcription counts as proven
 off only when the policy is readable and disabled; an unreadable policy is not proven off. Any
 failure blocks before secret entry and before Azure DevOps acquisition, with no persistent login,
 no fallback, and no attempt to override a mandatory host or group policy.
@@ -246,13 +251,25 @@ Record `acquiring`. Read `reference/commands.md` blocks `bundle.seal`, `bundle.v
 ### Immutable resolution
 
 Resolve every path to content only through the pinned revisions, never through a branch, a tag,
-`HEAD`, a fetch, or a working tree. On GitHub, `github.pull-request-read` pins `base.sha` and
-`head.sha`, `github.commit-read` turns each into a root tree, `github.tree-read` resolves paths
-inside that tree, and `github.item-read` resolves a single path when the recursive tree returns
-`truncated: true` or when only one path is needed. On Azure DevOps, `ado.pull-request-read` and
-`ado.iteration-list` pin the base and source revisions, `ado.commit-read` returns each `treeId`,
-`ado.tree-read` resolves paths, and `ado.item-read` resolves a single path with
-`versionType=commit`. Both providers then read the resolved blob SHA with `blob-read`.
+`HEAD`, a fetch, or a working tree. Exactly one revision per provider is the diff base, and it is
+the merge base of the pull request, never the tip of the target branch, because a target branch
+that advanced after the pull request was opened would resolve base-side paths to unrelated later
+content or to nothing at all and would produce anchors the provider rejects. On GitHub,
+`github.pull-request-read` pins `base.sha` as a non-authoritative base snapshot and `head.sha` as
+the source revision, `github.merge-base-read` compares that exact pair and returns
+`merge_base_commit.sha` as the sole diff base, `github.commit-read` turns the diff base and the
+source revision into root trees, `github.tree-read` resolves paths inside that tree, and
+`github.item-read` resolves a single path when the recursive tree returns `truncated: true` or
+when only one path is needed. GitHub records `base.sha` when the pull request is opened or last
+synchronized, so it may equal the comparison merge base, may lag it, or may differ from it, and
+observing that it agrees with the merge base on one pull request is never evidence that it may be
+used on the next. On Azure DevOps, `ado.pull-request-read` pins `lastMergeSourceCommit.commitId`
+as the source revision and `lastMergeTargetCommit.commitId` as the target-branch tip only,
+`ado.iteration-list` pins the highest iteration and its `commonRefCommit.commitId` as the sole
+diff base, `ado.commit-read` returns each `treeId`, `ado.tree-read` resolves paths, and
+`ado.item-read` resolves a single path with `versionType=commit`. Both providers then read the
+resolved blob SHA with `blob-read`. `base.sha` and `lastMergeTargetCommit.commitId` are never a
+diff base.
 
 `github.pull-request-file-list` returns only the source-side blob, so every base-side blob and
 every unchanged-context blob is resolved through this chain. A missing, truncated, or ambiguous
@@ -262,7 +279,9 @@ resolution that neither the tree read nor the single-path item read can settle b
 
 Every anchor comes from `diff.compute` over the bundle's own base-side and source-side blobs.
 Never derive an anchor from a checkout, an index, a working tree, or a provider-supplied patch,
-because a provider patch is omitted or truncated for large files.
+because a provider patch is omitted or truncated for large files. `bundle.seal` and
+`diff.compute` take exactly one diff-base revision, so a manifest whose base-side entries do not
+all carry that one revision blocks.
 
 ### Admission
 
@@ -446,7 +465,20 @@ affected review and targets, and requires approval of a new exact set.
 
 Acquire the lease before the first write and release it only with the matching owner token.
 `lease.acquire` creates the record with `CreateNew`, so exactly one contender wins and every
-other is denied. Heartbeat every 10 seconds; six missed heartbeats, that is 60 seconds, expire
+other is denied. The create precedes the owner-record flush, so a crash in that window leaves a
+lease file that exists but was never finished. A record that is absent, zero-length, unparseable,
+or missing a required field is malformed by construction, names no owner, and can never be aged
+out by expiry, so recovery is one exclusive ownership transition rather than a delete and a fresh
+create: the contender opens the record exclusively, proving no writer still holds it, and while
+still holding that one handle classifies the content and, only if it is malformed, truncates and
+writes the complete owner record through the same handle. That single handle is the
+compare-and-swap, so no window exists in which the record is absent, and `DeleteOnClose` is never
+used here because it would delete on disposal even after the contender learned another contender
+had already written a valid record. A record that parses completely is never deleted or
+overwritten as malformed and follows the normal expiry, liveness, and takeover path instead.
+`lease.fence` fails on a malformed record and admits only a completed owner record, so no provider
+send and no journal write ever originates from one.
+Heartbeat every 10 seconds; six missed heartbeats, that is 60 seconds, expire
 it. A same-boot takeover additionally requires proof that the recorded process start is absent
 and the recorded app session is not running. A wall-clock change never proves liveness, and a
 boot-ID change or monotonic loss forbids automatic takeover until the prior boot is proven ended
@@ -457,8 +489,21 @@ exclusive takeover claim, then re-reads and requires the lease to still be the e
 record it observed, then replaces it at a strictly higher epoch with a fresh owner token, then
 re-reads and requires its own token and epoch back. A contender that loses the claim, sees a
 changed record, or fails the read-back writes nothing, so two contenders can never both believe
-they took over. The winner freshly inventories and reconciles every `attempt_started` row and
-blocks on ambiguity. An unwritable Git common directory blocks.
+they took over. The claim never outlives the attempt that created it: it is opened
+`DeleteOnClose` and exclusively, so success, abort, and process death all remove it, and a claim
+that survives a power loss is reclaimed exactly once by a contender that can open it
+exclusively. A claim whose content is absent, zero-length, unparseable, or missing a required
+field is abandoned by construction, because a contender that died before its flush leaves exactly
+that and it names no process whose liveness could be tested; a claim that parses completely is
+abandoned only when its recorded process with that exact start time is gone, and a live holder's
+claim is never deleted. The deletion runs under an exclusive `DeleteOnClose` handle opened only
+after that classification, and its identity check is a defensive assertion rather than what
+prevents deletion, because such a handle deletes on disposal whatever the check concludes; what
+actually protects a claim in use is exclusive sharing, which already makes it
+impossible to reclaim a claim a winning contender still holds. A claim left behind would otherwise make
+that epoch permanently unclaimable and deny every later takeover forever. The winner freshly
+inventories and reconciles every `attempt_started` row and blocks on ambiguity. An unwritable Git
+common directory blocks.
 
 Run `lease.fence` immediately before every provider send and immediately before every journal
 write. A run whose persisted owner token or monotonic epoch no longer matches is a stale writer:
@@ -467,8 +512,10 @@ row carries the writing owner token and epoch, and `journal.append` re-reads and
 replacing, so a full-journal write can never drop or downgrade another owner's row.
 
 The first journal is created with `journal.create` using `CreateNew`, because
-`[System.IO.File]::Replace` requires an existing destination and can never create it. Every
-later version goes through `journal.append`.
+`[System.IO.File]::Replace` requires an existing destination and can never create it. Creating
+the first journal is a journal write like any other, so `journal.create` passes `lease.fence`
+immediately before its exclusive create and a stale writer never lays down the first version.
+Every later version goes through `journal.append`.
 
 Before posting, always disclose that mutual exclusion and exactly-once behavior cover only runs
 that write this same Git common-directory lease, and never other clones, other machines, or any
@@ -544,7 +591,7 @@ a defect.
 
 | Area | Operations |
 |---|---|
-| GitHub | `github.identity-read`, `github.repository-read`, `github.pull-request-read`, `github.commit-read`, `github.tree-read`, `github.item-read`, `github.pull-request-file-list`, `github.blob-read`, `github.review-comment-inventory`, `github.review-inventory`, `github.review-decision-read`, `github.issue-comment-inventory`, `github.review-comment-create`, `github.issue-comment-create` |
+| GitHub | `github.identity-read`, `github.repository-read`, `github.pull-request-read`, `github.merge-base-read`, `github.commit-read`, `github.tree-read`, `github.item-read`, `github.pull-request-file-list`, `github.blob-read`, `github.review-comment-inventory`, `github.review-inventory`, `github.review-decision-read`, `github.issue-comment-inventory`, `github.review-comment-create`, `github.issue-comment-create` |
 | Azure DevOps | `ado.identity-read`, `ado.repository-read`, `ado.pull-request-read`, `ado.commit-read`, `ado.tree-read`, `ado.item-read`, `ado.iteration-list`, `ado.iteration-change-list`, `ado.blob-read`, `ado.thread-inventory`, `ado.reviewer-vote-read`, `ado.thread-create`, `ado.general-thread-create` |
 | Terminal | `terminal.preflight`, `terminal.launch`, `terminal.secret-entry`, `terminal.probe`, `terminal.read-since-last-input`, `terminal.cleanup` |
 | Bundle | `bundle.seal`, `bundle.verify`, `bundle.child-copy` |
