@@ -61,6 +61,10 @@ closes anything, and posts nothing before the exact displayed set is approved.
 Mutual exclusion covers only runs sharing one Git common directory; it is never a
 cross-clone, cross-machine, or global guarantee.
 
+The coordinator `SKILL.md` keeps only routing, safety, phase flow, and approval
+boundaries. Detailed access, acquisition, review-session, posting, and operation
+contracts live in phase-specific `reference/` files and are loaded only when needed.
+
 ## Install from the marketplace
 
 Register this repository as a marketplace:
@@ -126,8 +130,8 @@ discovers every skill directory that contains a `SKILL.md` rather than assuming 
 fixed list, then checks required resources, unique skill frontmatter, the exact
 model tables, the approval gates, revision-bound critiques, the delivery
 vocabulary and authority handshake, the review workflow's entry guard, locator
-grammar, credential-terminal preflight and allowlist, the ordered Azure DevOps
-probe, bundle admission and citation rules, immutable revision resolution, the
+grammar, phase-reference wiring, credential-terminal preflight and allowlist, the
+ordered Azure DevOps probe, bundle admission and citation rules, immutable revision resolution, the
 single merge-base diff-base revision per provider and the pinned-diff anchors, the
 transmitted provider Accept and API-version headers,
 approval serializers and response projectors, lease fencing, journal creation, and

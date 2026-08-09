@@ -123,6 +123,11 @@ $script:SkillCatalog = [ordered]@{
         Resources                  = @(
             'prompts/area-review.md',
             'prompts/exploration.md',
+            'reference/access.md',
+            'reference/acquisition.md',
+            'reference/review.md',
+            'reference/posting.md',
+            'reference/operations.md',
             'reference/commands.md',
             'reference/certification.md'
         )
@@ -974,9 +979,21 @@ function Test-Discovery {
 function Get-ReviewSkillText {
     param([string] $Root)
 
-    $path = Join-Path $Root "skills/$($script:ReviewSkill)/SKILL.md"
-    if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { return $null }
-    return Get-NormalizedText -Path $path
+    $relativePaths = @(
+        'SKILL.md',
+        'reference/access.md',
+        'reference/acquisition.md',
+        'reference/review.md',
+        'reference/posting.md',
+        'reference/operations.md'
+    )
+    $parts = [System.Collections.Generic.List[string]]::new()
+    foreach ($relativePath in $relativePaths) {
+        $path = Join-Path $Root "skills/$($script:ReviewSkill)/$relativePath"
+        if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { return $null }
+        $parts.Add((Get-NormalizedText -Path $path)) | Out-Null
+    }
+    return $parts -join "`n"
 }
 
 function Get-ReviewContractBlocks {
@@ -1028,7 +1045,7 @@ function Get-ReviewContractBlocks {
 function Get-ReviewRegisteredOperations {
     param([string] $Root)
 
-    $path = Join-Path $Root "skills/$($script:ReviewSkill)/SKILL.md"
+    $path = Join-Path $Root "skills/$($script:ReviewSkill)/reference/operations.md"
     if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { return @() }
 
     $operations = [System.Collections.Generic.List[string]]::new()
@@ -1057,7 +1074,7 @@ function Test-ReviewStatements {
 
     foreach ($id in $Required.Keys) {
         if (-not (Test-Contains $SkillText $Required[$id])) {
-            Add-Violation $Violations $Check "skills/$($script:ReviewSkill)/SKILL.md no longer states '$id' (expected /$($Required[$id])/)."
+            Add-Violation $Violations $Check "The pr-review coordinator or phase references no longer state '$id' (expected /$($Required[$id])/)."
         }
     }
 }
@@ -1158,8 +1175,11 @@ function Test-ReviewAccessSelection {
         'discoverable-not-active' = 'Discoverable is not active, dynamic extension installation is disabled, and\s*Agent Finder results are excluded\.'
         'mcp-qualification'      = 'a stable adapter identity\s*and version, its transport endpoint, the provider authority with organization and host it acts\s*against, its acting-identity route, and a complete operation-name to tool mapping for every\s*read and write operation'
         'mcp-authority-match'    = 'The declared provider authority, never a local\s*or stdio transport host, must match the locator\.'
-        'mcp-confirmed'          = 'Every MCP choice is confirmed by the user\s*after displaying those fields, even when it is the only candidate\.'
-        'cli-fallback-scope'     = 'Otherwise use installed `gh` for GitHub or installed `az devops` for Azure DevOps\.'
+        'ado-mcp-preferred'      = 'For Azure DevOps, rank every qualifying MCP candidate ahead of installed `az devops`\.'
+        'mcp-ledger-enabled'     = 'Step 4\s*must confirm that the preferred candidate has an enabled ledger row before selection\.'
+        'mcp-confirmed'          = 'Display\s*the MCP fields above and obtain explicit user confirmation, even when it is the only candidate\.'
+        'ado-cli-fallback-scope' = 'Use installed `az devops` only when no qualifying, ledger-enabled MCP candidate exists\.'
+        'github-cli-scope'       = 'For\s*GitHub, otherwise use installed `gh`\.'
         'no-silent-switch'       = 'never switch silently'
         'no-cross-candidate-fallback' = 'A failure never falls back to\s*another candidate\.'
         'probe-read-back'        = 'probe the chosen adapter for immutable IDs and semantic read-back of\s*acting identity, pull request and revision, paging, one pinned blob, and the complete comment\s*inventory'
@@ -1615,7 +1635,7 @@ function Test-ReviewOperationBijection {
     $seen = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::Ordinal)
     foreach ($operation in $registered) {
         if (-not $seen.Add($operation)) {
-            Add-Violation $Violations 'review-operation-registry' "Operation '$operation' is registered more than once in SKILL.md."
+            Add-Violation $Violations 'review-operation-registry' "Operation '$operation' is registered more than once in reference/operations.md."
         }
     }
 
@@ -1633,7 +1653,7 @@ function Test-ReviewOperationBijection {
     }
     foreach ($operation in $blockSeen) {
         if (-not $seen.Contains($operation)) {
-            Add-Violation $Violations 'review-operation-registry' "Contract block operation '$operation' is not in the SKILL.md operation registry."
+            Add-Violation $Violations 'review-operation-registry' "Contract block operation '$operation' is not in the operation registry."
         }
     }
 
@@ -1654,7 +1674,7 @@ function Test-ReviewOperationBijection {
             Add-Violation $Violations 'review-operation-registry' "Required operation '$operation' has no contract block, so the operation set is closed but insufficient."
         }
         if (-not $seen.Contains($operation)) {
-            Add-Violation $Violations 'review-operation-registry' "Required operation '$operation' is not registered in SKILL.md, so the operation set is closed but insufficient."
+            Add-Violation $Violations 'review-operation-registry' "Required operation '$operation' is not registered, so the operation set is closed but insufficient."
         }
     }
 
@@ -1717,8 +1737,6 @@ function Test-ReviewResolutionAndDiff {
         'context-pinned'    = 'Each of those paths is resolved at the pinned\s*base revision through `item-read` or `tree-read` and read with `blob-read`'
         'context-unresolved' = 'an unchanged-context\s*path that cannot be resolved immutably is omitted from the bundle and recorded as unresolved,\s*never filled in from a checkout'
     }
-    Test-ReviewStatements -SkillText $SkillText -Check 'review-resolution' -Required $required -Violations $Violations
-
     $blocks = @{}
     foreach ($block in (Get-ReviewContractBlocks -Root $Root)) {
         if ($block.Fields.Contains('operation')) { $blocks[$block.Fields['operation']] = $block }
@@ -1901,8 +1919,6 @@ function Test-ReviewSerializerContracts {
         'github-equality'     = '`response\.project-github` requires the same\s*byte-identical equality against the frozen bytes'
         'classify-by-projector' = 'Classify every candidate through `response\.project-github` or `response\.project-ado`,\s*never by eyeballing the response\.'
     }
-    Test-ReviewStatements -SkillText $SkillText -Check 'review-serializer' -Required $required -Violations $Violations
-
     $blocks = @{}
     foreach ($block in (Get-ReviewContractBlocks -Root $Root)) {
         if ($block.Fields.Contains('operation')) { $blocks[$block.Fields['operation']] = $block }
@@ -1981,8 +1997,6 @@ function Test-ReviewLeaseAndJournal {
         'journal-append-later' = 'Every\s*later version goes through `journal\.append`\.'
         'write-loop-fenced' = 'take a complete before inventory, pass\s*`lease\.fence`, append the journal row before sending, pass `lease\.fence` again, send exactly one\s*write'
     }
-    Test-ReviewStatements -SkillText $SkillText -Check 'review-lease' -Required $required -Violations $Violations
-
     $blocks = @{}
     foreach ($block in (Get-ReviewContractBlocks -Root $Root)) {
         if ($block.Fields.Contains('operation')) { $blocks[$block.Fields['operation']] = $block }
@@ -2146,8 +2160,6 @@ function Test-ReviewProbeAndPreflight {
         'probe-order'        = 'Repository\s*resolution precedes every route that needs a repository ID\.'
         'probe-failure'      = 'Any failure, missing field, or\s*out-of-order step clears the credential and blocks\.'
     }
-    Test-ReviewStatements -SkillText $SkillText -Check 'review-probe' -Required $required -Violations $Violations
-
     $blocks = @{}
     foreach ($block in (Get-ReviewContractBlocks -Root $Root)) {
         if ($block.Fields.Contains('operation')) { $blocks[$block.Fields['operation']] = $block }
@@ -2269,8 +2281,6 @@ function Test-ReviewDecisionPredicate {
         'never-inferred'   = 'That decision is never inferred from review rows or\s*branch policy, because the REST review rows do not carry it\.'
         'ado-equivalent'   = 'Azure DevOps proves the equivalent\s*with `ado\.reviewer-vote-read` before and after\.'
     }
-    Test-ReviewStatements -SkillText $SkillText -Check 'review-decision' -Required $required -Violations $Violations
-
     $blocks = @{}
     foreach ($block in (Get-ReviewContractBlocks -Root $Root)) {
         if ($block.Fields.Contains('operation')) { $blocks[$block.Fields['operation']] = $block }
@@ -2422,16 +2432,42 @@ function Test-ReviewSkill {
     $skillText = Get-ReviewSkillText -Root $Root
     if ($null -eq $skillText) { return }
 
-    Test-ReviewEntryGuard -SkillText $skillText -Violations $Violations
-    Test-ReviewLocatorGrammar -SkillText $skillText -Violations $Violations
-    Test-ReviewAccessSelection -SkillText $skillText -Violations $Violations
-    Test-ReviewTerminalContract -SkillText $skillText -Violations $Violations
-    Test-ReviewBundleContract -SkillText $skillText -Violations $Violations
-    Test-ReviewModelContract -SkillText $skillText -Violations $Violations
-    Test-ReviewAnchorContract -SkillText $skillText -Violations $Violations
-    Test-ReviewApprovalContract -SkillText $skillText -Violations $Violations
-    Test-ReviewPostingContract -SkillText $skillText -Violations $Violations
-    Test-ReviewVocabulary -SkillText $skillText -Violations $Violations
+    Test-ReviewTokenSet -SkillText $skillText -Check 'review-entry-guard' -Label 'The review entry guard' `
+        -Pattern '`(?<token>entry:[a-z-]+:[a-z-]+)`' -Expected $script:ReviewEntryTags -Violations $Violations
+    Test-ReviewTokenSet -SkillText $skillText -Check 'review-user-gates' -Label 'The review user-gate set' `
+        -Pattern '`(?<token>Approve [^`]+\?)`' -Expected $script:ReviewUserGates -Violations $Violations
+    Test-ReviewTokenSet -SkillText $skillText -Check 'review-terminal' -Label 'The credential-terminal command allowlist' `
+        -Pattern '`(?<token>terminal-allow:[a-z-]+)`' -Expected $script:ReviewTerminalAllowTags -Violations $Violations
+
+    $required = [ordered]@{
+        'bootstrap-scope'          = 'Bootstrap must not\s*acquire a pull request, build or read a bundle, launch a child, preview, approve, journal, or\s*write\.'
+        'ascii-host'               = 'the host must already be ASCII lowercase and exactly `github\.com`,\s*`dev\.azure\.com`, or `<org>\.visualstudio\.com`'
+        'ado-mcp-preferred'        = 'For Azure DevOps, rank every qualifying MCP candidate ahead of installed `az devops`\.'
+        'ado-cli-fallback'         = 'Use installed `az devops` only when no qualifying, ledger-enabled MCP\s*candidate exists\.'
+        'no-adapter-fallback'      = 'A failure\s*never falls back to another candidate\.'
+        'terminal-allowlist'       = '\| `terminal-allow:cleanup` \| The credential clear and terminal close \|'
+        'terminal-end-events'      = 'a five-minute idle timeout, cancellation, terminal\s*close, a block, logout, run end, adapter or version change, an invalid or insufficient PAT, or a\s*user request'
+        'immutable-resolution'     = 'Resolve every path to content only through the pinned revisions, never through a branch, a tag,\s*`HEAD`, a fetch, or a working tree\.'
+        'github-merge-base'        = 'use only\s*`merge_base_commit\.sha` as the diff base'
+        'base-sha-distinction'     = 'GitHub\s*records `base\.sha` when the pull request is opened or last synchronized, so it may equal the\s*comparison merge base, may lag it, or may differ from it'
+        'target-tip-not-base'      = '`base\.sha` and `lastMergeTargetCommit\.commitId` are never a diff base\.'
+        'admission'                = '\| Changed files \| 3,000 \|'
+        'finding-citation'         = 'Every finding must cite a bundle path plus that entry''s blob\s*SHA-256\.'
+        'canonical-model'          = '\| Canonical \| `\[Canonical\]` \| `gemini-3\.1-pro-preview` \|'
+        'review-budget'            = 'Prompts are capped at 16 KiB, envelopes at 64 KiB, a single finding at 4 KiB, and findings at\s*100 per role\.'
+        'anchor-side'              = 'Never infer the opposite side, and never read a side from a checkout or provider patch\.'
+        'github-position'          = 'GitHub binds the exact approved `commit_id` and never sends the deprecated `position` field\.'
+        'approval-mutation'        = 'Any mutation of any bound field revokes approval\.'
+        'lease-liveness'           = 'A wall-clock\s*change never proves liveness, and a boot-ID change or monotonic loss forbids automatic takeover\s*until the prior boot is proven ended and the prior session proven inactive\.'
+        'scope-disclosure'         = 'Disclose it unconditionally, including when no other run is known\.'
+        'uncertain-no-retry'       = 'Never automatically repost a `confirmed` or `uncertain` comment\.'
+        'final-predicate'          = 'final predicate must prove that no submitted review and no pending review\s*changed, that preexisting pending reviews remain untouched'
+        'item-states'              = '\| Item states \| `baseline_complete`, `attempt_started`, `confirmed`, `proven_unposted`, `uncertain` \|'
+        'phase-reference-wiring'   = '\| Before previewing or posting \| `reference/posting\.md` \|'
+        'load-on-demand'           = 'Do not preload every reference\.'
+    }
+    Test-ReviewStatements -SkillText $skillText -Check 'review-modular-contract' -Required $required -Violations $Violations
+
     Test-ReviewResolutionAndDiff -Root $Root -SkillText $skillText -Violations $Violations
     Test-ReviewSerializerContracts -Root $Root -SkillText $skillText -Violations $Violations
     Test-ReviewLeaseAndJournal -Root $Root -SkillText $skillText -Violations $Violations
@@ -3007,7 +3043,7 @@ function Get-NegativeFixtures {
             Apply = {
                 param([string] $Dir)
                 # Removing a guarded entry is how an unguarded path back into posting appears.
-                Edit-FixtureFile -Path (Join-Path $Dir 'skills/pr-review/SKILL.md') `
+                Edit-FixtureFile -Path (Join-Path $Dir 'skills/pr-review/reference/access.md') `
                     -Find '| `entry:guarded:pre-post-revalidation` | `guarded` | Pre-post revalidation | Requires a state-compatible, digest-matching `AccessContext` |' `
                     -ReplaceWith ''
             }
@@ -3016,7 +3052,7 @@ function Get-NegativeFixtures {
             Name  = 'review-bootstrap-may-write'
             Apply = {
                 param([string] $Dir)
-                Edit-FixtureFile -Path (Join-Path $Dir 'skills/pr-review/SKILL.md') `
+                Edit-FixtureFile -Path (Join-Path $Dir 'skills/pr-review/reference/access.md') `
                     -Find 'Bootstrap must not acquire a pull request, build or read a bundle, launch a child, preview, approve, journal, or write.' `
                     -ReplaceWith 'Bootstrap may continue into acquisition when the locator is obvious.'
             }
@@ -3025,7 +3061,7 @@ function Get-NegativeFixtures {
             Name  = 'review-locator-accepts-unicode-host'
             Apply = {
                 param([string] $Dir)
-                Edit-FixtureFile -Path (Join-Path $Dir 'skills/pr-review/SKILL.md') `
+                Edit-FixtureFile -Path (Join-Path $Dir 'skills/pr-review/reference/access.md') `
                     -Find 'the host must already be ASCII lowercase and exactly `github.com`, `dev.azure.com`, or `<org>.visualstudio.com`' `
                     -ReplaceWith 'normalize the host to `github.com`, `dev.azure.com`, or `<org>.visualstudio.com`'
             }
@@ -3034,7 +3070,7 @@ function Get-NegativeFixtures {
             Name  = 'review-terminal-allowlist-widened'
             Apply = {
                 param([string] $Dir)
-                Edit-FixtureFile -Path (Join-Path $Dir 'skills/pr-review/SKILL.md') `
+                Edit-FixtureFile -Path (Join-Path $Dir 'skills/pr-review/reference/access.md') `
                     -Find '| `terminal-allow:cleanup` | The credential clear and terminal close |' `
                     -ReplaceWith '| `terminal-allow:cleanup` | The credential clear and terminal close | | `terminal-allow:diagnostics` | Any command needed to diagnose the terminal |'
             }
@@ -3043,7 +3079,7 @@ function Get-NegativeFixtures {
             Name  = 'review-terminal-secret-persisted'
             Apply = {
                 param([string] $Dir)
-                Edit-FixtureFile -Path (Join-Path $Dir 'skills/pr-review/SKILL.md') `
+                Edit-FixtureFile -Path (Join-Path $Dir 'skills/pr-review/reference/access.md') `
                     -Find 'a five-minute idle timeout, cancellation, terminal close, a block, logout, run end, adapter or version change, an invalid or insufficient PAT, or a user request' `
                     -ReplaceWith 'the end of the run'
             }
@@ -3052,7 +3088,7 @@ function Get-NegativeFixtures {
             Name  = 'review-bundle-admission-relaxed'
             Apply = {
                 param([string] $Dir)
-                Edit-FixtureFile -Path (Join-Path $Dir 'skills/pr-review/SKILL.md') `
+                Edit-FixtureFile -Path (Join-Path $Dir 'skills/pr-review/reference/acquisition.md') `
                     -Find '| Changed files | 3,000 |' `
                     -ReplaceWith '| Changed files | unlimited, truncate instead |'
             }
@@ -3061,7 +3097,7 @@ function Get-NegativeFixtures {
             Name  = 'review-citation-requirement-dropped'
             Apply = {
                 param([string] $Dir)
-                Edit-FixtureFile -Path (Join-Path $Dir 'skills/pr-review/SKILL.md') `
+                Edit-FixtureFile -Path (Join-Path $Dir 'skills/pr-review/reference/acquisition.md') `
                     -Find "Every finding must cite a bundle path plus that entry's blob SHA-256." `
                     -ReplaceWith 'Findings should reference the file they concern.'
             }
@@ -3070,7 +3106,7 @@ function Get-NegativeFixtures {
             Name  = 'review-model-substitution'
             Apply = {
                 param([string] $Dir)
-                Edit-FixtureFile -Path (Join-Path $Dir 'skills/pr-review/SKILL.md') `
+                Edit-FixtureFile -Path (Join-Path $Dir 'skills/pr-review/reference/review.md') `
                     -Find '| Canonical | `[Canonical]` | `gemini-3.1-pro-preview` |' `
                     -ReplaceWith '| Canonical | `[Canonical]` | `claude-sonnet-4.6` |'
             }
@@ -3079,7 +3115,7 @@ function Get-NegativeFixtures {
             Name  = 'review-budget-removed'
             Apply = {
                 param([string] $Dir)
-                Edit-FixtureFile -Path (Join-Path $Dir 'skills/pr-review/SKILL.md') `
+                Edit-FixtureFile -Path (Join-Path $Dir 'skills/pr-review/reference/review.md') `
                     -Find 'Prompts are capped at 16 KiB, envelopes at 64 KiB, a single finding at 4 KiB, and findings at 100 per role.' `
                     -ReplaceWith 'Keep prompts and envelopes reasonably small.'
             }
@@ -3088,7 +3124,7 @@ function Get-NegativeFixtures {
             Name  = 'review-anchor-side-inferred'
             Apply = {
                 param([string] $Dir)
-                Edit-FixtureFile -Path (Join-Path $Dir 'skills/pr-review/SKILL.md') `
+                Edit-FixtureFile -Path (Join-Path $Dir 'skills/pr-review/reference/posting.md') `
                     -Find 'Never infer the opposite side, and never' `
                     -ReplaceWith 'Infer the opposite side when the target is not found, and never'
             }
@@ -3097,7 +3133,7 @@ function Get-NegativeFixtures {
             Name  = 'review-github-position-allowed'
             Apply = {
                 param([string] $Dir)
-                Edit-FixtureFile -Path (Join-Path $Dir 'skills/pr-review/SKILL.md') `
+                Edit-FixtureFile -Path (Join-Path $Dir 'skills/pr-review/reference/posting.md') `
                     -Find 'GitHub binds the exact approved `commit_id` and never sends the deprecated `position` field.' `
                     -ReplaceWith 'GitHub may send `position` when a line anchor fails.'
             }
@@ -3106,7 +3142,7 @@ function Get-NegativeFixtures {
             Name  = 'review-serializer-mutation-allowed'
             Apply = {
                 param([string] $Dir)
-                Edit-FixtureFile -Path (Join-Path $Dir 'skills/pr-review/SKILL.md') `
+                Edit-FixtureFile -Path (Join-Path $Dir 'skills/pr-review/reference/posting.md') `
                     -Find 'Any mutation of any bound field revokes approval.' `
                     -ReplaceWith 'Minor edits keep the existing approval.'
             }
@@ -3115,7 +3151,7 @@ function Get-NegativeFixtures {
             Name  = 'review-extra-user-gate'
             Apply = {
                 param([string] $Dir)
-                Edit-FixtureFile -Path (Join-Path $Dir 'skills/pr-review/SKILL.md') `
+                Edit-FixtureFile -Path (Join-Path $Dir 'skills/pr-review/reference/posting.md') `
                     -Find '| Invalid-anchor fallback | `previewed` | `Approve the general-comment fallback for this comment?` |' `
                     -ReplaceWith '| Invalid-anchor fallback | `previewed` | `Approve the general-comment fallback for this comment?` | | Retry | `posting` | `Approve retrying every failed comment?` |'
             }
@@ -3124,7 +3160,7 @@ function Get-NegativeFixtures {
             Name  = 'review-lease-heartbeat-weakened'
             Apply = {
                 param([string] $Dir)
-                Edit-FixtureFile -Path (Join-Path $Dir 'skills/pr-review/SKILL.md') `
+                Edit-FixtureFile -Path (Join-Path $Dir 'skills/pr-review/reference/posting.md') `
                     -Find 'A wall-clock change never proves liveness, and a boot-ID change or monotonic loss forbids automatic takeover until the prior boot is proven ended and the prior session proven inactive.' `
                     -ReplaceWith 'Take over the lease when its timestamp looks old.'
             }
@@ -3133,7 +3169,7 @@ function Get-NegativeFixtures {
             Name  = 'review-exactly-once-overclaimed'
             Apply = {
                 param([string] $Dir)
-                Edit-FixtureFile -Path (Join-Path $Dir 'skills/pr-review/SKILL.md') `
+                Edit-FixtureFile -Path (Join-Path $Dir 'skills/pr-review/reference/posting.md') `
                     -Find 'Disclose it unconditionally, including when no other run is known.' `
                     -ReplaceWith 'Mention it when another run is known to exist.'
             }
@@ -3142,7 +3178,7 @@ function Get-NegativeFixtures {
             Name  = 'review-uncertain-retried'
             Apply = {
                 param([string] $Dir)
-                Edit-FixtureFile -Path (Join-Path $Dir 'skills/pr-review/SKILL.md') `
+                Edit-FixtureFile -Path (Join-Path $Dir 'skills/pr-review/reference/posting.md') `
                     -Find 'Never automatically repost a `confirmed` or `uncertain` comment.' `
                     -ReplaceWith 'Repost any comment that is not confirmed.'
             }
@@ -3151,7 +3187,7 @@ function Get-NegativeFixtures {
             Name  = 'review-final-predicate-dropped'
             Apply = {
                 param([string] $Dir)
-                Edit-FixtureFile -Path (Join-Path $Dir 'skills/pr-review/SKILL.md') `
+                Edit-FixtureFile -Path (Join-Path $Dir 'skills/pr-review/reference/posting.md') `
                     -Find 'final predicate must prove that no submitted review and no pending review changed, that preexisting pending reviews remain untouched' `
                     -ReplaceWith 'final check confirms the comment appears'
             }
@@ -3160,7 +3196,7 @@ function Get-NegativeFixtures {
             Name  = 'review-item-state-vocabulary-drift'
             Apply = {
                 param([string] $Dir)
-                Edit-FixtureFile -Path (Join-Path $Dir 'skills/pr-review/SKILL.md') `
+                Edit-FixtureFile -Path (Join-Path $Dir 'skills/pr-review/reference/review.md') `
                     -Find '| Item states | `baseline_complete`, `attempt_started`, `confirmed`, `proven_unposted`, `uncertain` |' `
                     -ReplaceWith '| Item states | `attempt_started`, `confirmed`, `failed` |'
             }
@@ -3169,7 +3205,7 @@ function Get-NegativeFixtures {
             Name  = 'review-operation-without-contract-block'
             Apply = {
                 param([string] $Dir)
-                Edit-FixtureFile -Path (Join-Path $Dir 'skills/pr-review/SKILL.md') `
+                Edit-FixtureFile -Path (Join-Path $Dir 'skills/pr-review/reference/operations.md') `
                     -Find '`github.issue-comment-create` |' `
                     -ReplaceWith '`github.issue-comment-create`, `github.review-submit` |'
             }
@@ -3214,6 +3250,15 @@ capability: n/a' `
 adapter: ado
 capability: general-create' `
                     -ReplaceWith "operation: ado.general-thread-create`nadapter: ado`ncapability: inline-create"
+            }
+        },
+        @{
+            Name  = 'review-ado-mcp-preference-dropped'
+            Apply = {
+                param([string] $Dir)
+                Edit-FixtureFile -Path (Join-Path $Dir 'skills/pr-review/reference/access.md') `
+                    -Find 'For Azure DevOps, rank every qualifying MCP candidate ahead of installed `az devops`.' `
+                    -ReplaceWith 'For Azure DevOps, prefer installed `az devops` over MCP candidates.'
             }
         },
         @{
@@ -3331,7 +3376,7 @@ capability: general-create' `
             Name  = 'review-resolution-allows-mutable-ref'
             Apply = {
                 param([string] $Dir)
-                Edit-FixtureFile -Path (Join-Path $Dir 'skills/pr-review/SKILL.md') `
+                Edit-FixtureFile -Path (Join-Path $Dir 'skills/pr-review/reference/acquisition.md') `
                     -Find 'Resolve every path to content only through the pinned revisions, never through a branch, a tag, `HEAD`, a fetch, or a working tree.' `
                     -ReplaceWith 'Resolve every path to content through the pinned revisions when available, or through `HEAD` otherwise.'
             }
@@ -3632,7 +3677,7 @@ resource: /user' `
             Name  = 'review-skill-base-sha-snapshot-explanation-dropped'
             Apply = {
                 param([string] $Dir)
-                Edit-FixtureFile -Path (Join-Path $Dir 'skills/pr-review/SKILL.md') `
+                Edit-FixtureFile -Path (Join-Path $Dir 'skills/pr-review/reference/acquisition.md') `
                     -Find 'GitHub records `base.sha` when the pull request is opened or last synchronized, so it may equal the comparison merge base, may lag it, or may differ from it, and observing that it agrees with the merge base on one pull request is never evidence that it may be used on the next.' `
                     -ReplaceWith '`base.sha` is the base-ref tip.'
             }
@@ -3686,7 +3731,7 @@ resource: /user' `
             Name  = 'review-skill-diff-base-is-target-tip'
             Apply = {
                 param([string] $Dir)
-                Edit-FixtureFile -Path (Join-Path $Dir 'skills/pr-review/SKILL.md') `
+                Edit-FixtureFile -Path (Join-Path $Dir 'skills/pr-review/reference/acquisition.md') `
                     -Find '`base.sha` and `lastMergeTargetCommit.commitId` are never a diff base.' `
                     -ReplaceWith '`base.sha` and `lastMergeTargetCommit.commitId` are the diff base.'
             }
