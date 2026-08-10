@@ -133,11 +133,9 @@ fixed list, then checks required resources, unique skill frontmatter, the exact
 model tables, the approval gates, revision-bound critiques, the delivery
 vocabulary and authority handshake, the review workflow's entry guard, locator
 grammar, phase-reference wiring, credential-terminal preflight and allowlist, the
-ordered Azure DevOps probe, isolated-workspace revision checks, app-diff citations and anchors, the
-transmitted provider Accept and API-version headers,
-approval serializers and response projectors, lease fencing, journal creation, and
-outcome classification, the review-decision predicate, the
-operation-to-command-contract bijection, prohibited actions, that each skill is
+ordered Azure DevOps probe, isolated-workspace revision checks, app-diff citations and anchors,
+approval binding, lease fencing, journal creation, outcome classification, the review-decision
+predicate, prohibited actions, that each skill is
 self-contained and never references another, and that every skill states the
 shared safety baseline in its own `SKILL.md`.
 
@@ -201,8 +199,8 @@ missing:
   transition, so a delayed contender has no deletion window in which to erase a lease
   another contender finished.
 
-These proofs exercise the local file-system primitives that `lease.*` and
-`journal.*` prescribe. They still execute no provider adapter, so they prove
+These proofs exercise the local file-system primitives that the lease and journal contracts
+prescribe. They still execute no provider adapter, so they prove
 nothing about GitHub or Azure DevOps run-time behavior.
 
 ## Release

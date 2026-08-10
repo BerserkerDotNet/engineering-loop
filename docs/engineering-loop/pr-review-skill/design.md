@@ -9,9 +9,10 @@
 
 Add a separately routed `skills/pr-review/` coordinator with GitHub and Azure DevOps (ADO)
 adapters that expose the same acquire, review, compose, approve, post, and recover contract.
-Production remains declarative Markdown: `SKILL.md`, two child prompts, and a phase-read
-`reference/commands.md` containing tagged normative contracts. PowerShell is structural
-reference validation only; it never proxies agent/provider behavior. Run state and
+Production remains declarative Markdown: `SKILL.md`, two child prompts, and phase-read behavioral
+references. Provider capabilities and concrete tool calls are discovered from the active runtime
+rather than hard-coded. PowerShell is structural reference validation only; it never proxies
+agent/provider behavior. Run state and
 review evidence comes from one clean isolated app workspace pinned to the provider revision,
 except for the deliberate shared Git-common-dir lease/journal. No adapter is
 installed/substituted, no credential reaches a reviewer, and no write precedes exact semantic
@@ -120,16 +121,10 @@ the diff or codebase warrants them, with explicit rationale, scope, and model. P
 are capped at 16/64 KiB, findings at 4 KiB and 100 per role; overflow blocks rather than truncates.
 Each role reuses one session; one recorded same-model replacement is allowed, then failure blocks.
 
-**Tagged reference grammar.** Repository-wide unique fenced blocks use
-`contract:<kind>:<adapter-or-local-area>:v<n>` and required `operation`, method/command,
-route/resource, API version, Accept, paging, input mode, and output fields. Blocks cover
-GitHub/ADO and local terminal, request-file ACL/hash cleanup, and lease/journal commands. Validator
-requires set equality/bijection between skill operation names and blocks.
-
-GitHub blocks specify host, REST version, Accept, method, `per_page=100`, paging, exact write
-bytes, and no verbose/debug. ADO blocks specify organization, `--detect false`, API `7.1`,
-method/routes, `--encoding utf-8`, and profile/git resources for identity, PR, iterations,
-changes, and inventory/create.
+Provider tools are discovered dynamically. The coordinator validates that the selected tool can
+read identity, pull-request metadata, revisions, changes, and comments and can create inline and
+general comments. Behavioral constraints remain provider-neutral; no reference prescribes exact
+CLI commands or MCP operation names.
 
 ADO iteration paging follows service-returned `nextSkip`/`nextTop` until both are zero, requiring
 monotonic progress and unique change IDs. Inventory consumes response `value`, every thread and
@@ -200,18 +195,18 @@ user but execute none of it.
 
 | Slice | Changed areas | Guardrail |
 |---|---|---|
-| Discovery/access | manifests, README, `SKILL.md`, command reference | Unique routing; first guard; no install/fallback/secret surface. |
+| Discovery/access | manifests, README, `SKILL.md`, access reference | Unique routing; first guard; dynamic capability discovery; no install/fallback/secret surface. |
 | Acquire/review/explore | coordinator, two prompts | Exact clean checkout, app-native diff authority, changed-line citations, and digest-attested consumers. |
 | Compose/post/recover | semantic contracts, lease/journal | Mutation invalidation and scoped exactly-once claim. |
-| Validation | dynamic `tests/validate-skills.ps1` | Closed rule lists; tagged-block set equality/bijection; generated negatives; all ordered skill-pair routing/independence. |
+| Validation | dynamic `tests/validate-skills.ps1` | Closed behavioral rule lists; generated negatives; all ordered skill-pair routing/independence. |
 
 Rollback removes only sibling discovery files; reusable cap fixtures are never deleted
 automatically.
 
 ## Verification
 
-Structural/self-tests parse Markdown only. Closed rule lists and set equality/bijection fail on
-deleted/renamed rule/tag/entry/operation/model/state and generated negatives cover locators,
+Structural/self-tests parse Markdown only. Closed rule lists fail on deleted or renamed
+rule/tag/entry/model/state and generated negatives cover locators,
 terminal allowlist, budgets, exact checkout, clean workspace, complete app diff, changed-line
 citations, anchors, serializers, lease, and final predicates.
 They prove contract structure, never runtime behavior.

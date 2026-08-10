@@ -74,20 +74,21 @@ matching configured local project. A mismatch or unverifiable identity blocks.
 
 ## Adapter selection
 
-Rebuild `AccessCandidateInventory` from the active tool registry and already-installed CLI and
-extensions only. Discoverable is not active, dynamic extension installation is disabled, and
-Agent Finder results are excluded.
+Discover provider capabilities from the active tool registry and already-installed CLI and
+extensions. Discoverable is not active, dynamic extension installation is disabled, and Agent
+Finder results are excluded.
 
-An MCP qualifies only when it declares a stable adapter identity and version, transport
-endpoint, provider authority and organization/host, acting-identity route, and a complete
-operation-name to tool mapping for every read and write operation. The declared provider
-authority, never a local or stdio transport host, must match the locator.
+An MCP qualifies only when it identifies its provider authority and organization/host, can read
+the acting identity and pull request, can enumerate comments, and can create inline and general
+comments. The declared provider authority, never a local or stdio transport host, must match the
+locator.
 
-Use installed `gh` for GitHub. For Azure DevOps, rank every qualifying ADO MCP candidate ahead of
-installed `az devops`. Display the MCP fields above and obtain explicit user confirmation, even
-when it is the only candidate. Use `az devops` only when no qualifying MCP candidate exists.
-Present ambiguity among equal-priority candidates as a sorted, visible choice and never switch
-silently. A failure never falls back to another candidate.
+Use a suitable active provider tool when available. Otherwise use installed `gh` for GitHub. For
+Azure DevOps, rank every qualifying ADO MCP candidate ahead of installed `az devops`. Display the
+candidate's provider, authority, identity route, and read/write capabilities and obtain explicit
+user confirmation, even when it is the only candidate. Use `az devops` only when no qualifying
+MCP candidate exists. Present ambiguity as a sorted, visible choice and never switch silently. A
+failure never falls back to another candidate.
 
 After authentication, probe the chosen adapter for immutable IDs and semantic read-back of
 acting identity, pull request and revision, merge-base metadata, one paged change read, and the
@@ -99,12 +100,11 @@ perform, and executes none of it.
 
 ## Credential handling
 
-When `az devops` is selected, follow the `terminal.*` blocks in `commands.md`.
-`terminal.preflight` must execute before secret entry and prove a visible interactive terminal,
-non-echoing prompt, process-scoped injection, effective no-save history, disabled readable
-transcription policy, and successful `acl.apply` plus permission read-back on a disposable
-probe. Any failure blocks before secret entry and before Azure DevOps acquisition, with no
-persistent login, no fallback, and no attempt to override a mandatory host or group policy.
+When `az devops` is selected, verify before secret entry that a visible interactive terminal,
+non-echoing prompt, process-scoped environment injection, no-save history, disabled readable
+transcription policy, and private temporary-file permissions are available. Any failure blocks
+before secret entry and before Azure DevOps acquisition, with no persistent login, fallback, or
+attempt to override mandatory host or group policy.
 
 Open one visible persistent `pwsh -NoProfile` terminal at the derived organization and re-prove
 history and transcription policy inside it. Only these commands are allowed:
@@ -114,7 +114,7 @@ history and transcription policy inside it. Only these commands are allowed:
 | `terminal-allow:preflight` | The read-only capability, history-policy, and transcription-policy checks |
 | `terminal-allow:bootstrap` | The launch, history-disabling, and in-terminal policy read-back commands |
 | `terminal-allow:secret-entry` | The non-echoing `Read-Host -AsSecureString` sequence |
-| `terminal-allow:az-explicit-org` | An explicit-organization, non-debug `az devops invoke` command from `commands.md` |
+| `terminal-allow:az-explicit-org` | A non-debug `az devops` command with the organization passed explicitly |
 | `terminal-allow:handshake` | The non-secret prompt asking the user to confirm entry is complete |
 | `terminal-allow:cleanup` | The credential clear and terminal close |
 
@@ -123,10 +123,9 @@ Anything else is prohibited, including rendering the PAT or environment, `--verb
 entry is pending; after the non-secret handshake, read only output produced since the last
 command this workflow sent.
 
-`terminal.probe` runs, in order: acting identity, repository resolution, pull request and
-revision, iteration list, one paged change read, and the complete thread inventory. Repository
-resolution precedes every route needing a repository ID. Any failure clears the credential and
-blocks.
+Probe, in order: acting identity, repository resolution, pull request and revision, iteration
+list, one paged change read, and the complete thread inventory. Repository resolution precedes
+every request needing a repository ID. Any failure clears the credential and blocks.
 
 Clear the variable and close the terminal on a five-minute idle timeout, cancellation, terminal
 close, a block, logout, run end, adapter or version change, an invalid or insufficient PAT, or a

@@ -23,11 +23,10 @@ Azure DevOps binds `changeTrackingId`, `firstComparingIteration`, and
 `secondComparingIteration`.
 
 `ApprovedRequest` binds all displayed fields plus adapter/version, `access_digest`, revision, and
-serializer version. Use `request.canonicalize`, `response.project-github`, and
-`response.project-ado` from `commands.md`. Canonicalization fixes member order, escaping, and
-newlines, preserves Unicode code points and CRLF semantics, and hashes each request and ordered
-set. GitHub freezes exact wire bytes; Azure DevOps inverse projection must equal canonical bytes.
-Any mutation of any bound field revokes approval.
+serializer version. Canonicalization fixes member order, escaping, and newlines, preserves
+Unicode code points and CRLF semantics, and hashes each request and ordered set. Freeze the exact
+request bytes and verify that provider read-back projects to the same canonical object. Any
+mutation of any bound field revokes approval.
 
 Ask with `ask_user`, offering exactly `Approved` and `Needs refinement`:
 
@@ -46,25 +45,25 @@ and every target's side. Drift pauses posting, refreshes affected reviews/target
 approval of a new set.
 
 Acquire the Git-common-directory lease before the first write and release only with the matching
-owner token. `lease.acquire` uses exclusive `CreateNew`. Recover an absent, empty, malformed, or
+owner token. Create it exclusively. Recover an absent, empty, malformed, or
 schema-invalid initial record as one exclusive ownership transition through the same handle;
 never delete and recreate it, never use `DeleteOnClose`, and never overwrite a complete record
-as malformed. `lease.fence` rejects malformed records.
+as malformed. The ownership fence rejects malformed records.
 
 Heartbeat every 10 seconds; six missed heartbeats, that is 60 seconds, expire it. Same-boot
 takeover also requires the exact recorded process and app session to be inactive. A wall-clock
 change never proves liveness, and a boot-ID change or monotonic loss forbids automatic takeover
 until the prior boot is proven ended and the prior session proven inactive.
 
-`lease.takeover` uses an exclusive, attempt-scoped claim, exact-record compare-and-swap, higher
+Takeover uses an exclusive, attempt-scoped claim, exact-record compare-and-swap, higher
 epoch, fresh owner token, and persisted read-back. Surviving malformed/dead-owner claims are
 reclaimed only under exclusive ownership; live-holder claims are never removed. The winner
 reconciles all `attempt_started` rows and blocks on ambiguity.
 
-Run `lease.fence` immediately before every provider send and immediately before every journal
+Check the ownership fence immediately before every provider send and every journal
 write. A stale token/epoch sends nothing and writes nothing. Every journal row carries owner
-token/epoch. `journal.create` fences then uses `CreateNew`; `journal.append` re-reads, merges,
-atomically replaces, and preserves other owners' rows.
+token/epoch. Initial journal creation is exclusive; updates re-read, merge, atomically replace,
+and preserve other owners' rows.
 
 Before posting, always disclose that mutual exclusion and exactly-once behavior cover only runs
 that write this same Git common-directory lease, and never other clones, other machines, or any
@@ -77,7 +76,7 @@ For each approved item in order:
 1. Inventory comments before the attempt.
 2. Fence, append `attempt_started`, fence again, and send exactly one write.
 3. Read back the journal and full provider inventory before the next item.
-4. Classify only through the provider response projector.
+4. Classify only from the provider response and inventory.
 
 | Observation | Item state |
 |---|---|
@@ -94,8 +93,8 @@ only `proven_unposted` after fresh approval of a new exact set.
 GitHub standalone comments are paced at least one second apart and honor provider retry guidance.
 Its baseline-relative final predicate must prove that no submitted review and no pending review
 changed, that preexisting pending reviews remain untouched, and that
-`github.review-decision-read` is unchanged. Never infer that decision from review rows. Azure
-DevOps equivalently compares `ado.reviewer-vote-read`.
+the aggregate review decision is unchanged. Never infer that decision from review rows. Azure
+DevOps equivalently compares reviewer votes before and after.
 
 Hash frozen body files before and after invocation, then securely delete them.
 
