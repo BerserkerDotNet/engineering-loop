@@ -24,10 +24,10 @@ Each block declares exactly these fields, in this order:
 | `input` | request input mode, or `n/a` |
 | `output` | what the caller must read back |
 
-The parity capability set is `identity`, `repository`, `pull-request`, `revision`, `merge-base`,
-`tree`, `item`, `changes`, `blob`, `inventory`, `decision`, `inline-create`, and
-`general-create`. Both provider adapters cover all thirteen, so neither provider offers a reduced
-flow.
+The common provider capability set is `identity`, `repository`, `pull-request`, `merge-base`,
+`inventory`, `decision`, `inline-create`, and `general-create`. Azure DevOps additionally reads
+iteration/change metadata required to project its inline anchors. Code acquisition and diffing
+come from the isolated app review workspace, not provider content APIs.
 
 `method` is the exact command form, so a declared header must actually be transmitted by it.
 Every provider block sends its declared `accept` in `method`, and every GitHub block also sends
@@ -38,27 +38,11 @@ representation than the one this workflow reasoned about.
 Verbose and debug output is prohibited in every block: it can render request bodies, headers,
 and environment values. No block may pass `--verbose` or `--debug`.
 
-## Immutable resolution
+## Revision binding
 
-Anchors, unchanged context, and every citation are pinned to immutable revisions. A path is
-resolved to content in exactly one way: resolve the pinned commit to its tree, resolve the path
-inside that tree or through the pinned single-path item read, then read the resulting
-content-addressed blob. Never resolve a path through a branch name, a tag, `HEAD`, a fetch, or a
-working tree. A missing, truncated, or ambiguous immutable resolution blocks the run.
-
-Exactly one revision per provider is the diff base, and it is the merge base of the pull request,
-never the tip of the target branch. On GitHub the diff base is `merge_base_commit.sha` from
-`github.merge-base-read`; `base.sha` is a snapshot the provider recorded when the pull request was
-opened or last synchronized, so it may equal the comparison merge base, may lag it, or may differ
-from it, which makes it not authoritative for deterministic diff reconstruction and never a diff
-base. On Azure DevOps the diff base is the highest pinned iteration's `commonRefCommit.commitId`
-from `ado.iteration-list`; `lastMergeTargetCommit.commitId` is only the target-branch tip and is
-never a diff base. A target branch that advanced after the pull request was opened makes the tip
-differ from the merge base, so a base-side path resolved at the tip can be absent, can carry
-unrelated later content, and can produce anchors the provider will reject. Because `base.sha` may
-coincide with the comparison merge base on one pull request and not on the next, observing that
-the two agree is never evidence that `base.sha` may be used. Every base-side blob, every
-unchanged-context blob, and every `diff.compute` base input resolves at the diff base alone.
+Provider reads pin the source revision and merge-base metadata. The isolated app review workspace
+must check out that exact source revision and expose its native diff against the verified merge
+base. Provider patches and mutable branch tips are never review evidence.
 
 ## GitHub adapter
 
@@ -88,7 +72,7 @@ input: n/a
 output: immutable repository `id`, `owner.id`, `full_name`, `default_branch`
 ```
 
-```contract:pull-request-read:github:v1
+```contract:pull-request-read:github:v2
 operation: github.pull-request-read
 adapter: github
 capability: pull-request
@@ -98,10 +82,10 @@ api-version: 2022-11-28
 accept: application/vnd.github+json
 paging: n/a
 input: n/a
-output: immutable PR `id`, `number`, `head.sha` as the pinned source revision, `base.sha` as a non-authoritative base snapshot only, `merge_commit_sha`, `state`; `base.sha` is never the diff base, because the provider recorded it when the pull request was opened or last synchronized and it may equal, may lag, or may differ from the comparison merge base, so the diff base is `merge_base_commit.sha` from `github.merge-base-read` and only that revision resolves base-side and unchanged-context content
+output: immutable PR `id`, `number`, `head.sha` as the pinned source revision, `base.sha` as comparison metadata, `merge_commit_sha`, and `state`; the app workspace must check out `head.sha`
 ```
 
-```contract:merge-base-read:github:v1
+```contract:merge-base-read:github:v2
 operation: github.merge-base-read
 adapter: github
 capability: merge-base
@@ -111,72 +95,7 @@ api-version: 2022-11-28
 accept: application/vnd.github+json
 paging: n/a
 input: n/a
-output: `merge_base_commit.sha`, bound as the sole GitHub diff-base revision and fed to `github.commit-read`, `github.tree-read`, `github.item-read`, every base-side `github.blob-read`, and the base side of `diff.compute`; `{base_sha}` and `{head_sha}` are the full 40-character `base.sha` and `head.sha` this run already pinned, so the comparison itself is immutable and reproducible, supplying `base.sha` as one endpoint of this comparison is the only sanctioned use of it and is never a use of it as a diff base, a `merge_base_commit.sha` that is absent or not a full 40-character SHA blocks, and the paginated `files` array of this response is never read because it carries the same omitted or truncated `patch` as the file list
-```
-
-```contract:commit-read:github:v1
-operation: github.commit-read
-adapter: github
-capability: revision
-method: gh api --hostname github.com --method GET --header "Accept: application/vnd.github+json" --header "X-GitHub-Api-Version: 2022-11-28"
-resource: /repos/{owner}/{repo}/git/commits/{commit_sha}
-api-version: 2022-11-28
-accept: application/vnd.github+json
-paging: n/a
-input: n/a
-output: the commit `sha` and its root `tree.sha`; `{commit_sha}` must be the full 40-character pinned diff-base or source revision and never a branch, tag, or `HEAD`, and a returned `sha` that differs from the requested one blocks
-```
-
-```contract:tree-read:github:v1
-operation: github.tree-read
-adapter: github
-capability: tree
-method: gh api --hostname github.com --method GET --header "Accept: application/vnd.github+json" --header "X-GitHub-Api-Version: 2022-11-28"
-resource: /repos/{owner}/{repo}/git/trees/{tree_sha}?recursive=1
-api-version: 2022-11-28
-accept: application/vnd.github+json
-paging: n/a
-input: n/a
-output: `sha`, `truncated`, and every entry `path`, `mode`, `type`, and `sha`; this endpoint does not page, so `truncated: true` means the listing is incomplete and it must not be used as an authority for any path — fall back to `github.item-read` for each individual path still needed, and block when that also cannot resolve a path
-```
-
-```contract:item-read:github:v1
-operation: github.item-read
-adapter: github
-capability: item
-method: gh api --hostname github.com --method GET --header "Accept: application/vnd.github.object+json" --header "X-GitHub-Api-Version: 2022-11-28"
-resource: /repos/{owner}/{repo}/contents/{path}?ref={commit_sha}
-api-version: 2022-11-28
-accept: application/vnd.github.object+json
-paging: n/a
-input: n/a
-output: the single-path `type`, `sha`, and `size` at the pinned revision; `{commit_sha}` must be the full 40-character pinned revision, a `type` other than `file` or `symlink` blocks, and the returned `sha` is the blob SHA passed to `github.blob-read`, so oversized files still resolve even though this route omits their content
-```
-
-```contract:pull-request-file-list:github:v1
-operation: github.pull-request-file-list
-adapter: github
-capability: changes
-method: gh api --hostname github.com --method GET --paginate --header "Accept: application/vnd.github+json" --header "X-GitHub-Api-Version: 2022-11-28"
-resource: /repos/{owner}/{repo}/pulls/{number}/files?per_page=100
-api-version: 2022-11-28
-accept: application/vnd.github+json
-paging: per_page=100 and follow the `Link` `rel="next"` cursor until it is absent; require monotonic progress and unique `filename` values
-input: n/a
-output: per change `status`, `filename`, `previous_filename`, `sha`, `additions`, `deletions`, `changes`; `sha` is the source-side blob only, so the base-side blob of every changed path is resolved through `github.commit-read`, `github.tree-read`, and `github.item-read` against the `merge_base_commit.sha` returned by `github.merge-base-read` and never against `base.sha`, and the returned `patch` is never used because it is omitted or truncated for large files
-```
-
-```contract:blob-read:github:v1
-operation: github.blob-read
-adapter: github
-capability: blob
-method: gh api --hostname github.com --method GET --header "Accept: application/vnd.github.raw" --header "X-GitHub-Api-Version: 2022-11-28", started through `System.Diagnostics.Process` with `RedirectStandardOutput` and its `StandardOutput.BaseStream` copied byte for byte into <out-path>, so no console encoding can alter the bytes
-resource: /repos/{owner}/{repo}/git/blobs/{blob_sha}
-api-version: 2022-11-28
-accept: application/vnd.github.raw
-paging: n/a
-input: n/a
-output: exact bytes of the requested content-addressed blob written to <out-path>; the caller rehashes and rejects any mismatch
+output: `merge_base_commit.sha`; `{base_sha}` and `{head_sha}` are the full pinned SHAs, and the isolated app review workspace must report this same merge base before review
 ```
 
 ```contract:review-comment-inventory:github:v1
@@ -293,7 +212,7 @@ input: n/a
 output: immutable repository `id`, `project.id`, `name`, `defaultBranch`
 ```
 
-```contract:pull-request-read:ado:v2
+```contract:pull-request-read:ado:v3
 operation: ado.pull-request-read
 adapter: ado
 capability: pull-request
@@ -303,49 +222,10 @@ api-version: 7.1
 accept: application/json
 paging: n/a
 input: n/a
-output: immutable `pullRequestId`, `repository.id`, `repository.project.id`, `lastMergeSourceCommit.commitId` as the pinned source revision, `lastMergeTargetCommit.commitId` as the target-branch tip only, `status`; `lastMergeTargetCommit.commitId` is never the diff base, because the target branch advances independently of the pull request, so the diff base is the highest pinned iteration's `commonRefCommit.commitId` from `ado.iteration-list` and only that revision resolves base-side and unchanged-context content
+output: immutable `pullRequestId`, `repository.id`, `repository.project.id`, `lastMergeSourceCommit.commitId` as the pinned source revision, `lastMergeTargetCommit.commitId` as target metadata, source/target refs, and `status`; the isolated app review workspace must check out the exact source revision
 ```
 
-```contract:commit-read:ado:v1
-operation: ado.commit-read
-adapter: ado
-capability: revision
-method: az devops invoke --organization https://dev.azure.com/<org> --detect false --api-version 7.1 --area git --resource commits --route-parameters project=<project-id> repositoryId=<repository-id> commitId=<commit-id> --http-method GET --accept-media-type application/json --only-show-errors
-resource: git/repositories/{repositoryId}/commits/{commitId}
-api-version: 7.1
-accept: application/json
-paging: n/a
-input: n/a
-output: the commit `commitId` and its `treeId`; `<commit-id>` must be a full pinned diff-base or source revision and never a branch, tag, or `HEAD`, and a returned `commitId` that differs from the requested one blocks
-```
-
-```contract:tree-read:ado:v1
-operation: ado.tree-read
-adapter: ado
-capability: tree
-method: az devops invoke --organization https://dev.azure.com/<org> --detect false --api-version 7.1 --area git --resource trees --route-parameters project=<project-id> repositoryId=<repository-id> sha1=<tree-id> --query-parameters recursive=true --http-method GET --accept-media-type application/json --only-show-errors
-resource: git/repositories/{repositoryId}/trees/{sha1}
-api-version: 7.1
-accept: application/json
-paging: n/a
-input: n/a
-output: `objectId`, `size`, and every `treeEntries` entry `objectId`, `relativePath`, `gitObjectType`, and `size`; a response whose entry set is absent, self-inconsistent, or does not cover the requested subtree is treated exactly like a truncated tree — fall back to `ado.item-read` per path and block when that also cannot resolve a path
-```
-
-```contract:item-read:ado:v1
-operation: ado.item-read
-adapter: ado
-capability: item
-method: az devops invoke --organization https://dev.azure.com/<org> --detect false --api-version 7.1 --area git --resource items --route-parameters project=<project-id> repositoryId=<repository-id> --query-parameters path=<path> versionDescriptor.version=<commit-id> versionDescriptor.versionType=commit versionDescriptor.versionOptions=none includeContent=false latestProcessedChange=false --http-method GET --accept-media-type application/json --only-show-errors
-resource: git/repositories/{repositoryId}/items
-api-version: 7.1
-accept: application/json
-paging: n/a
-input: n/a
-output: the single-path `objectId`, `gitObjectType`, and `isFolder` at the pinned revision; `versionType=commit` with `versionOptions=none` is mandatory so the version descriptor names an immutable commit rather than a branch, a `gitObjectType` other than `blob` blocks, and `objectId` is the blob SHA passed to `ado.blob-read`
-```
-
-```contract:iteration-list:ado:v2
+```contract:iteration-list:ado:v3
 operation: ado.iteration-list
 adapter: ado
 capability: merge-base
@@ -355,10 +235,10 @@ api-version: 7.1
 accept: application/json
 paging: consume the response `value` array and require unique iteration `id` values
 input: n/a
-output: every iteration `id`, `sourceRefCommit.commitId`, `targetRefCommit.commitId`, `commonRefCommit.commitId`; the highest `id` is the pinned iteration and its `commonRefCommit.commitId` is the merge base, bound as the sole Azure DevOps diff-base revision and fed to `ado.commit-read`, `ado.tree-read`, `ado.item-read`, every base-side `ado.blob-read`, and the base side of `diff.compute`; `targetRefCommit.commitId` and `lastMergeTargetCommit.commitId` are target-branch tips and are never a diff base, and an absent or empty `commonRefCommit.commitId` on the highest iteration blocks
+output: every iteration `id`, `sourceRefCommit.commitId`, `targetRefCommit.commitId`, `commonRefCommit.commitId`; the highest iteration pins the source revision and merge base, which must match the isolated app review workspace
 ```
 
-```contract:iteration-change-list:ado:v2
+```contract:iteration-change-list:ado:v3
 operation: ado.iteration-change-list
 adapter: ado
 capability: changes
@@ -368,20 +248,7 @@ api-version: 7.1
 accept: application/json
 paging: follow the service-returned `nextTop` and `nextSkip` until both are zero, require monotonic `$skip` progress and unique `changeTrackingId` values, and never assume a fixed page size; only a certification run may override `$top`
 input: n/a
-output: per change `changeTrackingId`, `changeId`, `changeType`, `item.path`, `originalPath`, `item.objectId`, `item.originalObjectId`, `item.isFolder`, `item.gitObjectType`; the base side of a changed path is either `item.originalObjectId` read directly with `ado.blob-read`, or the path resolved at the pinned `commonRefCommit.commitId` diff base, and the two must agree, because this iteration was computed against that same merge base
-```
-
-```contract:blob-read:ado:v2
-operation: ado.blob-read
-adapter: ado
-capability: blob
-method: az devops invoke --organization https://dev.azure.com/<org> --detect false --api-version 7.1 --area git --resource blobs --route-parameters project=<project-id> repositoryId=<repository-id> sha1=<blob-sha1> --http-method GET --accept-media-type application/octet-stream --out-file <out-path> --only-show-errors
-resource: git/repositories/{repositoryId}/blobs/{sha1}
-api-version: 7.1
-accept: application/octet-stream
-paging: n/a
-input: n/a
-output: exact bytes of the requested content-addressed blob written by the CLI straight to <out-path>, so no console encoding can alter them; the caller rehashes and rejects any mismatch
+output: per change `changeTrackingId`, `changeId`, `changeType`, `item.path`, `originalPath`, `item.objectId`, `item.originalObjectId`, `item.isFolder`, `item.gitObjectType`; retain this metadata only to project and revalidate Azure DevOps inline anchors
 ```
 
 ```contract:thread-inventory:ado:v2
@@ -438,7 +305,7 @@ output: created thread `id` with no thread context, and comment `id`, `content`,
 
 ## Local: credential terminal
 
-```contract:preflight:terminal:v1
+```contract:preflight:terminal:v2
 operation: terminal.preflight
 adapter: local
 capability: n/a
@@ -448,7 +315,7 @@ api-version: n/a
 accept: n/a
 paging: n/a
 input: n/a
-output: proven-capable, or blocked before secret entry; a missing visible terminal, a non-interactive session, an unavailable secure prompt, or absent process-scoped injection blocks, an `acl.apply` that cannot be applied or whose read-back does not match the contract blocks because bundle directories, child copies, and frozen request bodies would then be unprotected, a host whose platform cannot be identified or whose permission read-back cannot be executed is unverifiable and blocks rather than being assumed to be GNU, the disposable probe path is always removed whether it passed or failed, and transcription counts as proven off only when the policy is readable and `EnableTranscripting` is absent or `0` — an unreadable policy is not proven off and blocks, and a mandatory host or group policy is never overridden, disabled, or worked around
+output: proven-capable, or blocked before secret entry; an `acl.apply` that cannot be applied or whose read-back does not match the contract blocks; a host whose platform cannot be identified or whose permission read-back cannot be executed is unverifiable and blocks rather than being assumed to be GNU; the disposable probe path is always removed whether it passed or failed; an unreadable policy is not proven off and blocks; a mandatory host or group policy is never overridden, disabled, or worked around
 ```
 
 ```contract:launch:terminal:v2
@@ -477,17 +344,17 @@ input: the user types the secret into the non-echoing prompt; it never enters an
 output: nothing is read while entry is pending; the user states when entry is complete
 ```
 
-```contract:probe:terminal:v2
+```contract:probe:terminal:v3
 operation: terminal.probe
 adapter: local
 capability: n/a
-method: after the non-secret handshake, send inside this terminal, in exactly this order, the `ado.identity-read` command, the `ado.repository-read` command, the `ado.pull-request-read` command, the `ado.iteration-list` command, one paged `ado.iteration-change-list` command, one pinned `ado.item-read` command followed by the `ado.blob-read` command for the `objectId` it returned, and the complete `ado.thread-inventory` command
+method: after the non-secret handshake, send inside this terminal, in exactly this order, `ado.identity-read`, `ado.repository-read`, `ado.pull-request-read`, `ado.iteration-list`, one paged `ado.iteration-change-list`, and the complete `ado.thread-inventory`
 resource: the derived organization
 api-version: 7.1
 accept: application/json
 paging: n/a
 input: n/a
-output: immutable acting-identity, project, repository, and pull-request IDs, the pinned revision and iteration, one proven page of changes, one rehashed pinned blob, and the complete comment inventory; repository resolution precedes every route that needs a repository ID, and any failure, any missing field, or any out-of-order step clears the credential through `terminal.cleanup` and blocks
+output: immutable acting-identity, project, repository, and pull-request IDs, pinned revision and iteration, one proven page of changes, and complete comment inventory; repository resolution precedes every route that needs a repository ID, and any failure clears the credential and blocks
 ```
 
 ```contract:read-since-last-input:terminal:v1
@@ -514,62 +381,6 @@ accept: n/a
 paging: n/a
 input: n/a
 output: the credential is cleared and the terminal closed; the run enters `blocked` and needs fresh secure entry before any further ADO call
-```
-
-## Local: snapshot bundle
-
-```contract:seal:bundle:v2
-operation: bundle.seal
-adapter: local
-capability: n/a
-method: resolve every changed and context path to a blob through the immutable resolution above, taking exactly one diff-base revision — `merge_base_commit.sha` on GitHub, the highest pinned iteration's `commonRefCommit.commitId` on Azure DevOps — read each blob, run `diff.compute` for every text entry, then write `manifest.json` and the content-addressed blobs into run-scoped session or temporary storage and digest the manifest with `hash.compute`
-resource: run-scoped storage outside every checkout and outside the Git common directory
-api-version: n/a
-accept: n/a
-paging: n/a
-input: provider-read blobs resolved at the single pinned diff-base revision and at the pinned source revision, or an exact local blob whose SHA matches the pinned object; a `base.sha` snapshot or a target-branch tip is never accepted as the diff base, and a manifest whose base-side entries do not all carry that one diff-base revision blocks
-output: `bundle_digest` over the manifest and every entry digest, plus version `v<n>`, the recorded diff-base and source revisions, and the `diff.compute` result recorded per entry so anchors never depend on checkout state or on a provider patch; approved additional context reseals `v(n+1)`
-```
-
-```contract:verify:bundle:v1
-operation: bundle.verify
-adapter: local
-capability: n/a
-method: independently re-enumerate and rehash every manifest entry, then compare against the recorded manifest
-resource: the sealed bundle and each child copy
-api-version: n/a
-accept: n/a
-paging: n/a
-input: n/a
-output: pass, or a rejection naming every added, deleted, renamed, or hash-drifted entry; this runs before and after every child
-```
-
-```contract:child-copy:bundle:v1
-operation: bundle.child-copy
-adapter: local
-capability: n/a
-method: copy the sealed bundle into a per-child content-addressed directory, apply `acl.apply`, and pass only that path
-resource: one isolated directory per reviewer and per explorer
-api-version: n/a
-accept: n/a
-paging: n/a
-input: n/a
-output: an isolated read path; the child's own checkout, ambient credentials, and self-attestations are untrusted
-```
-
-## Local: pinned diff
-
-```contract:compute:diff:v1
-operation: diff.compute
-adapter: local
-capability: n/a
-method: for one manifest entry run `git --no-pager -c core.autocrlf=false -c core.safecrlf=false -c diff.renames=false -c diff.noprefix=false diff --no-index --no-color --no-ext-diff --unified=0 -- <base-blob-path> <source-blob-path>` against the two content-addressed bundle blobs and nothing else
-resource: the sealed bundle's base-side and source-side blobs for one manifest entry, where the base-side blob was resolved at the single pinned diff-base revision and nowhere else
-api-version: n/a
-accept: n/a
-paging: n/a
-input: n/a
-output: for every hunk header `@@ -<orig-start>,<orig-count> +<curr-start>,<curr-count> @@`, the original-side and current-side line ranges that produce every anchor; deleted and edited-removed lines project to the original side and added, copied, edited-added, and context lines project to the current side, an added entry has no base blob so every line is current-side, a deleted entry has no source blob so every line is original-side, a rename is diffed only as its separately approved side's blob pair and never as a cross-path guess, a binary or Git LFS entry yields no line anchor and is eligible only for the file-level anchor, and exit code 0 means identical and 1 means differing while any other exit code blocks; no checkout, index, working tree, or provider-supplied patch is ever consulted, so a truncated or omitted provider patch cannot influence an anchor
 ```
 
 ## Local: approval serialization and response projection
@@ -615,12 +426,12 @@ output: reserialization by the CLI or the service is tolerated only when this in
 
 ## Local: files, hashing, and cleanup
 
-```contract:apply:acl:v2
+```contract:apply:acl:v3
 operation: acl.apply
 adapter: local
 capability: n/a
 method: on Windows `icacls <path> /inheritance:r /grant:r "<current-user>:(OI)(CI)F" "Administrators:(OI)(CI)F" "SYSTEM:(OI)(CI)F"`; on Unix `chmod 700` for directories and `chmod 600` for files
-resource: bundle directories, child copies, and frozen request body files
+resource: frozen request body files and disposable credential-preflight paths
 api-version: n/a
 accept: n/a
 paging: n/a
@@ -639,25 +450,25 @@ host whose platform cannot be identified, or whose mode cannot be read back with
 is unverifiable and blocks; the approved Unix support is never narrowed to GNU hosts alone.
 ```
 
-```contract:compute:hash:v1
+```contract:compute:hash:v2
 operation: hash.compute
 adapter: local
 capability: n/a
 method: Get-FileHash -Algorithm SHA256 -LiteralPath <path>
-resource: bundle manifests, bundle entries, and request body files
+resource: frozen request body files
 api-version: n/a
 accept: n/a
 paging: n/a
 input: n/a
-output: a SHA-256 hex digest used for bundle digests, finding citations, and before-and-after body-file comparison
+output: a SHA-256 hex digest used for before-and-after body-file comparison
 ```
 
-```contract:secure-delete:temp:v1
+```contract:secure-delete:temp:v2
 operation: temp.secure-delete
 adapter: local
 capability: n/a
 method: overwrite the file with zero bytes of the same length, flush, then run `Remove-Item -LiteralPath <path> -Force`
-resource: frozen request body files and expired bundle copies
+resource: frozen request body files
 api-version: n/a
 accept: n/a
 paging: n/a

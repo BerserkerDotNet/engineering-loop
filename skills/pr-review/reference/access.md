@@ -35,9 +35,9 @@ takes the entry kind and the current run state and decides what the first action
 | `entry:guarded:coordinator-recovery` | `guarded` | Recover a lost coordinator | Requires a state-compatible, digest-matching `AccessContext` |
 
 A `bootstrap` entry may only parse the locator, inventory candidates, confirm one adapter,
-authenticate and probe it, and then atomically create `AccessContext`. Bootstrap must not
-acquire a pull request, build or read a bundle, launch a child, preview, approve, journal, or
-write. Every other entry is `guarded` and its first action is the `AccessContext` check.
+authenticate and probe it, and then atomically create `AccessContext`. Bootstrap must not open
+the review workspace, launch a child, preview, approve, journal, or write. Every other entry is
+`guarded` and its first action is the `AccessContext` check.
 
 A `guarded` entry whose `AccessContext` is missing, stale, state-incompatible, or whose
 `access_digest` no longer matches records `stale` and routes to
@@ -92,9 +92,9 @@ equal-priority candidates as a sorted, visible choice and never switch silently.
 never falls back to another candidate.
 
 After authentication, probe the chosen adapter for immutable IDs and semantic read-back of
-acting identity, pull request and revision, paging, one pinned blob, and the complete comment
-inventory. A missing operation, or drift in mapping, provider authority, acting identity, or
-adapter version, disqualifies the adapter and invalidates any approval bound to it.
+acting identity, pull request and revision, merge-base metadata, one paged change read, and the
+complete comment inventory. A missing operation, or drift in mapping, provider authority, acting
+identity, or adapter version, disqualifies the adapter and invalidates any approval bound to it.
 
 A missing adapter reports the exact install, enable, or authentication action the user must
 perform, and executes none of it.
@@ -138,9 +138,9 @@ entry is pending; after the non-secret handshake, read only output produced sinc
 command this workflow sent.
 
 `terminal.probe` runs, in order: acting identity, repository resolution, pull request and
-revision, iteration list, one paged change read, one pinned item and resolved blob read, and the
-complete thread inventory. Repository resolution precedes every route needing a repository ID.
-Any failure clears the credential and blocks.
+revision, iteration list, one paged change read, and the complete thread inventory. Repository
+resolution precedes every route needing a repository ID. Any failure clears the credential and
+blocks.
 
 Clear the variable and close the terminal on a five-minute idle timeout, cancellation, terminal
 close, a block, logout, run end, adapter or version change, an invalid or insufficient PAT, or a

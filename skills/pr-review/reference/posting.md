@@ -8,8 +8,8 @@ Display the exact pending set derived only from `ApprovedRequest` objects: exact
 suggestion, placement, neutral/projected anchor, destination/author, route/order, adapter/version,
 `access_digest`, revision, serializer version, and per-request/set semantic digests.
 
-Side is immutable from `diff.compute` over pinned bundle blobs and is revalidated in-diff before
-write. Never infer the opposite side, and never read a side from a checkout or provider patch.
+Side comes from the app diff for the pinned source revision and merge base and is revalidated
+in-diff before write. Never infer the opposite side or use a provider patch as the authority.
 
 | Change | GitHub projection | Azure DevOps projection |
 |---|---|---|
@@ -105,7 +105,7 @@ Report each comment as posted, not posted, or uncertain with immutable provider 
 projection/equality evidence. Record `complete` only when every item is terminal and none is
 `uncertain`. If posting fails before a confirmed write, report no comment as posted.
 
-The run is complete only when access and immutable IDs were proven, admission passed, the bundle
-was verified, all four baseline reviews and every additional launched topic completed, the exact
+The run is complete only when access and immutable IDs were proven, the isolated review workspace
+and app diff were verified, all four baseline reviews and every additional launched topic completed, the exact
 set was approved, every approved comment has terminal provider evidence, local-only exactly-once
 scope was disclosed, and no item is `uncertain`. Otherwise report the state and blocker.

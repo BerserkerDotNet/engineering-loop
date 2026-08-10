@@ -62,10 +62,11 @@ Run these phases in order:
 
 1. **Access** - Apply the entry guard, validate the locator, select and probe an enabled adapter,
    and atomically create `AccessContext`.
-2. **Acquire** - Pin immutable source and merge-base revisions, enforce admission limits, compute
-   the diff, and seal a verified `SnapshotBundle`.
+2. **Acquire** - Open an isolated session at the exact PR source revision, verify the merge base,
+   and load the app's native changes overview and diff.
 3. **Review** - Launch the four baseline reviewers, then add scoped topic reviewers when the
-   change or codebase warrants them. Every reviewer gets an isolated bundle copy.
+   change or codebase warrants them. Every reviewer runs in an isolated session and inspects the
+   same pinned `ReviewWorkspace`.
 4. **Reconcile** - Verify child identity and digests; present the summary, codebase fit, findings,
    citations, uncertainty, and explicit no-findings results.
 5. **Explore and compose** - Use the fixed explorer for user questions. Add only user-authored or
@@ -96,6 +97,6 @@ clones or machines.
 ## Done
 
 Complete only after all four baseline areas and every additional launched review finish, the
-bundle and digests verify, the user approves the exact set, every approved item has terminal
+workspace revisions and review digests verify, the user approves the exact set, every approved item has terminal
 provider evidence, and no item is uncertain. Otherwise report `BLOCKED` or the current
 incomplete state.

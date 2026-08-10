@@ -337,11 +337,15 @@ $script:ContractFields = @(
     'paging', 'input', 'output'
 )
 
-# Parity capabilities every provider adapter must cover, so neither provider offers a reduced
-# acquisition, review, approval, posting, or recovery flow.
+# Provider capabilities declared by command blocks. Azure DevOps alone needs `changes` metadata
+# because its inline-comment projection uses iteration change IDs.
 $script:ContractCapabilities = @(
-    'identity', 'repository', 'pull-request', 'revision', 'merge-base', 'tree', 'item', 'changes',
-    'blob', 'inventory', 'decision', 'inline-create', 'general-create'
+    'identity', 'repository', 'pull-request', 'merge-base', 'changes', 'inventory', 'decision',
+    'inline-create', 'general-create'
+)
+$script:ContractCommonCapabilities = @(
+    'identity', 'repository', 'pull-request', 'merge-base', 'inventory', 'decision',
+    'inline-create', 'general-create'
 )
 
 $script:ContractProviderAdapters = @('github', 'ado')
@@ -350,7 +354,7 @@ $script:ContractProviderAdapters = @('github', 'ado')
 # Repository resolution precedes every route that needs a repository ID.
 $script:ReviewProbeChain = @(
     'ado.identity-read', 'ado.repository-read', 'ado.pull-request-read', 'ado.iteration-list',
-    'ado.iteration-change-list', 'ado.item-read', 'ado.blob-read', 'ado.thread-inventory'
+    'ado.iteration-change-list', 'ado.thread-inventory'
 )
 
 # ---------------------------------------------------------------------------
@@ -1433,19 +1437,12 @@ function Test-ReviewContractBlocks {
         'grammar-stated'   = 'Every contract is one fenced block whose info string is\s*`contract:<kind>:<adapter-or-local-area>:v<n>`\.'
         'tag-unique'       = 'The pair `<kind>:<adapter-or-local-area>` is\s*unique across this repository'
         'version-bumped'   = '`<n>` is bumped whenever a block''s meaning changes'
-        'capability-set'   = 'The parity capability set is `identity`, `repository`, `pull-request`, `revision`, `merge-base`,\s*`tree`, `item`, `changes`, `blob`, `inventory`, `decision`, `inline-create`, and\s*`general-create`\.'
-        'parity-stated'    = 'Both provider adapters cover all thirteen, so neither provider offers a reduced\s*flow\.'
+        'capability-set'   = 'The common provider capability set is `identity`, `repository`, `pull-request`, `merge-base`,\s*`inventory`, `decision`, `inline-create`, and `general-create`\.'
+        'workspace-source' = 'Code acquisition and diffing\s*come from the isolated app review workspace, not provider content APIs\.'
         'headers-transmitted' = '`method` is the exact command form, so a declared header must actually be transmitted by it\.\s*Every provider block sends its declared `accept` in `method`, and every GitHub block also sends\s*its declared `api-version` as an `X-GitHub-Api-Version` header\.'
         'undeclared-media-defect' = 'A declared media type that the\s*command never sends is a defect'
-        'immutable-resolution' = 'A path is\s*resolved to content in exactly one way: resolve the pinned commit to its tree, resolve the path\s*inside that tree or through the pinned single-path item read, then read the resulting\s*content-addressed blob\.'
-        'no-mutable-ref'   = 'Never resolve a path through a branch name, a tag, `HEAD`, a fetch, or a\s*working tree\.'
-        'resolution-blocks' = 'A missing, truncated, or ambiguous immutable resolution blocks the run\.'
-        'diff-base-is-merge-base' = 'Exactly one revision per provider is the diff base, and it is the merge base of the pull request,\s*never the tip of the target branch\.'
-        'github-diff-base' = 'On GitHub the diff base is `merge_base_commit\.sha` from\s*`github\.merge-base-read`; `base\.sha` is a snapshot the provider recorded when the pull request was\s*opened or last synchronized, so it may equal the comparison merge base, may lag it, or may differ\s*from it, which makes it not authoritative for deterministic diff reconstruction and never a diff\s*base\.'
-        'ado-diff-base'    = 'On Azure DevOps the diff base is the highest pinned iteration''s `commonRefCommit\.commitId`\s*from `ado\.iteration-list`; `lastMergeTargetCommit\.commitId` is only the target-branch tip and is\s*never a diff base\.'
-        'diff-base-rationale' = 'A target branch that advanced after the pull request was opened makes the tip\s*differ from the merge base, so a base-side path resolved at the tip can be absent, can carry\s*unrelated later content, and can produce anchors the provider will reject\.'
-        'base-sha-agreement-not-evidence' = 'Because `base\.sha` may\s*coincide with the comparison merge base on one pull request and not on the next, observing that\s*the two agree is never evidence that `base\.sha` may be used\.'
-        'diff-base-scope'  = 'Every base-side blob, every\s*unchanged-context blob, and every `diff\.compute` base input resolves at the diff base alone\.'
+        'revision-binding' = 'The isolated app review workspace\s*must check out that exact source revision and expose its native diff against the verified merge\s*base\.'
+        'provider-patch-not-evidence' = 'Provider patches and mutable branch tips are never review evidence\.'
         'ado-accept-media-type' = '`--accept-media-type` is the response media type and is what carries each block''s declared\s*`accept`\.'
         'ado-encoding-is-input' = '`--encoding` describes the `--in-file` request body only, so it appears on write blocks\s*and never stands in for an Accept header\.'
         'no-verbose-debug' = 'No block may pass `--verbose` or `--debug`\.'
@@ -1612,7 +1609,7 @@ function Test-ReviewContractBlocks {
     }
 
     foreach ($adapter in $script:ContractProviderAdapters) {
-        foreach ($capability in $script:ContractCapabilities) {
+        foreach ($capability in $script:ContractCommonCapabilities) {
             if (-not $capabilityByAdapter[$adapter].Contains($capability)) {
                 Add-Violation $Violations 'review-contract-blocks' "Adapter '$adapter' has no contract block for parity capability '$capability'; the providers would offer different flows."
             }
@@ -1660,12 +1657,10 @@ function Test-ReviewOperationBijection {
     # A closed set can still be insufficient: equality alone would pass if both the registry and
     # the block file dropped the same required operation. Assert the required operations exist.
     $requiredOperations = @(
-        'github.commit-read', 'github.tree-read', 'github.item-read', 'github.blob-read',
-        'github.review-decision-read',
-        'ado.commit-read', 'ado.tree-read', 'ado.item-read', 'ado.blob-read',
+        'github.pull-request-read', 'github.merge-base-read', 'github.review-decision-read',
+        'ado.pull-request-read', 'ado.iteration-list', 'ado.iteration-change-list',
         'ado.reviewer-vote-read',
         'terminal.preflight', 'terminal.probe',
-        'diff.compute',
         'request.canonicalize', 'response.project-github', 'response.project-ado',
         'lease.fence', 'journal.create', 'journal.append'
     )
@@ -1695,15 +1690,13 @@ function Test-ReviewPromptContracts {
     $expectations = [ordered]@{
         "skills/$($script:ReviewSkill)/prompts/area-review.md" = @(
             'STATUS: REVIEW_COMPLETE', 'send_session_message', 'EDITED: no', 'PUSHED: no', 'PR_CREATED: no',
-            'Read only `<BUNDLE_PATH>`', 'blob SHA-256', 'STATUS: NEEDS_CONTEXT', 'STATUS: BLOCKED',
-            'at most 100 findings, each at most 4 KiB, and the whole envelope at most 64 KiB',
-            'never substitute it', 'Your findings are advisory'
+            "app's changes overview for that project-session", 'changed line or range', 'STATUS: BLOCKED',
+            'never substitute it', 'Findings are advisory'
         )
         "skills/$($script:ReviewSkill)/prompts/exploration.md"  = @(
             'STATUS: EXPLORATION_COMPLETE', 'send_session_message', 'FINDINGS_MUTATED: no', 'DRAFTS_MUTATED: no',
-            'PUSHED: no', 'PR_CREATED: no', 'ROUTED_CLAIMS', 'Read only `<BUNDLE_PATH>`',
-            'You may not create, edit, merge, reword, re-rank, or remove any finding',
-            'the whole envelope is at most 64 KiB', 'never substitute it'
+            'PUSHED: no', 'PR_CREATED: no', 'ROUTED_CLAIMS', "app's changes overview",
+            'never create, edit, rerank, or remove findings'
         )
     }
 
@@ -2340,7 +2333,7 @@ function Test-ReviewCertificationLedger {
         'pre-write-guard'    = 'The pre-write guard compares the manifest nonce, expiry, run, fixture IDs, acting identity, type,\s*and remaining count before every certification write, and blocks on the first mismatch\.'
         'never-real-target'  = 'A\s*manifest never authorizes a write against a real, shared, or production pull request\.'
         'matrix-quotes-prd'  = 'Every row is one committed product acceptance criterion, quoted verbatim from the committed\s*product requirements document that governs this release\.'
-        'subcases-not-substitutes' = 'Internal entry, bundle, model, serializer, and\s*provider scenarios are subcases listed inside the criterion they serve; they never substitute for\s*it\.'
+        'subcases-not-substitutes' = 'Internal entry, workspace, model, serializer, and\s*provider scenarios are subcases listed inside the criterion they serve; they never substitute for\s*it\.'
         'matrix-mandatory'   = 'Every row must pass on current `gh`, on current `az devops`, and on each MCP row this release\s*enables, before that adapter''s row may move to `enabled`\. A skipped row is a failed row\.'
         'top-override'       = 'Paging mechanics may use a small fixture with a certification-only `\$top` override\.'
         'cap-spot-check'     = 'The\s*authoritative 2,000 ceiling gets a separately recorded spot check, refreshed whenever the API\s*version changes\.'
@@ -2440,24 +2433,25 @@ function Test-ReviewSkill {
         -Pattern '`(?<token>terminal-allow:[a-z-]+)`' -Expected $script:ReviewTerminalAllowTags -Violations $Violations
 
     $required = [ordered]@{
-        'bootstrap-scope'          = 'Bootstrap must not\s*acquire a pull request, build or read a bundle, launch a child, preview, approve, journal, or\s*write\.'
+        'bootstrap-scope'          = 'Bootstrap must not open\s*the review workspace, launch a child, preview, approve, journal, or write\.'
         'ascii-host'               = 'the host must already be ASCII lowercase and exactly `github\.com`,\s*`dev\.azure\.com`, or `<org>\.visualstudio\.com`'
         'ado-mcp-preferred'        = 'For Azure DevOps, rank every qualifying MCP candidate ahead of installed `az devops`\.'
         'ado-cli-fallback'         = 'Use installed `az devops` only when no qualifying, ledger-enabled MCP\s*candidate exists\.'
         'no-adapter-fallback'      = 'A failure\s*never falls back to another candidate\.'
         'terminal-allowlist'       = '\| `terminal-allow:cleanup` \| The credential clear and terminal close \|'
         'terminal-end-events'      = 'a five-minute idle timeout, cancellation, terminal\s*close, a block, logout, run end, adapter or version change, an invalid or insufficient PAT, or a\s*user request'
-        'immutable-resolution'     = 'Resolve every path to content only through the pinned revisions, never through a branch, a tag,\s*`HEAD`, a fetch, or a working tree\.'
-        'github-merge-base'        = 'use only\s*`merge_base_commit\.sha` as the diff base'
-        'base-sha-distinction'     = 'GitHub\s*records `base\.sha` when the pull request is opened or last synchronized, so it may equal the\s*comparison merge base, may lag it, or may differ from it'
-        'target-tip-not-base'      = '`base\.sha` and `lastMergeTargetCommit\.commitId` are never a diff base\.'
-        'admission'                = '\| Changed files \| 3,000 \|'
-        'finding-citation'         = 'Every finding must cite a bundle path plus that entry''s blob\s*SHA-256\.'
+        'exact-source-workspace'   = '`HEAD` equals that exact source revision'
+        'native-app-diff'          = 'the app''s changes overview reports the merge base, commits, changed files, and diff'
+        'clean-review-workspace'   = 'the worktree is clean before reviewers start'
+        'workspace-blockers'       = 'If the source cannot be checked out exactly, the target or merge base is unavailable, the app\s*diff cannot be produced, or provider and local revisions disagree, stop with `BLOCKED`\.'
+        'finding-citation'         = 'Every finding cites a repository-relative file and a changed line or changed range from the app\s*diff\.'
+        'context-not-anchor'       = 'Context outside the diff may support the explanation but is not a valid inline-comment\s*target\.'
+        'complete-diff-required'   = 'If the app cannot render or enumerate the complete diff, or the review cannot fit within child\s*prompt and output budgets, report the limitation and stop rather than truncating silently\.'
         'canonical-model'          = '\| Canonical \| `\[Canonical\]` \| `gemini-3\.1-pro-preview` \|'
         'minimum-review-set'       = 'Security, Design, Canonical, and Performance are the minimum review set and may not be omitted\.'
         'adaptive-review-set'      = 'the coordinator may add one or more specialist\s*topic reviews when the change warrants them'
         'review-budget'            = 'Prompts are capped at 16 KiB, envelopes at 64 KiB, a single finding at 4 KiB, and findings at\s*100 per role\.'
-        'anchor-side'              = 'Never infer the opposite side, and never read a side from a checkout or provider patch\.'
+        'anchor-side'              = 'Never infer the opposite side or use a provider patch as the authority\.'
         'github-position'          = 'GitHub binds the exact approved `commit_id` and never sends the deprecated `position` field\.'
         'approval-mutation'        = 'Any mutation of any bound field revokes approval\.'
         'lease-liveness'           = 'A wall-clock\s*change never proves liveness, and a boot-ID change or monotonic loss forbids automatic takeover\s*until the prior boot is proven ended and the prior session proven inactive\.'
@@ -2470,7 +2464,6 @@ function Test-ReviewSkill {
     }
     Test-ReviewStatements -SkillText $skillText -Check 'review-modular-contract' -Required $required -Violations $Violations
 
-    Test-ReviewResolutionAndDiff -Root $Root -SkillText $skillText -Violations $Violations
     Test-ReviewSerializerContracts -Root $Root -SkillText $skillText -Violations $Violations
     Test-ReviewLeaseAndJournal -Root $Root -SkillText $skillText -Violations $Violations
     Test-ReviewProbeAndPreflight -Root $Root -SkillText $skillText -Violations $Violations
@@ -3055,7 +3048,7 @@ function Get-NegativeFixtures {
             Apply = {
                 param([string] $Dir)
                 Edit-FixtureFile -Path (Join-Path $Dir 'skills/pr-review/reference/access.md') `
-                    -Find 'Bootstrap must not acquire a pull request, build or read a bundle, launch a child, preview, approve, journal, or write.' `
+                    -Find 'Bootstrap must not open the review workspace, launch a child, preview, approve, journal, or write.' `
                     -ReplaceWith 'Bootstrap may continue into acquisition when the locator is obvious.'
             }
         },
@@ -3087,21 +3080,39 @@ function Get-NegativeFixtures {
             }
         },
         @{
-            Name  = 'review-bundle-admission-relaxed'
+            Name  = 'review-workspace-accepts-nearby-tip'
             Apply = {
                 param([string] $Dir)
                 Edit-FixtureFile -Path (Join-Path $Dir 'skills/pr-review/reference/acquisition.md') `
-                    -Find '| Changed files | 3,000 |' `
-                    -ReplaceWith '| Changed files | unlimited, truncate instead |'
+                    -Find '`HEAD` equals that exact source revision' `
+                    -ReplaceWith '`HEAD` points to the latest source-branch revision'
             }
         },
         @{
-            Name  = 'review-citation-requirement-dropped'
+            Name  = 'review-workspace-allows-dirty-tree'
             Apply = {
                 param([string] $Dir)
                 Edit-FixtureFile -Path (Join-Path $Dir 'skills/pr-review/reference/acquisition.md') `
-                    -Find "Every finding must cite a bundle path plus that entry's blob SHA-256." `
-                    -ReplaceWith 'Findings should reference the file they concern.'
+                    -Find 'the worktree is clean before reviewers start.' `
+                    -ReplaceWith 'existing worktree changes may be included in the review.'
+            }
+        },
+        @{
+            Name  = 'review-incomplete-app-diff-allowed'
+            Apply = {
+                param([string] $Dir)
+                Edit-FixtureFile -Path (Join-Path $Dir 'skills/pr-review/reference/acquisition.md') `
+                    -Find 'If the app cannot render or enumerate the complete diff' `
+                    -ReplaceWith 'If the app can render at least part of the diff'
+            }
+        },
+        @{
+            Name  = 'review-citation-allows-context-line'
+            Apply = {
+                param([string] $Dir)
+                Edit-FixtureFile -Path (Join-Path $Dir 'skills/pr-review/reference/acquisition.md') `
+                    -Find 'Context outside the diff may support the explanation but is not a valid inline-comment target.' `
+                    -ReplaceWith 'Context outside the diff may be used as an inline-comment target.'
             }
         },
         @{
@@ -3145,8 +3156,8 @@ function Get-NegativeFixtures {
             Apply = {
                 param([string] $Dir)
                 Edit-FixtureFile -Path (Join-Path $Dir 'skills/pr-review/reference/posting.md') `
-                    -Find 'Never infer the opposite side, and never' `
-                    -ReplaceWith 'Infer the opposite side when the target is not found, and never'
+                    -Find 'Never infer the opposite side or use a provider patch as the authority.' `
+                    -ReplaceWith 'Infer the opposite side when the target is not found.'
             }
         },
         @{
@@ -3393,33 +3404,6 @@ capability: general-create' `
             }
         },
         @{
-            Name  = 'review-resolution-allows-mutable-ref'
-            Apply = {
-                param([string] $Dir)
-                Edit-FixtureFile -Path (Join-Path $Dir 'skills/pr-review/reference/acquisition.md') `
-                    -Find 'Resolve every path to content only through the pinned revisions, never through a branch, a tag, `HEAD`, a fetch, or a working tree.' `
-                    -ReplaceWith 'Resolve every path to content through the pinned revisions when available, or through `HEAD` otherwise.'
-            }
-        },
-        @{
-            Name  = 'review-truncated-tree-trusted'
-            Apply = {
-                param([string] $Dir)
-                Edit-FixtureFile -Path (Join-Path $Dir 'skills/pr-review/reference/commands.md') `
-                    -Find 'so `truncated: true` means the listing is incomplete and it must not be used as an authority for any path — fall back to `github.item-read` for each individual path still needed' `
-                    -ReplaceWith 'so `truncated: true` is treated as a complete listing of the paths that matter'
-            }
-        },
-        @{
-            Name  = 'review-ado-item-version-unpinned'
-            Apply = {
-                param([string] $Dir)
-                Edit-FixtureFile -Path (Join-Path $Dir 'skills/pr-review/reference/commands.md') `
-                    -Find 'path=<path> versionDescriptor.version=<commit-id> versionDescriptor.versionType=commit versionDescriptor.versionOptions=none' `
-                    -ReplaceWith 'path=<path> versionDescriptor.version=<branch-name> versionDescriptor.versionOptions=none'
-            }
-        },
-        @{
             Name  = 'review-github-accept-not-transmitted'
             Apply = {
                 param([string] $Dir)
@@ -3455,24 +3439,6 @@ resource: /user' `
                 Edit-FixtureFile -Path (Join-Path $Dir 'skills/pr-review/reference/commands.md') `
                     -Find '--area git --resource pullRequests --route-parameters project=<project-id> repositoryId=<repository-id> pullRequestId=<pull-request-id> --http-method GET --accept-media-type application/json --only-show-errors' `
                     -ReplaceWith '--area git --resource pullRequests --route-parameters project=<project-id> repositoryId=<repository-id> pullRequestId=<pull-request-id> --http-method GET --accept-media-type application/json --encoding utf-8 --only-show-errors'
-            }
-        },
-        @{
-            Name  = 'review-diff-not-deterministic'
-            Apply = {
-                param([string] $Dir)
-                Edit-FixtureFile -Path (Join-Path $Dir 'skills/pr-review/reference/commands.md') `
-                    -Find 'diff --no-index --no-color --no-ext-diff --unified=0 --' `
-                    -ReplaceWith 'diff --no-index --no-color --no-ext-diff --'
-            }
-        },
-        @{
-            Name  = 'review-anchor-from-provider-patch'
-            Apply = {
-                param([string] $Dir)
-                Edit-FixtureFile -Path (Join-Path $Dir 'skills/pr-review/reference/commands.md') `
-                    -Find 'no checkout, index, working tree, or provider-supplied patch is ever consulted' `
-                    -ReplaceWith 'the provider-supplied patch may be consulted when it is available'
             }
         },
         @{
@@ -3647,113 +3613,21 @@ resource: /user' `
             }
         },
         @{
-            Name  = 'review-github-diff-base-is-base-sha'
-            Apply = {
-                param([string] $Dir)
-                Edit-FixtureFile -Path (Join-Path $Dir 'skills/pr-review/reference/commands.md') `
-                    -Find 'against the `merge_base_commit.sha` returned by `github.merge-base-read` and never against `base.sha`' `
-                    -ReplaceWith 'against `base.sha`'
-            }
-        },
-        @{
-            Name  = 'review-github-base-tip-called-diff-base'
-            Apply = {
-                param([string] $Dir)
-                Edit-FixtureFile -Path (Join-Path $Dir 'skills/pr-review/reference/commands.md') `
-                    -Find '`base.sha` as a non-authoritative base snapshot only' `
-                    -ReplaceWith '`base.sha` as the pinned base revision'
-            }
-        },
-        @{
-            Name  = 'review-github-base-sha-called-base-ref-tip'
-            Apply = {
-                param([string] $Dir)
-                # The old explanation was factually wrong: base.sha is a snapshot, not the live
-                # base-ref tip. Restoring it justifies resolving base-side content at the tip.
-                Edit-FixtureFile -Path (Join-Path $Dir 'skills/pr-review/reference/commands.md') `
-                    -Find 'because the provider recorded it when the pull request was opened or last synchronized and it may equal, may lag, or may differ from the comparison merge base' `
-                    -ReplaceWith 'because it is the base-ref tip and the target branch advances independently of the pull request'
-            }
-        },
-        @{
-            Name  = 'review-github-base-sha-agreement-treated-as-evidence'
-            Apply = {
-                param([string] $Dir)
-                Edit-FixtureFile -Path (Join-Path $Dir 'skills/pr-review/reference/commands.md') `
-                    -Find 'Because `base.sha` may coincide with the comparison merge base on one pull request and not on the next, observing that the two agree is never evidence that `base.sha` may be used.' `
-                    -ReplaceWith 'A `base.sha` that already equals the comparison merge base may be used directly.'
-            }
-        },
-        @{
-            Name  = 'review-github-merge-base-endpoint-use-unbounded'
-            Apply = {
-                param([string] $Dir)
-                Edit-FixtureFile -Path (Join-Path $Dir 'skills/pr-review/reference/commands.md') `
-                    -Find 'supplying `base.sha` as one endpoint of this comparison is the only sanctioned use of it and is never a use of it as a diff base' `
-                    -ReplaceWith 'the endpoints may be supplied in whatever form is convenient'
-            }
-        },
-        @{
-            Name  = 'review-skill-base-sha-snapshot-explanation-dropped'
+            Name  = 'review-provider-local-mismatch-tolerated'
             Apply = {
                 param([string] $Dir)
                 Edit-FixtureFile -Path (Join-Path $Dir 'skills/pr-review/reference/acquisition.md') `
-                    -Find 'GitHub records `base.sha` when the pull request is opened or last synchronized, so it may equal the comparison merge base, may lag it, or may differ from it, and observing that it agrees with the merge base on one pull request is never evidence that it may be used on the next.' `
-                    -ReplaceWith '`base.sha` is the base-ref tip.'
+                    -Find 'or provider and local revisions disagree, stop with `BLOCKED`.' `
+                    -ReplaceWith 'or provider and local revisions disagree, continue with the local revisions.'
             }
         },
         @{
-            Name  = 'review-github-merge-base-not-pinned-pair'
+            Name  = 'review-provider-patch-used-as-authority'
             Apply = {
                 param([string] $Dir)
-                Edit-FixtureFile -Path (Join-Path $Dir 'skills/pr-review/reference/commands.md') `
-                    -Find 'resource: /repos/{owner}/{repo}/compare/{base_sha}...{head_sha}' `
-                    -ReplaceWith 'resource: /repos/{owner}/{repo}/compare/{base_ref}...{head_ref}'
-            }
-        },
-        @{
-            Name  = 'review-ado-target-tip-called-diff-base'
-            Apply = {
-                param([string] $Dir)
-                Edit-FixtureFile -Path (Join-Path $Dir 'skills/pr-review/reference/commands.md') `
-                    -Find '`lastMergeTargetCommit.commitId` as the target-branch tip only' `
-                    -ReplaceWith '`lastMergeTargetCommit.commitId` as the pinned base revision'
-            }
-        },
-        @{
-            Name  = 'review-ado-merge-base-unbound'
-            Apply = {
-                param([string] $Dir)
-                Edit-FixtureFile -Path (Join-Path $Dir 'skills/pr-review/reference/commands.md') `
-                    -Find 'its `commonRefCommit.commitId` is the merge base, bound as the sole Azure DevOps diff-base revision' `
-                    -ReplaceWith 'its `commonRefCommit.commitId` is available for unchanged context'
-            }
-        },
-        @{
-            Name  = 'review-bundle-seal-ambiguous-diff-base'
-            Apply = {
-                param([string] $Dir)
-                Edit-FixtureFile -Path (Join-Path $Dir 'skills/pr-review/reference/commands.md') `
-                    -Find 'a `base.sha` snapshot or a target-branch tip is never accepted as the diff base, and a manifest whose base-side entries do not all carry that one diff-base revision blocks' `
-                    -ReplaceWith 'any pinned base revision is accepted'
-            }
-        },
-        @{
-            Name  = 'review-diff-base-side-unpinned'
-            Apply = {
-                param([string] $Dir)
-                Edit-FixtureFile -Path (Join-Path $Dir 'skills/pr-review/reference/commands.md') `
-                    -Find 'where the base-side blob was resolved at the single pinned diff-base revision and nowhere else' `
-                    -ReplaceWith 'whichever base-side blob the manifest recorded'
-            }
-        },
-        @{
-            Name  = 'review-skill-diff-base-is-target-tip'
-            Apply = {
-                param([string] $Dir)
-                Edit-FixtureFile -Path (Join-Path $Dir 'skills/pr-review/reference/acquisition.md') `
-                    -Find '`base.sha` and `lastMergeTargetCommit.commitId` are never a diff base.' `
-                    -ReplaceWith '`base.sha` and `lastMergeTargetCommit.commitId` are the diff base.'
+                Edit-FixtureFile -Path (Join-Path $Dir 'skills/pr-review/reference/posting.md') `
+                    -Find 'Never infer the opposite side or use a provider patch as the authority.' `
+                    -ReplaceWith 'Use a provider patch as the authority when it is available.'
             }
         },
         @{
@@ -3770,8 +3644,8 @@ resource: /user' `
             Apply = {
                 param([string] $Dir)
                 Edit-FixtureFile -Path (Join-Path $Dir 'skills/pr-review/reference/commands.md') `
-                    -Find 'the `ado.identity-read` command, the `ado.repository-read` command, the `ado.pull-request-read` command' `
-                    -ReplaceWith 'the `ado.identity-read` command, the `ado.pull-request-read` command'
+                    -Find '`ado.identity-read`, `ado.repository-read`, `ado.pull-request-read`' `
+                    -ReplaceWith '`ado.identity-read`, `ado.pull-request-read`'
             }
         },
         @{
@@ -3779,8 +3653,8 @@ resource: /user' `
             Apply = {
                 param([string] $Dir)
                 Edit-FixtureFile -Path (Join-Path $Dir 'skills/pr-review/reference/commands.md') `
-                    -Find 'the `ado.identity-read` command, the `ado.repository-read` command, the `ado.pull-request-read` command' `
-                    -ReplaceWith 'the `ado.identity-read` command, the `ado.pull-request-read` command, the `ado.repository-read` command'
+                    -Find '`ado.identity-read`, `ado.repository-read`, `ado.pull-request-read`' `
+                    -ReplaceWith '`ado.identity-read`, `ado.pull-request-read`, `ado.repository-read`'
             }
         },
         @{

@@ -47,7 +47,8 @@ Coordinates a review of an existing GitHub or Azure DevOps pull request through:
 
 1. Access selection: strict locator grammar, an inventory of already-callable
    adapters, an explicitly confirmed adapter, and a probed `AccessContext`
-2. Acquisition: a size-admitted, sealed, content-addressed snapshot bundle
+2. Acquisition: an isolated checkout pinned to the PR source revision, reviewed through
+   the app's native changes overview and diff
 3. A minimum of four independent reviews of security, design, canonical codebase
    practice, and runtime performance, plus scoped topic reviews when the change or
    codebase warrants them
@@ -132,8 +133,7 @@ fixed list, then checks required resources, unique skill frontmatter, the exact
 model tables, the approval gates, revision-bound critiques, the delivery
 vocabulary and authority handshake, the review workflow's entry guard, locator
 grammar, phase-reference wiring, credential-terminal preflight and allowlist, the
-ordered Azure DevOps probe, bundle admission and citation rules, immutable revision resolution, the
-single merge-base diff-base revision per provider and the pinned-diff anchors, the
+ordered Azure DevOps probe, isolated-workspace revision checks, app-diff citations and anchors, the
 transmitted provider Accept and API-version headers,
 approval serializers and response projectors, lease fencing, journal creation, and
 outcome classification, the review-decision predicate, the

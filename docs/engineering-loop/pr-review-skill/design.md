@@ -12,16 +12,17 @@ adapters that expose the same acquire, review, compose, approve, post, and recov
 Production remains declarative Markdown: `SKILL.md`, two child prompts, and a phase-read
 `reference/commands.md` containing tagged normative contracts. PowerShell is structural
 reference validation only; it never proxies agent/provider behavior. Run state and
-tamper-evident snapshots stay outside working trees/tracked paths, except the deliberate shared
-Git-common-dir lease/journal. No adapter is installed/substituted, no credential reaches the
-agent, and no write precedes exact semantic approval.
+review evidence comes from one clean isolated app workspace pinned to the provider revision,
+except for the deliberate shared Git-common-dir lease/journal. No adapter is
+installed/substituted, no credential reaches a reviewer, and no write precedes exact semantic
+approval.
 
 ## Requirements and current path
 
 | Requirement | Design mechanism | Verification |
 |---|---|---|
 | G1, FR1, FR2, FR3, FR4, EF1, EF2, AC1 | Strict locators; `AccessCandidateInventory`; explicit MCP choice; terminal-only ADO PAT lifecycle; adapter-neutral probes. | Locator negatives; active/installed inventory; same-terminal auth and cleanup evidence. |
-| G2, FR5, FR6, FR7, EF3, EF4, AC2, AC6 | Complete `SnapshotBundle`; four fixed local reviewers; attested reconciliation. | Missing/corrupt content and area failures block; full reports display revision and evidence. |
+| G2, FR5, FR6, FR7, EF3, EF4, AC2, AC6 | Clean pinned `ReviewWorkspace`; app-native diff; four baseline local reviewers plus justified topic reviewers; attested reconciliation. | Revision/diff drift and reviewer failures block; full reports display revision and changed-line evidence. |
 | G3, FR8, FR9, FR10, EF8, AC3, AC4 | Coordinator-only relay; advisory findings; user-owned versioned drafts; semantic approval. | Exploration, mutation, defer, invalidation, and reapproval flows create nothing early. |
 | G4, NG1, FR11, FR12, EF5, EF6, EF7, EF9, C5, AC5, AC7 | Drift gate; scoped lease; baseline/send-once/read-back journal; uncertainty stop. | Concurrent, response-loss, resume, and head-drift live faults. |
 | NG2, NG3, C1, C2, C3, C4, AC8 | Sibling route, session-only state, local children, destination/access digests, scoped guarantee. | Routing/independence fixtures, state inspection, cross-common-dir disclosure. |
@@ -38,22 +39,24 @@ One tagged entry-kind table is exhaustive:
 | `bootstrap` | match/explicit invocation; adapter reselection after invalidation | May lack context; only parse locator, inventory, confirm adapter, authenticate/probe, then atomically create context. |
 | `guarded` | resume; retry/recovery; reviewer/explorer follow-up/refresh; draft add/edit/adopt/remove/retarget; preview/defer/approve; pre-post/post; proven-unposted retry; partial/uncertain/lease/coordinator recovery | First action requires current state-compatible, digest-matching context. |
 
-Bootstrap cannot acquire, build/read a bundle, launch a child, approve, journal, or write.
+Bootstrap cannot open the review workspace, launch a child, approve, journal, or write.
 Every table row is validator-enumerated; missing/renamed rows fail.
 
 1. Parse the locator, resolve the matching configured local Git project, inventory access,
    authenticate/probe one chosen adapter, and verify provider-returned immutable project,
    repository, PR, host, and acting-identity IDs against locator and Git remotes.
-2. Acquire pinned base/source blobs and required unchanged codebase context into a sealed local
-   bundle. Four independent children read it without provider credentials; the coordinator
-   reconciles `[Security|Design|Canonical|Performance]` results.
+2. Open one isolated app workspace at the exact provider source revision, verify its merge base,
+   cleanliness, and complete native diff, then launch four baseline reviewers and any justified
+   topic reviewers. Children inspect that workspace without provider credentials; the coordinator
+   reconciles their results.
 3. One fixed-model explorer answers cross-area questions only. Draft mutations produce a new
    semantic set; preview displays that object. Exact approval binds its canonical digest.
 4. Revalidate access, identity, revision, targets, and lease scope; post sequentially with a
    complete baseline and read-after-write; report every item as posted, not posted, or uncertain.
 
-No matching configured local project, unverifiable remote/provider identity, incomplete probe
-or bundle, stale context, or missing adapter blocks with restoration guidance.
+No matching configured local project, unverifiable remote/provider identity, incomplete probe or
+app diff, dirty/drifted workspace, stale context, or missing adapter blocks with restoration
+guidance.
 
 ## Contracts and invariants
 
@@ -76,8 +79,8 @@ acting-identity route, and operation-name→tool mapping for every read/write. P
 not a local/stdio transport host, must match the locator. Every MCP choice, even one, requires
 confirmation showing these fields. Otherwise use installed `gh`/`az devops`; ambiguity is
 sorted/shown, Agent Finder results are excluded, and failure never falls back. Post-auth probes
-must return immutable IDs and semantic read-back for identity, PR/revision, paging, pinned blob,
-and complete comments. Missing operations or mapping/authority/identity/version drift
+must return immutable IDs and semantic read-back for identity, PR/revision, merge-base metadata,
+paging, and complete comments. Missing operations or mapping/authority/identity/version drift
 disqualifies and invalidates approval. `AccessContext` and its digest bind all fields plus auth
 epoch and appear in all state/envelopes/approval/journal.
 
@@ -102,44 +105,35 @@ requires fresh secure entry. Never use `az devops login`. Windows ACL grants the
 unavoidable Administrators/SYSTEM; Unix uses `0700` directories/`0600` files—neither claims
 protection from privileged OS principals.
 
-**Snapshot and sessions.** Admission blocks before child launch above 3,000 changed files,
-250,000 changed lines, 16 MiB per text blob, 256 MiB changed text, or 512 MiB total bundle;
-never truncate. `SnapshotBundle v1` lives under run-scoped session/temp storage, outside
-checkout/common-dir. Manifest entries bind provider/API/IDs/revisions/iteration, change/path,
-base/source content-addressed blobs, byte/line counts, and binary/LFS metadata. Intentionally
-unavailable binary/LFS content is resolved metadata, not missing; unresolved text/base is
-`complete=false`. Use exact local blob only when SHA matches; otherwise read immutable provider
-content or block—never local HEAD or fetch.
+**Workspace and sessions.** Pin the provider source revision before opening an isolated app
+workspace. Review starts only when local `HEAD` equals that revision, the app reports the expected
+merge base and complete diff, provider/local metadata agree, and the worktree is clean. Never use
+a nearby branch tip, the user's current checkout, or a provider patch as review evidence.
 
-Unchanged context is direct imported/called definitions plus nearest tests/config referenced by
-changed symbols. A child requests more through the coordinator; approved additions produce
-resealed bundle `v(n+1)` and supersede affected review digests. Producer hashes the manifest and
-entries, gives each child an isolated content-addressed copy, and independently rehashes/rejects
-addition/deletion/rename/hash drift before and after each child. Child checkout/credentials and
-attestations are untrusted; each finding must cite bundle path plus blob SHA-256.
+The app diff is the authority for changed lines and inline targets. Reviewers may read definitions,
+tests, and configuration from the pinned workspace for context, but context outside the diff is
+not an inline target. Recheck revision, cleanliness, and diff before posting; drift supersedes
+reviews and approval. If the app cannot enumerate the complete diff, block instead of truncating.
 
-Children use exact target `project_id`, top-level `execution_location: "local"`, and read only
-the bundle path. Envelopes attest `bundle_digest`, `access_digest`, and role-specific
-`review_digest`. Fixed models are Security `gpt-5.6-sol`, Design `claude-opus-5`, Canonical
-`gemini-3.1-pro-preview`, Performance `gpt-5.6-sol`, Explorer `claude-opus-5`; unavailable
-models block. Rotation requires a versioned model-block change and full recertification.
-Prompts/envelopes are capped at 16/64 KiB, findings at 4 KiB and 100 per role; overflow blocks
-rather than truncates, while bundle files are read in bounded chunks. The explorer is advisory,
-cannot add findings/drafts, routes new area claims to the owning reviewer, and is superseded
-and refreshed on drift. Each role reuses one session; one recorded same-model replacement is
-allowed, then failure blocks. `review_digest` hashes role, model, prompt version, bundle, and
-access digests.
+Children use exact target `project_id`, top-level `execution_location: "local"`, and inspect the
+recorded `ReviewWorkspace` by project-session ID and path. Envelopes attest source revision, merge
+base, `access_digest`, and role-specific `review_digest`. Fixed baseline models are Security
+`gpt-5.6-sol`, Design `claude-opus-5`, Canonical `gemini-3.1-pro-preview`, and Performance
+`gpt-5.6-sol`; Explorer is `claude-opus-5`. Additional scoped topic reviewers are allowed when
+the diff or codebase warrants them, with explicit rationale, scope, and model. Prompts/envelopes
+are capped at 16/64 KiB, findings at 4 KiB and 100 per role; overflow blocks rather than truncates.
+Each role reuses one session; one recorded same-model replacement is allowed, then failure blocks.
 
 **Tagged reference grammar.** Repository-wide unique fenced blocks use
 `contract:<kind>:<adapter-or-local-area>:v<n>` and required `operation`, method/command,
 route/resource, API version, Accept, paging, input mode, and output fields. Blocks cover
-GitHub/ADO and local terminal, bundle/ACL/hash/temp cleanup, lease/journal commands. Validator
+GitHub/ADO and local terminal, request-file ACL/hash cleanup, and lease/journal commands. Validator
 requires set equality/bijection between skill operation names and blocks.
 
 GitHub blocks specify host, REST version, Accept, method, `per_page=100`, paging, exact write
 bytes, and no verbose/debug. ADO blocks specify organization, `--detect false`, API `7.1`,
 method/routes, `--encoding utf-8`, and profile/git resources for identity, PR, iterations,
-changes, items/blobs, inventory/create.
+changes, and inventory/create.
 
 ADO iteration paging follows service-returned `nextSkip`/`nextTop` until both are zero, requiring
 monotonic progress and unique change IDs. Inventory consumes response `value`, every thread and
@@ -211,19 +205,19 @@ user but execute none of it.
 | Slice | Changed areas | Guardrail |
 |---|---|---|
 | Discovery/access | manifests, README, `SKILL.md`, command reference | Unique routing; first guard; no install/fallback/secret surface. |
-| Acquire/review/explore | coordinator, two prompts | Tamper-evident isolated bundle copies and local digest-attested consumers. |
+| Acquire/review/explore | coordinator, two prompts | Exact clean checkout, app-native diff authority, changed-line citations, and digest-attested consumers. |
 | Compose/post/recover | semantic contracts, lease/journal | Mutation invalidation and scoped exactly-once claim. |
 | Validation | dynamic `tests/validate-skills.ps1` | Closed rule lists; tagged-block set equality/bijection; generated negatives; all ordered skill-pair routing/independence. |
 
-Rollback removes only sibling discovery files; provider content and reusable cap fixtures are
-never deleted automatically.
+Rollback removes only sibling discovery files; reusable cap fixtures are never deleted
+automatically.
 
 ## Verification
 
 Structural/self-tests parse Markdown only. Closed rule lists and set equality/bijection fail on
 deleted/renamed rule/tag/entry/operation/model/state and generated negatives cover locators,
-terminal allowlist, budgets, hostile bundle mutation, wrong-checkout citations, binary-only,
-over-budget/missing-base/context reseal, anchors, serializers, lease, and final predicates.
+terminal allowlist, budgets, exact checkout, clean workspace, complete app diff, changed-line
+citations, anchors, serializers, lease, and final predicates.
 They prove contract structure, never runtime behavior.
 
 Only the live AC1-AC8 matrix proves agent/provider behavior, against mandatory current
