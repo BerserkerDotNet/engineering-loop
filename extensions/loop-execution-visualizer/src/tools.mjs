@@ -238,6 +238,13 @@ export function createTools({ reporter, onChange = () => {} }) {
       },
       async (args) => {
         requireRun(reporter);
+        if (STATES.attempt.terminal.includes(args.state) && reporter.role !== "orchestrator") {
+          return {
+            ok: false,
+            error: "not_orchestrator",
+            reason: "a child may report progress or waiting state, but only the orchestrator may settle an attempt",
+          };
+        }
         const scope = reporter.resolveScope(args);
         if (!scope.ok) return { ok: false, error: scope.error, reason: scope.reason };
         if (!scope.nodeId || !scope.attemptId) {
@@ -276,13 +283,33 @@ export function createTools({ reporter, onChange = () => {} }) {
           nodeId: { type: "string" },
           state: { type: "string", enum: STATES.node.states },
           reason: { type: "string" },
+          attemptId: { type: "string", description: "Required when accepting a terminal envelope for an attempt." },
+          envelopeStatus: { type: "string", description: "Exact STATUS from the accepted child envelope." },
+          envelopeSequence: { type: "integer", minimum: 0, description: "Exact SEQUENCE from the accepted child envelope." },
         },
         required: ["nodeId", "state", "reason"],
       },
       async (args) => {
         requireRun(reporter);
         requireOrchestrator(reporter);
-        reporter.setNodeState({ nodeId: args.nodeId, state: args.state, reason: args.reason });
+        if (args.attemptId || args.envelopeStatus || Number.isInteger(args.envelopeSequence)) {
+          if (!args.attemptId || !args.envelopeStatus) {
+            return changed({
+              ok: false,
+              reason: "accepted envelope settlement requires attemptId and envelopeStatus together",
+            });
+          }
+          reporter.settleEnvelope({
+            nodeId: args.nodeId,
+            attemptId: args.attemptId,
+            state: args.state,
+            reason: args.reason,
+            envelopeStatus: args.envelopeStatus,
+            envelopeSequence: Number.isInteger(args.envelopeSequence) ? args.envelopeSequence : null,
+          });
+        } else {
+          reporter.setNodeState({ nodeId: args.nodeId, state: args.state, reason: args.reason });
+        }
         const projection = reporter.projection({ force: true });
         const node = projection.dag.nodes.find((n) => n.nodeId === args.nodeId);
         if (!node) return changed({ ok: false, reason: `unknown node ${args.nodeId}` });
@@ -421,8 +448,8 @@ export function createTools({ reporter, onChange = () => {} }) {
               incidentId: incident.incidentId,
               kind: incident.kind,
               state: incident.state,
-              nodeId: incident.nodeId,
-              attemptId: incident.attemptId,
+              subjectNodeId: incident.subjectNodeId,
+              subjectAttemptId: incident.subjectAttemptId,
               summary: incident.summary,
               openedAt: incident.openedAt,
               grantsNoAuthority: STATES.incident.grantsNoAuthority,
@@ -430,6 +457,7 @@ export function createTools({ reporter, onChange = () => {} }) {
           };
         }
         if (!args.incidentId) return { ok: false, reason: `${args.action} requires incidentId` };
+        requireOrchestrator(reporter);
         const state = args.action === "acknowledge" ? "acknowledged" : "resolved";
         const result = reporter.resolveIncident(args.incidentId, state, args.reason ?? `${args.action} by the orchestrator`);
         return changed({ ...result, incidentId: args.incidentId, state });

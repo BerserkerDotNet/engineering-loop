@@ -117,6 +117,7 @@ function notifyCanvas(reason) {
     runtime.server.broadcast("run", {
       reason,
       run: projection,
+      current: true,
       at: new Date().toISOString(),
     });
   });
@@ -145,9 +146,10 @@ function lifecycle(phase, reason, authoritative) {
 
 /** A child session proves membership by presenting the grant it was given. */
 function tryEnroll(text, where) {
-  if (!runtime.reporter || runtime.reporter.binding) return false;
+  if (!runtime.reporter) return false;
   const parsed = extractEnrollmentToken(text);
   if (!parsed) return false;
+  if (runtime.reporter.binding?.grantId === parsed.grantId) return false;
   const result = runtime.reporter.redeemEnrollment(parsed);
   if (!result.ok) {
     log(`enrollment from ${where} rejected: ${result.reason}`);
@@ -159,7 +161,6 @@ function tryEnroll(text, where) {
     attemptId: result.binding.attemptId,
     state: "running",
     reason: "child session started and enrolled",
-    authoritative: true,
   }, { kind: "child", basis: "enrollment_token", grantId: result.binding.grantId, immediate: true }));
   notifyCanvas("enrolled");
   return true;
@@ -449,7 +450,7 @@ if (!scope.ok) {
       ?? null;
     runtime.repository = workspace?.workspace?.repository ?? null;
     runtime.branch = workspace?.workspace?.branch ?? null;
-    let plugins = [];
+    let plugins = null;
     try {
       const listed = await session.rpc.plugins.list();
       plugins = listed?.plugins ?? [];
@@ -458,8 +459,9 @@ if (!scope.ok) {
       // is reported explicitly and makes storage unavailable rather than
       // silently resolving somewhere else.
       log(`plugin list unavailable: ${error.message}`);
-      plugins = [];
+      plugins = null;
     }
+    if (!plugins) throw new Error("host plugin list is required for fail-closed storage discovery");
     const location = resolveStorageLocation({
       extensionPath: process.env.EXTENSION_PATH ?? "",
       workspacePath: workspace?.path ?? null,
@@ -489,6 +491,7 @@ if (runtime.location) {
     extensionId: `plugin:${runtime.location.pluginName}:loop-execution-visualizer`,
     pid: process.pid,
     workingDirectory: runtime.workingDirectory,
+    repository: runtime.repository,
     send: async (body) => {
       await session.send({ prompt: body });
     },
@@ -496,7 +499,15 @@ if (runtime.location) {
   });
 
   runtime.server = createLoopbackServer({ handlers, log });
-  await runtime.server.start();
+  try {
+    await runtime.server.start();
+  } catch (error) {
+    runtime.server = null;
+    runtime.storageError = `loopback server failed: ${error.message}`;
+    runtime.resolveServerReady(null);
+    throw error;
+  }
+  runtime.resolveServerReady(runtime.server);
   log(`loopback server listening on 127.0.0.1:${runtime.server.port}`);
 
   if (runtime.pendingInitialPrompt) {
@@ -592,6 +603,7 @@ if (runtime.location) {
   // Reporter absence is detected exactly once. Skills continue unchanged and
   // must not retry the missing tools.
   log("running in degraded mode: no run will be recorded");
+  runtime.resolveServerReady(null);
 }
 
 process.on("exit", () => {

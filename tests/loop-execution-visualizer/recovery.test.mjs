@@ -118,12 +118,13 @@ test("envelope ledger: an authoritative terminal state satisfies the expectation
     worker.flush();
     // The orchestrator records the child's authoritative outcome: the ledger
     // entry is settled by workflow truth, never by the child going quiet.
-    lead.setAttemptState({
+    lead.settleEnvelope({
       nodeId: "design",
       attemptId: "design-a1",
       state: "succeeded",
       reason: "design delivered",
-      authoritative: true,
+      envelopeStatus: "COMPLETE",
+      envelopeSequence: 4,
     });
 
     const attempt = lead.projection({ force: true }).dag.nodes.find((n) => n.nodeId === "design").attempts[0];
@@ -205,8 +206,9 @@ test("recovery pending: a healthy orchestrator that a child cannot deliver to is
     const worker = child(store.storeDir, clock, grant);
 
     lead.heartbeat("active");
-    lead.setAttemptState({
-      nodeId: "design", attemptId: "design-a1", state: "failed", reason: "child reported a nonrecoverable error", authoritative: true,
+    lead.settleEnvelope({
+      nodeId: "design", attemptId: "design-a1", state: "failed", reason: "child reported a nonrecoverable error",
+      envelopeStatus: "COMPLETE", envelopeSequence: 4,
     });
     clock.advance(100);
     const opened = lead.detectIncidents();
@@ -236,8 +238,9 @@ test("recovery pending: a stale orchestrator heartbeat parks the incident and on
     const worker = child(store.storeDir, clock, grant);
 
     lead.heartbeat("active");
-    lead.setAttemptState({
-      nodeId: "design", attemptId: "design-a1", state: "failed", reason: "child reported a nonrecoverable error", authoritative: true,
+    lead.settleEnvelope({
+      nodeId: "design", attemptId: "design-a1", state: "failed", reason: "child reported a nonrecoverable error",
+      envelopeStatus: "COMPLETE", envelopeSequence: 4,
     });
     lead.detectIncidents();
     lead.flush();
@@ -292,8 +295,9 @@ test("outbox: a message addressed to a settled attempt is denied with its exact 
     worker.heartbeat("active");
     worker.flush();
 
-    lead.setAttemptState({
-      nodeId: "design", attemptId: "design-a1", state: "succeeded", reason: "design delivered", authoritative: true,
+    lead.settleEnvelope({
+      nodeId: "design", attemptId: "design-a1", state: "succeeded", reason: "design delivered",
+      envelopeStatus: "COMPLETE", envelopeSequence: 4,
     });
 
     const result = lead.queueMessage({ targetAppSessionId: "app-design", body: "please revisit the contract section" });
@@ -397,7 +401,7 @@ test("outbox: acceptance survives a process restart because the candidate set is
       send: collectSends([]),
     });
     restarted.attachRun("accept-restart");
-    const accepted = restarted.noteUserMessage(`${body}\n\n(delivered by the visualizer)`);
+    const accepted = restarted.noteUserMessage(body);
     assert.equal(accepted, queued.messageId, "a restarted process still settles a delivered message");
 
     const message = restarted.projection({ force: true }).outbox.find((m) => m.messageId === queued.messageId);
@@ -602,10 +606,10 @@ test("usage: a restarted reporter recovers its baseline and does not recount his
     const before = lead.readRun("usage-restart").usage.totalCredits;
     assert.equal(before, 12, "eight live credits plus a four credit blind window");
 
-    // The process dies and comes back with the same host session and pid, so
-    // the host counter it reads is still the same monotonic total.
+    // The process dies and comes back with the same host session but a new PID,
+    // while the host counter it reads is still the same monotonic total.
     worker.close();
-    const restarted = child(store.storeDir, clock, grant);
+    const restarted = child(store.storeDir, clock, grant, { pid: 5152 });
     assert.equal(
       restarted.reconcileUsage(metrics, "checkpoint"),
       null,
@@ -639,7 +643,7 @@ test("usage: a restart between samples and reconciliation still attributes those
     worker.flush();
     worker.close();
 
-    const restarted = child(store.storeDir, clock, grant);
+    const restarted = child(store.storeDir, clock, grant, { pid: 5152 });
     restarted.reconcileUsage(
       { totalPremiumRequestCost: 5, totalUserRequests: 1, totalNanoAiu: 0, totalApiDurationMs: 900 },
       "checkpoint",

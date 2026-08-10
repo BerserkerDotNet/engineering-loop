@@ -110,8 +110,14 @@ the graph never pretends it always looked this way.
 ## 7. Terminal envelopes
 
 When a child returns a terminal envelope, report the outcome it declared with
-`loopviz_node_state`. Report what the envelope said, not what you concluded
-from it, and not your reaction to it.
+`loopviz_node_state`. Pass the exact `attemptId` returned by
+`loopviz_attempt_start`, the envelope's exact `STATUS` as `envelopeStatus`, and
+its exact `SEQUENCE` as `envelopeSequence`. This one orchestrator-authored event
+atomically settles the attempt and logical node. A mismatch with the expected
+status or sequence recorded at dispatch is refused and leaves both unsettled.
+Never call `loopviz_attempt_state` with a terminal state to accept an envelope,
+and never trust a child-authored authority flag. Report what the envelope said,
+not what you concluded from it, and not your reaction to it.
 
 Only a child's own envelope, or your own explicit decision recorded through
 `loopviz_run_outcome`, can end a stage or a run. A quiet session is not a
@@ -154,7 +160,7 @@ All tools are namespaced `loopviz_*`. Arguments not listed are optional.
 | `loopviz_node_add` | Append an unplanned stage authorized by the orchestrator. | `runId`, `node` |
 | `loopviz_attempt_start` | Start an attempt on a stage and mint its enrollment line. | `runId`, `nodeId` |
 | `loopviz_attempt_state` | Move an attempt that the orchestrator itself decided about. | `runId`, `nodeId`, `attemptId`, `state` |
-| `loopviz_node_state` | Record the outcome a terminal envelope declared. | `runId`, `nodeId`, `state` |
+| `loopviz_node_state` | Atomically settle an attempt and node from an accepted terminal envelope. | `runId`, `nodeId`, `attemptId`, `state`, `envelopeStatus`, `envelopeSequence` |
 | `loopviz_controller_state` | Record the orchestrator's own phase and gate state. | `runId`, `state` |
 | `loopviz_run_outcome` | End the run. Call once. | `runId`, `outcome` |
 | `loopviz_report` | Attach optional semantic detail (model, plan, progress) to a stage. | `runId`, `nodeId` |

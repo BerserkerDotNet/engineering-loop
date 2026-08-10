@@ -93,6 +93,7 @@ function newSessionRef() {
     // measured from here, so a child that has only just gone idle is never
     // reported as having skipped its envelope.
     activitySince: null,
+    boundAt: null,
     lastHeartbeatAt: null,
     workingDirectory: null,
   };
@@ -402,6 +403,57 @@ export function buildProjection({ events, quarantined = [], truncated = false, d
           issues.push({ kind: "orphan_reference", detail: `state for unknown node ${event.data.nodeId}`, nodeIds: [event.data.nodeId] });
           break;
         }
+        const latestExpected = node.attempts.at(-1)?.expected;
+        if (NODE_SETTLED.includes(event.data.state) && latestExpected && !event.data.attemptId) {
+          note(`ignored settled node ${node.nodeId} without exact envelope acceptance`);
+          break;
+        }
+        if (event.data.attemptId) {
+          const owner = attemptIndex.get(`${event.data.nodeId}:${event.data.attemptId}`);
+          if (!owner) {
+            issues.push({
+              kind: "orphan_reference",
+              detail: `envelope settlement for unknown attempt ${event.data.attemptId}`,
+              nodeIds: [event.data.nodeId],
+            });
+            break;
+          }
+          const expected = owner.attempt.expected;
+          const statusMatches = !expected || expected.status === event.data.envelopeStatus;
+          const sequenceMatches = !expected
+            || expected.sequence === null
+            || expected.sequence === event.data.envelopeSequence;
+          if (!event.data.envelopeStatus || !statusMatches || !sequenceMatches) {
+            note(`ignored envelope settlement for ${event.data.attemptId}: expected ${
+              expected ? `${expected.status}/${expected.sequence ?? "*"}` : "an explicit status"
+            }, received ${event.data.envelopeStatus ?? "(none)"}/${event.data.envelopeSequence ?? "(none)"}`);
+            break;
+          }
+          const attemptState = event.data.state === "succeeded"
+            ? "succeeded"
+            : event.data.state === "canceled"
+              ? "canceled"
+              : "failed";
+          if (!canTransition("attempt", owner.attempt.state, attemptState)) {
+            note(`ignored envelope settlement transition ${owner.attempt.state} -> ${attemptState}`);
+            break;
+          }
+          owner.attempt.state = attemptState;
+          owner.attempt.stateReason = event.data.reason;
+          owner.attempt.endedAt = event.recordedAt;
+          owner.attempt.authoritativeFailure = attemptState === "failed";
+          if (expected) {
+            expected.satisfied = true;
+            expected.satisfiedAt = event.recordedAt;
+            expected.satisfiedBy = "accepted_envelope";
+          }
+          pushTimeline(owner.attempt.timeline, {
+            at: event.recordedAt,
+            kind: "state",
+            text: `${attemptState}: ${event.data.reason}`,
+            authoritative: true,
+          });
+        }
         if (!canTransition("node", node.state, event.data.state)) {
           note(`ignored node ${node.nodeId} transition ${node.state} -> ${event.data.state}`);
           break;
@@ -485,11 +537,7 @@ export function buildProjection({ events, quarantined = [], truncated = false, d
           });
           break;
         }
-        const authoritative = event.data.authoritative === true || isOrchestratorSource(event);
-        if (event.data.state === "failed" && !authoritative) {
-          note(`ignored non-authoritative failure for attempt ${event.data.attemptId}`);
-          break;
-        }
+        const authoritative = isOrchestratorSource(event);
         if (!canTransition("attempt", owner.attempt.state, event.data.state)) {
           note(`ignored attempt ${event.data.attemptId} transition ${owner.attempt.state} -> ${event.data.state}`);
           break;
@@ -498,14 +546,6 @@ export function buildProjection({ events, quarantined = [], truncated = false, d
         owner.attempt.stateReason = event.data.reason;
         if (event.data.state === "failed") owner.attempt.authoritativeFailure = true;
         if (STATES.attempt.terminal.includes(event.data.state)) owner.attempt.endedAt = event.recordedAt;
-        // Only the orchestrator can close its own expectation: recording a
-        // terminal state for the attempt is the act of having received and used
-        // the child's envelope.
-        if (owner.attempt.expected && !owner.attempt.expected.satisfied && authoritative && STATES.attempt.terminal.includes(event.data.state)) {
-          owner.attempt.expected.satisfied = true;
-          owner.attempt.expected.satisfiedAt = event.recordedAt;
-          owner.attempt.expected.satisfiedBy = "attempt_state";
-        }
         pushTimeline(owner.attempt.timeline, {
           at: event.recordedAt,
           kind: "state",
@@ -531,6 +571,7 @@ export function buildProjection({ events, quarantined = [], truncated = false, d
         // what the caller asserted about itself in the payload.
         owner.attempt.session.hostSessionId = event.source.hostSessionId;
         owner.attempt.session.workingDirectory = event.data.workingDirectory ?? null;
+        owner.attempt.session.boundAt = event.recordedAt;
         owner.attempt.session.health = "healthy";
         pushTimeline(owner.attempt.timeline, {
           at: event.recordedAt,
@@ -918,7 +959,8 @@ export function buildProjection({ events, quarantined = [], truncated = false, d
   }
   settleUsage(run.controller.usage);
   settleUsage(run.usage);
-  run.controller.elapsedMs = Math.max(0, nowMs - Date.parse(run.controller.startedAt));
+  const authoritativeEnd = run.outcome ? Date.parse(run.outcome.at) : nowMs;
+  run.controller.elapsedMs = Math.max(0, authoritativeEnd - Date.parse(run.controller.startedAt));
   run.elapsedMs = Math.max(0, (run.outcome ? Date.parse(run.outcome.at) : nowMs) - Date.parse(run.createdAt));
   run.updatedAt = isoAt(Math.max(Date.parse(run.updatedAt), Date.parse(run.createdAt)));
   return run;

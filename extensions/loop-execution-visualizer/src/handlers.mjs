@@ -80,6 +80,12 @@ export function createCanvasHandlers({ runtime, heartbeatMs, notifyCanvas, maint
 
     async sendMessage(input) {
       if (!runtime.reporter?.runId) return { ok: false, reason: "no run is attached to this session" };
+      if (input?.runId !== runtime.reporter.runId) {
+        return {
+          ok: false,
+          reason: `run ${input?.runId ?? "(missing)"} is historical; messages may only target attached run ${runtime.reporter.runId}`,
+        };
+      }
       const queued = runtime.reporter.queueMessage({
         targetAppSessionId: String(input?.targetAppSessionId ?? ""),
         targetNodeId: input?.targetNodeId ?? null,
@@ -96,6 +102,12 @@ export function createCanvasHandlers({ runtime, heartbeatMs, notifyCanvas, maint
 
     async acknowledgeIncident(input) {
       if (!runtime.reporter?.runId) return { ok: false, reason: "no run is attached to this session" };
+      if (input?.runId !== runtime.reporter.runId) {
+        return {
+          ok: false,
+          reason: `run ${input?.runId ?? "(missing)"} is historical; incidents may only be changed on attached run ${runtime.reporter.runId}`,
+        };
+      }
       const result = runtime.reporter.resolveIncident(
         String(input?.incidentId ?? ""),
         input?.state === "resolved" ? "resolved" : "acknowledged",

@@ -550,6 +550,12 @@ that a visibility call can never grant approval, authority, or completion — is
 [`extensions/loop-execution-visualizer/REPORTING.md`](../../extensions/loop-execution-visualizer/REPORTING.md).
 Read it before making the first call; do not restate its rules here.
 
+For every terminal-envelope result marker below, pass the dispatched
+`attemptId` plus the envelope's exact `STATUS` and `SEQUENCE` to
+`loopviz_node_state` as `envelopeStatus` and `envelopeSequence`. That single
+orchestrator call settles both the attempt and its logical node. Never settle an
+expected envelope with a terminal `loopviz_attempt_state` call.
+
 Make each call at the site below. If `loopviz_run_declare` is unavailable, record
 `reporter-absent` in the run ledger once and omit every other row for this run.
 

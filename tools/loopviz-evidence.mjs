@@ -68,6 +68,7 @@ const handlers = createCanvasHandlers({
     server?.broadcast("run", {
       reason,
       run: reporter.projection({ force: true }),
+      current: true,
       at: new Date().toISOString(),
     });
   },
@@ -107,6 +108,22 @@ announceTimer.unref();
  * production single-use bootstrap handshake, just without the stale window.
  */
 const entry = createServer((req, res) => {
+  if (req.url === "/latency") {
+    const marker = `latency-${Date.now()}`;
+    const sentAt = new Date().toISOString();
+    reporter.noteActivity("active", marker);
+    reporter.flush();
+    server.broadcast("run", {
+      reason: "latency_probe",
+      run: reporter.projection({ force: true }),
+      current: true,
+      at: sentAt,
+      marker,
+    });
+    res.writeHead(200, { "content-type": "application/json", "access-control-allow-origin": "*" });
+    res.end(JSON.stringify({ marker, sentAt }));
+    return;
+  }
   const bootstrap = server.issueBootstrap();
   const target = `http://127.0.0.1:${server.port}/index.html?bootstrap=${bootstrap}&instance=evidence&runId=${runId}`;
   res.writeHead(302, { location: target });

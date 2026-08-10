@@ -7,7 +7,7 @@ import { validateEvent, canTransition, isTerminal, isSettled, STATES, AUTHORITY,
 import { openStore, parseRecord, frameRecord, sortEvents } from "../../extensions/loop-execution-visualizer/src/store.mjs";
 import { createReporter } from "../../extensions/loop-execution-visualizer/src/reporter.mjs";
 import { buildProjection } from "../../extensions/loop-execution-visualizer/src/projection.mjs";
-import { authorityFor, buildLedger, authorize, extractEnrollmentToken, parseEnrollmentToken } from "../../extensions/loop-execution-visualizer/src/authority.mjs";
+import { authorityFor, buildLedger, authorize, enrollmentProof, extractEnrollmentToken, parseEnrollmentToken } from "../../extensions/loop-execution-visualizer/src/authority.mjs";
 import { canonicalJson, sha256 } from "../../extensions/loop-execution-visualizer/src/util.mjs";
 import { tempStore, fakeClock, sampleRunSpec, collectSends } from "./helpers.mjs";
 
@@ -20,6 +20,7 @@ function orchestrator(storeDir, clock, sink = []) {
     extensionId: "plugin:engineering-loop:loop-execution-visualizer",
     pid: 1000,
     workingDirectory: "C:\\repo",
+    repository: "BerserkerDotNet/engineering-loop",
     send: collectSends(sink),
     now: clock,
   });
@@ -34,6 +35,7 @@ function child(storeDir, clock, { hostSessionId, appSessionId, pid, sink = [] })
     extensionId: "plugin:engineering-loop:loop-execution-visualizer",
     pid,
     workingDirectory: "C:\\repo-child",
+    repository: "BerserkerDotNet/engineering-loop",
     send: collectSends(sink),
     now: clock,
   });
@@ -450,7 +452,21 @@ test("authority: caller-asserted identity is ignored and unproven writes are rej
       type: "session.bound",
       source: { ...impostorBase.source, kind: "child" },
       authority: authorityFor("child", "enrollment_token", grant.grantId),
-      data: { nodeId: "requirements", attemptId: "a1", appSessionId: "app-child", hostSessionId: "host-impostor", grantId: grant.grantId, workingDirectory: null },
+      data: {
+        nodeId: "requirements",
+        attemptId: "a1",
+        appSessionId: "app-child",
+        hostSessionId: "host-impostor",
+        grantId: grant.grantId,
+        workingDirectory: null,
+        redeemedAt: "2026-08-09T00:00:05.000Z",
+        redemptionProof: enrollmentProof({
+          secretHash: grant.secretHash,
+          grantId: grant.grantId,
+          hostSessionId: "host-impostor",
+          workingDirectory: null,
+        }),
+      },
     };
     assert.equal(authorize(ledger, binding).allowed, true);
     const ledgerWithChild = buildLedger([...events, binding]);

@@ -79,6 +79,9 @@ export function resolveStorageLocation({
   }
 
   const match = plugins.find((p) => p && p.name === pluginName);
+  if (!match) {
+    return { available: false, reason: `host plugin list does not contain ${pluginName}` };
+  }
   const marketplace = typeof match?.marketplace === "string" && match.marketplace.length > 0
     ? match.marketplace
     : "_direct";

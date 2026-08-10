@@ -21,6 +21,7 @@ function orchestrator(storeDir, clock, sink) {
     extensionId: "plugin:engineering-loop:loop-execution-visualizer",
     pid: 4242,
     workingDirectory: "I:/repo",
+    repository: "BerserkerDotNet/engineering-loop",
     send: collectSends(sink),
     now: clock,
   });
@@ -195,6 +196,7 @@ test("tools: a child session may report detail but may not control the run", asy
       appSessionId: "app-design-child",
       extensionId: "plugin:engineering-loop:loop-execution-visualizer",
       pid: 5151,
+      repository: "BerserkerDotNet/engineering-loop",
       now: clock,
     });
     const redeemed = child.redeemEnrollment(grant.enrollmentLine);
@@ -450,6 +452,10 @@ test("tools: incidents can be listed and acknowledged without granting any autho
     assert.ok(listed.incidents.length >= 1);
     const incident = listed.incidents[0];
     assert.equal(incident.kind, "child_failed");
+    assert.equal(incident.subjectNodeId, "design");
+    assert.equal(incident.subjectAttemptId, "design-a1");
+    assert.equal("nodeId" in incident, false);
+    assert.equal("attemptId" in incident, false);
     assert.deepEqual(incident.grantsNoAuthority, STATES.incident.grantsNoAuthority);
     assert.ok(incident.grantsNoAuthority.includes("approval"));
 

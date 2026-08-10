@@ -2,7 +2,15 @@ import { randomBytes } from "node:crypto";
 import { openStore, DEFAULT_LIMITS } from "./store.mjs";
 import { buildProjection, summarizeRun } from "./projection.mjs";
 import { STATES, isSettled } from "./contracts.mjs";
-import { authorityFor, ENROLLMENT_MARKER, extractEnrollmentToken, formatEnrollmentToken, parseEnrollmentToken } from "./authority.mjs";
+import {
+  authorityFor,
+  enrollmentProof,
+  ENROLLMENT_MARKER,
+  extractEnrollmentToken,
+  formatEnrollmentToken,
+  parseEnrollmentToken,
+} from "./authority.mjs";
+import { validateInitialGraph } from "./graph.mjs";
 import { LoopVizError, SCHEMA_VERSION, clamp, isoAt, newUuid, sha256, toId, timingSafeEqualString } from "./util.mjs";
 
 /**
@@ -22,6 +30,16 @@ export const MISSING_HEARTBEAT_MS = STATES.health.missingHeartbeatMs;
 /** The host reports AI credit cost in nano-AIU. */
 const NANO_PER_CREDIT = 1e9;
 
+function normalizedProjectFact(value) {
+  if (typeof value !== "string" || value.trim().length === 0) return null;
+  return value.trim().replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
+}
+
+export function canonicalProjectIdentity({ repository = null, workingDirectory = null } = {}) {
+  const fact = normalizedProjectFact(repository) ?? normalizedProjectFact(workingDirectory);
+  return fact ? `project-${sha256(fact).slice("sha256:".length)}` : "project-unknown";
+}
+
 const IMMEDIATE_TYPES = new Set([
   "run.declared", "run.outcome", "dag.node_added", "node.state",
   "attempt.started", "attempt.state", "session.bound", "session.lifecycle",
@@ -30,7 +48,7 @@ const IMMEDIATE_TYPES = new Set([
 ]);
 
 /** Store failures that mean the caller passed something the contract forbids. */
-const CONTRACT_ERRORS = new Set(["invalid_event", "record_too_large"]);
+const CONTRACT_ERRORS = new Set(["invalid_event", "record_too_large", "run_too_large", "store_too_large"]);
 
 /**
  * Turns a `model.list` entry into the contract's price record. Both the Copilot
@@ -155,6 +173,8 @@ export function createReporter({
   extensionId = "unknown",
   pid = 0,
   workingDirectory = null,
+  repository = null,
+  projectId = null,
   send = async () => { throw new LoopVizError("no_send", "no session send is wired"); },
   log = () => {},
   now = Date.now,
@@ -191,6 +211,8 @@ export function createReporter({
     attributedSinceReconcile: 0,
     priceSnapshotIds: new Set(),
     closed: false,
+    repository: normalizedProjectFact(repository),
+    projectId: projectId ?? canonicalProjectIdentity({ repository, workingDirectory }),
   };
 
   function identity() {
@@ -203,6 +225,25 @@ export function createReporter({
       pid,
       workingDirectory,
     };
+  }
+
+  function readProjection(runId) {
+    const read = store.read(runId);
+    if (read.events.length === 0) return null;
+    return buildProjection({
+      events: read.events,
+      quarantined: read.quarantined,
+      truncated: read.truncated,
+      dropped: read.dropped,
+      now,
+    });
+  }
+
+  function mayAccess(run) {
+    if (!run) return false;
+    const runRepository = normalizedProjectFact(run.repository);
+    if (state.repository && runRepository) return state.repository === runRepository;
+    return run.projectId === state.projectId;
   }
 
   function makeEvent(type, data, { kind = state.role, basis = null, grantId = null, causalParentId = null, occurredAt = null } = {}) {
@@ -343,7 +384,8 @@ export function createReporter({
   function writePriceSnapshot(models, { unit = "copilot_ai_credits", currency = null } = {}) {
     const normalized = normalizePriceModels(models);
     if (normalized.length === 0) return null;
-    const snapshotId = toId(`price-${sha256(JSON.stringify(normalized)).slice(7, 23)}`);
+    const billingBasis = { unit, currency, models: normalized };
+    const snapshotId = toId(`price-${sha256(JSON.stringify(billingBasis)).slice(7, 23)}`);
     if (state.priceSnapshotIds.has(snapshotId)) return snapshotId;
     const current = projection();
     if (current && current.priceSnapshots.some((s) => s.snapshotId === snapshotId)) {
@@ -384,7 +426,7 @@ export function createReporter({
     let aggregate = empty;
     let attributed = 0;
     for (const event of events) {
-      if (event.source?.sourceId !== sourceId) continue;
+      if (event.source?.hostSessionId !== hostSessionId) continue;
       if (event.type === "usage.reconciliation") {
         aggregate = { ...empty, ...event.data.aggregate };
         attributed = 0;
@@ -494,6 +536,7 @@ export function createReporter({
       if (state.runId && state.runId !== spec.runId) {
         throw new LoopVizError("run_conflict", `this session already orchestrates run "${state.runId}" and may not declare "${spec.runId}"`);
       }
+      validateInitialGraph(spec.nodes, spec.orchestratorNodeId);
       state.role = "orchestrator";
       state.runId = spec.runId;
       const existing = store.read(spec.runId);
@@ -505,8 +548,8 @@ export function createReporter({
         skill: spec.skill,
         skillVersion: spec.skillVersion ?? null,
         title: spec.title,
-        projectId: spec.projectId ?? null,
-        repository: spec.repository ?? null,
+        projectId: state.projectId,
+        repository: state.repository,
         branch: spec.branch ?? null,
         orchestratorNodeId: spec.orchestratorNodeId,
         orchestratorLabel: spec.orchestratorLabel ?? "Orchestrator",
@@ -517,20 +560,17 @@ export function createReporter({
     },
 
     attachRun(runId) {
+      const run = readProjection(runId);
+      if (!mayAccess(run)) {
+        throw new LoopVizError("project_forbidden", `run ${runId} is outside this host project`);
+      }
       state.runId = runId;
     },
 
     /** Reads any run in the store, not just the attached one (history view). */
     readRun(runId) {
-      const read = store.read(runId);
-      if (read.events.length === 0) return null;
-      return buildProjection({
-        events: read.events,
-        quarantined: read.quarantined,
-        truncated: read.truncated,
-        dropped: read.dropped,
-        now,
-      });
+      const run = readProjection(runId);
+      return mayAccess(run) ? run : null;
     },
 
     /**
@@ -573,7 +613,7 @@ export function createReporter({
       return store.listRunIds().map((runId) => {
         const cached = summaries.get(runId);
         const rebuilt = this.readRun(runId);
-        if (!rebuilt) return cached ?? { runId, state: "unknown" };
+        if (!rebuilt) return null;
         const summary = summarizeRun(rebuilt);
         if (JSON.stringify(summary) !== JSON.stringify(cached)) {
           try {
@@ -581,7 +621,7 @@ export function createReporter({
           } catch { /* the index is only a cache */ }
         }
         return summary;
-      }).sort((a, b) => String(b.createdAt ?? "").localeCompare(String(a.createdAt ?? "")));
+      }).filter(Boolean).sort((a, b) => String(b.createdAt ?? "").localeCompare(String(a.createdAt ?? "")));
     },
 
     /**
@@ -602,17 +642,19 @@ export function createReporter({
       if (state.role !== "orchestrator") throw new LoopVizError("not_orchestrator", "only the orchestrator may issue enrollment");
       const grantId = toId(`g-${newUuid()}`);
       const secret = randomBytes(24).toString("base64url");
+      const secretHash = sha256(secret);
+      const expiresAt = isoAt(now() + ttlMs);
       store.claim(state.runId, `enroll-${grantId}`, {
         grantId,
         nodeId,
         attemptId,
-        secretHash: sha256(secret),
-        expiresAt: isoAt(now() + ttlMs),
+        secretHash,
+        expiresAt,
       });
       const token = formatEnrollmentToken(state.runId, grantId, secret);
       // The marker line is shaped here, once, so every producer hands children
       // exactly the bytes redeemEnrollment knows how to parse.
-      return { grantId, token, enrollmentLine: `${ENROLLMENT_MARKER} ${token}` };
+      return { grantId, token, secretHash, expiresAt, enrollmentLine: `${ENROLLMENT_MARKER} ${token}` };
     },
 
     /** Child side: redeems a token exactly once and binds it to this runtime. */
@@ -624,6 +666,11 @@ export function createReporter({
         : rawToken;
       if (!parsed) return { ok: false, reason: "malformed enrollment token" };
       state.runId = parsed.runId;
+      const run = readProjection(parsed.runId);
+      if (!mayAccess(run)) {
+        state.runId = null;
+        return { ok: false, reason: "enrollment grant belongs to another host project" };
+      }
       const grant = store.readClaim(parsed.runId, `enroll-${parsed.grantId}`);
       if (!grant || !grant.payload) return { ok: false, reason: "unknown enrollment grant" };
       if (!timingSafeEqualString(grant.payload.secretHash, parsed.secretHash)) {
@@ -643,6 +690,7 @@ export function createReporter({
       }
       state.role = "child";
       state.binding = { grantId: parsed.grantId, nodeId: grant.payload.nodeId, attemptId: grant.payload.attemptId };
+      const redeemedAt = isoAt(now());
       emit("session.bound", {
         nodeId: grant.payload.nodeId,
         attemptId: grant.payload.attemptId,
@@ -650,6 +698,13 @@ export function createReporter({
         hostSessionId,
         grantId: parsed.grantId,
         workingDirectory,
+        redeemedAt,
+        redemptionProof: enrollmentProof({
+          secretHash: parsed.secretHash,
+          grantId: parsed.grantId,
+          hostSessionId,
+          workingDirectory,
+        }),
       }, { kind: "child", basis: "enrollment_token", grantId: parsed.grantId });
       return { ok: true, binding: state.binding, runId: parsed.runId };
     },
@@ -660,6 +715,8 @@ export function createReporter({
         nodeId, attemptId, attemptNumber, kind,
         model: model ?? null,
         reason: reason ?? null,
+        grantSecretHash: grant.secretHash,
+        grantExpiresAt: grant.expiresAt,
       };
       // Only recorded when the orchestrator actually declared one: an absent
       // expectation must stay absent rather than becoming an empty object that
@@ -691,16 +748,30 @@ export function createReporter({
     },
 
     /** Orchestrator-authoritative attempt state; the only way an attempt fails. */
-    setAttemptState({ nodeId, attemptId, state: next, reason, authoritative = true }) {
+    setAttemptState({ nodeId, attemptId, state: next, reason }) {
       return emit("attempt.state", {
         nodeId, attemptId, state: next, reason,
-        authoritative: authoritative === true,
       }, { immediate: true });
     },
 
     /** Orchestrator-authoritative logical stage state. */
     setNodeState({ nodeId, state: next, reason }) {
       return emit("node.state", { nodeId, state: next, reason }, { immediate: true });
+    },
+
+    /** Atomically applies an accepted child envelope to its attempt and stage. */
+    settleEnvelope({ nodeId, attemptId, state: next, reason, envelopeStatus, envelopeSequence = null }) {
+      if (state.role !== "orchestrator") {
+        throw new LoopVizError("not_orchestrator", "only the orchestrator may accept a child envelope");
+      }
+      return emit("node.state", {
+        nodeId,
+        state: next,
+        reason,
+        attemptId,
+        envelopeStatus,
+        envelopeSequence,
+      }, { immediate: true });
     },
 
     heartbeat(activity) {
@@ -736,12 +807,13 @@ export function createReporter({
       if (!current) return [];
       const changed = [];
       const cutoff = now() - MISSING_HEARTBEAT_MS;
-      const check = (ref, label, lostState) => {
-        // A peer is only watched once it bound a runtime identity and started
-        // beating, and no process ever declares itself lost.
+      const check = (ref, label, lostState, fallbackStartedAt = null) => {
+        // A peer is watched from binding/start, even before its first heartbeat,
+        // and no process ever declares itself lost.
         if (!ref.hostSessionId || ref.hostSessionId === hostSessionId) return;
         if (ref.health === "ended" || ref.health === lostState) return;
-        const last = ref.lastHeartbeatAt ? Date.parse(ref.lastHeartbeatAt) : null;
+        const baseline = ref.lastHeartbeatAt ?? ref.boundAt ?? fallbackStartedAt;
+        const last = baseline ? Date.parse(baseline) : null;
         if (last === null || last >= cutoff) return;
         emit("health.state", {
           subjectHostSessionId: ref.hostSessionId,
@@ -754,7 +826,7 @@ export function createReporter({
       // The orchestrator's own liveness has its own health value, because a
       // stale controller means queued incidents have nowhere to be delivered
       // and must be parked for replay rather than merely noted as quiet.
-      check(current.controller.session, current.controller.label, "orchestrator_unavailable");
+      check(current.controller.session, current.controller.label, "orchestrator_unavailable", current.controller.startedAt);
       for (const node of current.dag.nodes) {
         for (const attempt of node.attempts) {
           if (STATES.attempt.terminal.includes(attempt.state)) continue;
@@ -914,14 +986,17 @@ export function createReporter({
 
     /** Idempotent acknowledgement/resolution, callable repeatedly with no drift. */
     resolveIncident(incidentId, resolution, reason) {
+      if (state.role !== "orchestrator") {
+        return { ok: false, reason: "only the orchestrator may acknowledge or resolve incidents" };
+      }
       const current = projection({ force: true });
       const incident = current?.incidents.find((i) => i.incidentId === incidentId);
       if (!incident) return { ok: false, reason: "unknown incident" };
       if (incident.state === resolution) return { ok: true, alreadyInState: true };
       if (["resolved", "expired"].includes(incident.state)) return { ok: true, alreadyInState: true };
       emit("incident.state", { incidentId, state: resolution, reason, attempt: incident.attempts }, {
-        kind: state.role === "orchestrator" ? "orchestrator" : "system",
-        basis: state.role === "orchestrator" ? "runtime_identity" : "system",
+        kind: "orchestrator",
+        basis: "runtime_identity",
         immediate: true,
       });
       // The caller is told the incident moved, so the projection is re-read
@@ -950,11 +1025,27 @@ export function createReporter({
       if (current.outcome) {
         return { ok: false, reason: "run already reached an authoritative outcome" };
       }
+      let resolvedNodeId = current.controller.nodeId;
+      let target = null;
+      if (targetAppSessionId !== current.controller.session.appSessionId) {
+        for (const node of current.dag.nodes) {
+          for (const attempt of node.attempts) {
+            if (attempt.session.appSessionId === targetAppSessionId) target = { node, attempt };
+          }
+        }
+        if (target) resolvedNodeId = target.node.nodeId;
+      }
+      if (targetNodeId && targetNodeId !== resolvedNodeId) {
+        return {
+          ok: false,
+          reason: `target node ${targetNodeId} does not own session ${targetAppSessionId}`,
+        };
+      }
       const messageId = toId(`msg-${newUuid()}`);
       emit("outbox.queued", {
         messageId,
         targetAppSessionId,
-        targetNodeId,
+        targetNodeId: resolvedNodeId,
         body: trimmed,
         bodyChecksum: sha256(trimmed),
         expiresAt: isoAt(now() + ttlMs),
@@ -970,12 +1061,6 @@ export function createReporter({
       // one that can still read a turn. A settled or superseded attempt will
       // never consume the message, so it is denied with its exact target and
       // reason instead of being queued until it silently expires.
-      let target = null;
-      for (const node of current.dag.nodes) {
-        for (const attempt of node.attempts) {
-          if (attempt.session.appSessionId === targetAppSessionId) target = { node, attempt };
-        }
-      }
       if (!target) return deny(`target session ${targetAppSessionId} is not part of this run`);
       if (STATES.attempt.terminal.includes(target.attempt.state)) {
         return deny(`target session ${targetAppSessionId} is ${target.attempt.state} on ${target.node.nodeId} and cannot receive a message`);
@@ -1031,10 +1116,14 @@ export function createReporter({
     noteUserMessage(content) {
       if (typeof content !== "string" || content.length === 0) return null;
       const current = projection({ force: true });
-      const pending = (current?.outbox ?? []).filter((m) => m.state === "delivered" && !m.terminal);
+      const pending = (current?.outbox ?? []).filter(
+        (m) => m.state === "delivered"
+          && !m.terminal
+          && m.targetAppSessionId === state.appSessionId,
+      );
       for (const message of pending) {
         if (typeof message.body !== "string" || message.body.length === 0) continue;
-        if (!content.includes(message.body)) continue;
+        if (content !== message.body) continue;
         // Containment alone is not proof: the recorded checksum must match the
         // bytes that were actually observed, so a body that was rewritten while
         // still containing the original text is never accepted.

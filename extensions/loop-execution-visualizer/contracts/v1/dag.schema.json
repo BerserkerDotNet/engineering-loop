@@ -20,6 +20,7 @@
         "activity": { "type": "string", "minLength": 1, "maxLength": 32 },
         "activityDetail": { "$ref": "#/$defs/nullableString" },
         "activitySince": { "$ref": "#/$defs/nullableIso" },
+        "boundAt": { "$ref": "#/$defs/nullableIso" },
         "lastHeartbeatAt": { "$ref": "#/$defs/nullableIso" },
         "workingDirectory": { "$ref": "#/$defs/nullableString" }
       }

@@ -1,4 +1,4 @@
-import { AUTHORITY, eventAuthoritySpec } from "./contracts.mjs";
+import { AUTHORITY, STATES, eventAuthoritySpec } from "./contracts.mjs";
 import { sha256 } from "./util.mjs";
 
 /**
@@ -37,6 +37,53 @@ export function extractEnrollmentToken(text) {
   return match ? parseEnrollmentToken(match[1]) : null;
 }
 
+export function enrollmentProof({ secretHash, grantId, hostSessionId, workingDirectory }) {
+  return sha256([
+    secretHash,
+    grantId,
+    hostSessionId,
+    workingDirectory ?? "",
+  ].join("\n"));
+}
+
+function validateBindingEvent(ledger, event) {
+  const grant = event.authority.grantId ? ledger.grants.get(event.authority.grantId) : null;
+  if (!grant) return { ok: false, reason: "unknown enrollment grant" };
+  if (grant.nodeId !== event.data.nodeId || grant.attemptId !== event.data.attemptId) {
+    return { ok: false, reason: "enrollment grant does not match the asserted attempt" };
+  }
+  const redeemedBy = ledger.boundGrants.get(grant.grantId);
+  if (redeemedBy && redeemedBy !== event.source.hostSessionId) {
+    return { ok: false, reason: "enrollment grant was already redeemed" };
+  }
+  if (event.authority.basis !== "enrollment_token") {
+    return { ok: false, reason: "binding must declare an enrollment_token basis" };
+  }
+  if (!grant.secretHash || !grant.expiresAt) {
+    return { ok: false, reason: "enrollment grant has no replay-verifiable redemption basis" };
+  }
+  const redeemedAt = Date.parse(event.data.redeemedAt);
+  if (!Number.isFinite(redeemedAt) || redeemedAt > Date.parse(grant.expiresAt)) {
+    return { ok: false, reason: "enrollment grant expired before redemption" };
+  }
+  if (event.data.hostSessionId !== event.source.hostSessionId) {
+    return { ok: false, reason: "binding host session does not match the trusted event source" };
+  }
+  if ((event.data.workingDirectory ?? null) !== (event.source.workingDirectory ?? null)) {
+    return { ok: false, reason: "binding working directory does not match the trusted event source" };
+  }
+  const expectedProof = enrollmentProof({
+    secretHash: grant.secretHash,
+    grantId: grant.grantId,
+    hostSessionId: event.source.hostSessionId,
+    workingDirectory: event.source.workingDirectory,
+  });
+  if (event.data.redemptionProof !== expectedProof) {
+    return { ok: false, reason: "binding redemption proof is invalid" };
+  }
+  return { ok: true, grant };
+}
+
 /**
  * Derives every authorization fact from the immutable log alone, so a replay on
  * any machine reaches the same decision.
@@ -47,6 +94,8 @@ export function buildLedger(events) {
     grants: new Map(),
     bindings: new Map(),
     boundGrants: new Map(),
+    rolesAtEvent: new WeakMap(),
+    bindingsAtEvent: new WeakMap(),
     runTerminal: false,
     // Events that appear after an authoritative outcome, by identity. The check
     // has to be positional: everything the run legitimately did *before* the
@@ -58,6 +107,12 @@ export function buildLedger(events) {
     const { type, source, authority } = event;
 
     if (ledger.runTerminal) ledger.afterTerminal.add(event);
+    if (ledger.orchestrator?.hostSessionId === source.hostSessionId) {
+      ledger.rolesAtEvent.set(event, "orchestrator");
+    } else if (ledger.bindings.has(source.hostSessionId)) {
+      ledger.rolesAtEvent.set(event, "child");
+      ledger.bindingsAtEvent.set(event, ledger.bindings.get(source.hostSessionId));
+    }
 
     if (type === "run.declared") {
       if (!ledger.orchestrator) {
@@ -75,15 +130,17 @@ export function buildLedger(events) {
         nodeId: event.data.nodeId,
         attemptId: event.data.attemptId,
         issuedAt: event.recordedAt,
+        secretHash: event.data.grantSecretHash ?? null,
+        expiresAt: event.data.grantExpiresAt ?? null,
+        expectedEnvelope: event.data.expectedEnvelope ?? null,
       });
       continue;
     }
 
     if (type === "session.bound") {
-      const grant = authority.grantId ? ledger.grants.get(authority.grantId) : null;
-      if (!grant) continue;
-      if (grant.nodeId !== event.data.nodeId || grant.attemptId !== event.data.attemptId) continue;
-      if (ledger.boundGrants.has(grant.grantId)) continue; // one-use
+      const validation = validateBindingEvent(ledger, event);
+      if (!validation.ok) continue;
+      const { grant } = validation;
       ledger.boundGrants.set(grant.grantId, source.hostSessionId);
       ledger.bindings.set(source.hostSessionId, {
         grantId: grant.grantId,
@@ -128,25 +185,17 @@ export function authorize(ledger, event) {
     return { allowed: false, role: null, reason: "run has no declaration yet" };
   }
 
-  const effectiveRole = resolveRole(ledger, source);
+  const effectiveRole = ledger.rolesAtEvent.get(event) ?? resolveRole(ledger, source);
+  // A valid fresh grant may transition an already-bound runtime to a new
+  // retry/reconciliation attempt. The old binding remains in immutable history;
+  // the latest valid redemption is the active attribution.
+  if (type === "session.bound") {
+    const validation = validateBindingEvent(ledger, event);
+    return validation.ok
+      ? { allowed: true, role: "child", reason: null }
+      : { allowed: false, role: effectiveRole, reason: validation.reason };
+  }
   if (!effectiveRole) {
-    // session.bound is the only event a not-yet-enrolled process may write, and
-    // only by presenting an orchestrator-issued grant for the exact attempt.
-    if (type === "session.bound") {
-      const grant = authority.grantId ? ledger.grants.get(authority.grantId) : null;
-      if (!grant) return { allowed: false, role: null, reason: "unknown enrollment grant" };
-      if (grant.nodeId !== event.data.nodeId || grant.attemptId !== event.data.attemptId) {
-        return { allowed: false, role: null, reason: "enrollment grant does not match the asserted attempt" };
-      }
-      const boundTo = ledger.boundGrants.get(grant.grantId);
-      if (boundTo && boundTo !== source.hostSessionId) {
-        return { allowed: false, role: null, reason: "enrollment grant was already redeemed" };
-      }
-      if (authority.basis !== "enrollment_token") {
-        return { allowed: false, role: null, reason: "binding must declare an enrollment_token basis" };
-      }
-      return { allowed: true, role: "child", reason: null };
-    }
     return { allowed: false, role: null, reason: "source is not enrolled in this run" };
   }
 
@@ -164,6 +213,21 @@ export function authorize(ledger, event) {
   if (!spec.roles.includes(roleForRules)) {
     return { allowed: false, role: roleForRules, reason: `role ${roleForRules} may not write ${type}` };
   }
+  if (type === "attempt.state" && STATES.attempt.terminal.includes(event.data.state)) {
+    if (!spec.terminalRoles?.includes(roleForRules)) {
+      return { allowed: false, role: roleForRules, reason: "only the orchestrator may settle an attempt" };
+    }
+    const grant = [...ledger.grants.values()].find(
+      (candidate) => candidate.nodeId === event.data.nodeId && candidate.attemptId === event.data.attemptId,
+    );
+    if (grant?.expectedEnvelope) {
+      return {
+        allowed: false,
+        role: roleForRules,
+        reason: "an expected envelope must be settled through an exact node.state acceptance",
+      };
+    }
+  }
 
   const roleSpec = AUTHORITY.roles[roleForRules];
   if (!roleSpec || roleSpec[spec.gate] !== true) {
@@ -174,7 +238,7 @@ export function authorize(ledger, event) {
   }
 
   if (spec.scoped && roleForRules !== "orchestrator") {
-    const binding = ledger.bindings.get(source.hostSessionId);
+    const binding = ledger.bindingsAtEvent.get(event) ?? ledger.bindings.get(source.hostSessionId);
     if (!binding) return { allowed: false, role: roleForRules, reason: "no binding for a scoped event" };
     const nodeId = event.data.nodeId ?? null;
     const attemptId = event.data.attemptId ?? null;

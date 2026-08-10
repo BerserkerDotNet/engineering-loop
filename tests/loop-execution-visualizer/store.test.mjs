@@ -5,7 +5,7 @@ import { mkdirSync, readdirSync, readFileSync, writeFileSync, rmSync } from "nod
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
-import { openStore, parseRecord, frameRecord, sortEvents } from "../../extensions/loop-execution-visualizer/src/store.mjs";
+import { DEFAULT_LIMITS, encodePathSegment, openStore, parseRecord, frameRecord, sortEvents } from "../../extensions/loop-execution-visualizer/src/store.mjs";
 import { createReporter } from "../../extensions/loop-execution-visualizer/src/reporter.mjs";
 import { tempStore, fakeClock, sampleRunSpec, collectSends } from "./helpers.mjs";
 
@@ -53,6 +53,7 @@ test("store: an event file is written exactly once and never rewritten", async (
     lead.startAttempt({
       nodeId: "design", attemptId: "design-a1", attemptNumber: 1, kind: "initial", model: "claude-opus-5", reason: "dispatch",
     });
+
     lead.flush();
 
     const after = eventFiles(store.storeDir, "integrity-run");
@@ -62,6 +63,69 @@ test("store: an event file is written exactly once and never rewritten", async (
     }
 
     lead.close();
+  } finally {
+    store.cleanup();
+  }
+});
+
+test("store: valid run ids that previously collided retain distinct reversible directories", () => {
+  const store = tempStore();
+  const clock = fakeClock();
+  try {
+    const ids = [
+      "foo:bar",
+      "foo_bar",
+      "foo",
+      "foo.",
+      "CON",
+      `${"a".repeat(100)}-one`,
+      `${"a".repeat(100)}-two`,
+    ];
+    for (const [index, runId] of ids.entries()) {
+      const lead = reporterFor(store.storeDir, clock, { host: `host-${index}`, app: `app-${index}`, pid: 800 + index });
+      lead.declareRun(sampleRunSpec(runId));
+      lead.flush();
+    }
+    const reader = openStore({ storeDir: store.storeDir, sourceId: "reader" });
+    assert.deepEqual(reader.listRunIds().sort(), [...ids].sort());
+    assert.notEqual(encodePathSegment("foo:bar"), encodePathSegment("foo_bar"));
+    assert.notEqual(encodePathSegment("foo"), encodePathSegment("foo."));
+    assert.notEqual(encodePathSegment("CON").toLowerCase(), "con");
+    for (const runId of ids) assert.equal(reader.read(runId).events[0].runId, runId);
+  } finally {
+    store.cleanup();
+  }
+});
+
+test("store: approved byte budgets are enforced without deleting active runs", () => {
+  assert.equal(DEFAULT_LIMITS.maxRecordBytes, 1024 * 1024);
+  assert.equal(DEFAULT_LIMITS.maxRunBytes, 100 * 1024 * 1024);
+  assert.equal(DEFAULT_LIMITS.maxStoreBytes, 1024 * 1024 * 1024);
+  assert.equal(DEFAULT_LIMITS.terminalRetentionMs, 90 * 24 * 60 * 60 * 1000);
+
+  const store = tempStore();
+  const clock = fakeClock();
+  try {
+    const lead = createReporter({
+      storeDir: store.storeDir,
+      role: "orchestrator",
+      hostSessionId: "host-budget",
+      appSessionId: "app-budget",
+      pid: 880,
+      now: clock,
+      send: collectSends([]),
+      limits: { maxRunBytes: 8 * 1024, maxStoreBytes: 64 * 1024 },
+    });
+    lead.declareRun(sampleRunSpec("budget-run"));
+    assert.throws(
+      () => lead.emit("semantic.report", {
+        nodeId: null,
+        attemptId: null,
+        fields: { details: "x".repeat(7 * 1024) },
+      }, { immediate: true }),
+      (error) => error.code === "run_too_large",
+    );
+    assert.ok(lead.store.listRunIds().includes("budget-run"), "the active run survives a rejected append");
   } finally {
     store.cleanup();
   }
@@ -326,6 +390,9 @@ test("store: retention drops whole old runs, keeps the newest, and never drops t
     for (let i = 0; i < 5; i += 1) {
       const reporter = reporterFor(store.storeDir, clock, { pid: 300 + i });
       reporter.declareRun(sampleRunSpec(`retained-${i}`));
+      if (i > 0) {
+        reporter.emit("run.outcome", { outcome: "completed", reason: "terminal history" }, { immediate: true });
+      }
       reporter.flush();
       reporters.push(reporter);
       clock.advance(60000);

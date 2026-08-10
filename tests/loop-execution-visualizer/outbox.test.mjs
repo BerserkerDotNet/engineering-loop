@@ -343,8 +343,10 @@ test("outbox: a body that arrives altered is never marked accepted", async () =>
 
     assert.equal(child.projection({ force: true }).outbox[0].state, "delivered");
 
-    const exact = child.noteUserMessage(`quoted context\n\n${EXACT_BODY}\n\ntrailing context`);
-    assert.ok(exact, "the exact bytes inside a larger turn still prove acceptance");
+    const embedded = child.noteUserMessage(`quoted context\n\n${EXACT_BODY}\n\ntrailing context`);
+    assert.equal(embedded, null, "embedding the body in a different turn is not exact-byte acceptance");
+    const exact = child.noteUserMessage(EXACT_BODY);
+    assert.ok(exact, "only the exact target-local user turn proves acceptance");
     assert.equal(child.projection({ force: true }).outbox[0].state, "accepted");
 
     child.close();

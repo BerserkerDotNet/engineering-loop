@@ -38,6 +38,9 @@ const state = {
   expanded: new Set(),
   info: null,
   connected: false,
+  current: false,
+  stream: null,
+  renewTimer: null,
   runFilters: { skill: "all", status: "all", time: "all" },
 };
 
@@ -99,6 +102,7 @@ async function bootstrap() {
   }
   const payload = await response.json();
   state.credential = payload.credential;
+  scheduleRenewal(payload.renewAfterMs);
   // The bootstrap token in the URL is single use; remove it from history.
   history.replaceState(null, "", location.pathname + (INITIAL_RUN ? `?runId=${encodeURIComponent(INITIAL_RUN)}` : ""));
 }
@@ -120,18 +124,44 @@ async function api(name, input = {}) {
   return payload;
 }
 
+function scheduleRenewal(delayMs) {
+  if (state.renewTimer) clearTimeout(state.renewTimer);
+  if (!Number.isFinite(delayMs) || delayMs <= 0) return;
+  state.renewTimer = setTimeout(async () => {
+    try {
+      const payload = await api("renew");
+      state.credential = payload.credential;
+      scheduleRenewal(payload.renewAfterMs);
+      connectStream();
+    } catch (error) {
+      setStatus(`Credential renewal failed: ${error.message}`, "warn");
+    }
+  }, delayMs);
+}
+
 function connectStream() {
+  state.stream?.close();
   const source = new EventSource(`./events?credential=${encodeURIComponent(state.credential)}`);
+  state.stream = source;
   source.addEventListener("hello", () => {
     state.connected = true;
-    setStatus("Live", "ok");
+    setStatus(state.current ? "Live" : "Historical snapshot", state.current ? "ok" : "");
   });
   source.addEventListener("run", (event) => {
     const payload = JSON.parse(event.data);
     if (state.view === "run" && payload.run && (!state.run || payload.run.runId === state.run.runId)) {
       state.run = payload.run;
+      state.current = payload.current === true;
       render();
     }
+  });
+  source.addEventListener("credential", (event) => {
+    const payload = JSON.parse(event.data);
+    if (payload.credential) state.credential = payload.credential;
+  });
+  source.addEventListener("credential_expired", (event) => {
+    const payload = JSON.parse(event.data);
+    setStatus(`Credential expired: ${payload.reason}`, "warn");
   });
   source.addEventListener("focus", (event) => {
     const payload = JSON.parse(event.data);
@@ -169,6 +199,7 @@ async function loadRun(runId) {
       return;
     }
     state.run = payload.run;
+    state.current = payload.current === true;
     state.view = "run";
     const url = new URL(location.href);
     url.searchParams.set("runId", payload.run.runId);
@@ -300,6 +331,16 @@ function badge(label, tone = "neutral") {
 // ---------------------------------------------------------------------------
 
 function render() {
+  const active = document.activeElement;
+  const restoreFocus = active?.classList?.contains("controller-card")
+    ? { kind: "controller" }
+    : active?.closest?.(".stage")?.dataset?.nodeId
+      ? {
+        kind: active.classList?.contains("attempt") ? "attempt" : "node",
+        nodeId: active.closest(".stage").dataset.nodeId,
+        attemptId: active.dataset?.attemptId ?? null,
+      }
+      : null;
   dom.back.hidden = state.view === "run";
   dom.runsList.hidden = state.view !== "runs";
   dom.runsFilter.hidden = state.view !== "runs";
@@ -322,6 +363,15 @@ function render() {
   renderGraph();
   renderInspector();
   renderComposerTargets();
+  if (restoreFocus?.kind === "controller") {
+    dom.controller.querySelector(".controller-card")?.focus({ preventScroll: true });
+  } else if (restoreFocus?.nodeId) {
+    const stage = dom.canvas.querySelector(`.stage[data-node-id="${CSS.escape(restoreFocus.nodeId)}"]`);
+    const target = restoreFocus.kind === "attempt" && restoreFocus.attemptId
+      ? stage?.querySelector(`.attempt[data-attempt-id="${CSS.escape(restoreFocus.attemptId)}"]`)
+      : stage;
+    target?.focus({ preventScroll: true });
+  }
 }
 
 function renderSummary() {
@@ -349,7 +399,8 @@ function renderSummary() {
     return wrap;
   }));
 
-  if (!state.connected) setStatus("Reconnecting to the extension…", "warn");
+  if (!state.current) setStatus(`Historical snapshot · updated ${clockTime(run.updatedAt)}`, "");
+  else if (!state.connected) setStatus("Reconnecting to the extension…", "warn");
   else if (openIncidents > 0) setStatus(`${openIncidents} open incident${openIncidents === 1 ? "" : "s"}`, "warn");
   else setStatus(`Live · updated ${clockTime(run.updatedAt)}`, "ok");
 }
@@ -405,14 +456,6 @@ function renderController() {
   dom.controller.replaceChildren(card);
 }
 
-function nodeHeight(node, expanded) {
-  // The compact card now carries a focus row as well as the badge and meta
-  // rows, so the layout height has to account for it or cards overlap.
-  const base = 80;
-  if (!expanded) return base + (node.attempts.length > 1 ? 18 : 0);
-  return base + 18 + node.attempts.length * ROW_H;
-}
-
 function isExpanded(node) {
   return state.expandAll || state.expanded.has(node.nodeId);
 }
@@ -426,11 +469,17 @@ function renderGraph() {
   }
 
   const positions = new Map();
+  const cards = run.dag.nodes.map((node) => renderStage(node, { x: 0, y: 0 }));
+  dom.canvas.replaceChildren(...cards);
+  const measured = new Map(cards.map((card) => [
+    card.dataset.nodeId,
+    Math.ceil(card.getBoundingClientRect().height / state.zoom),
+  ]));
   let maxBottom = 0;
   for (const [column, nodes] of [...columns.entries()].sort((a, b) => a[0] - b[0])) {
     let top = 0;
     for (const node of nodes) {
-      const height = nodeHeight(node, isExpanded(node));
+      const height = measured.get(node.nodeId) ?? cardFallbackHeight(node);
       positions.set(node.nodeId, { x: column * (STAGE_W + GAP_X), y: top, height });
       top += height + GAP_Y;
       maxBottom = Math.max(maxBottom, top);
@@ -469,8 +518,16 @@ function renderGraph() {
     svg.append(path);
   }
 
-  const cards = run.dag.nodes.map((node) => renderStage(node, positions.get(node.nodeId)));
+  for (const card of cards) {
+    const position = positions.get(card.dataset.nodeId);
+    card.style.left = `${position.x}px`;
+    card.style.top = `${position.y}px`;
+  }
   dom.canvas.replaceChildren(svg, ...cards);
+}
+
+function cardFallbackHeight(node) {
+  return 96 + (isExpanded(node) ? 24 + node.attempts.length * ROW_H : 0);
 }
 
 function renderStage(node, position) {
@@ -542,6 +599,7 @@ function renderStage(node, position) {
         const row = make("li");
         const button = make("button", "attempt");
         button.type = "button";
+        button.dataset.attemptId = item.attemptId;
         button.setAttribute("aria-selected", String(state.selection?.attemptId === item.attemptId));
         button.append(make("span", "attempt__num", `#${item.attemptNumber}`));
         button.append(make("span", null, item.kind));
@@ -829,14 +887,14 @@ function renderTab(subject) {
       }
       if (run.priceSnapshots?.length) {
         parts.push(make("h3", null, "Price snapshots"));
-        parts.push(kvList(run.priceSnapshots.map((snapshot) => [snapshot.snapshotId, `${snapshot.models.length} models · ${clockTime(snapshot.at)}`])));
+        parts.push(kvList(run.priceSnapshots.map((snapshot) => [snapshot.snapshotId, `${snapshot.modelCount} models · ${clockTime(snapshot.at)}`])));
       }
       return parts;
     }
 
     case "diagnostics": {
       const relevant = run.incidents.filter((incident) =>
-        subject.kind === "controller" ? true : incident.nodeId === subject.node.nodeId);
+        subject.kind === "controller" ? true : incident.subjectNodeId === subject.node.nodeId);
       const parts = [make("h3", null, "Incidents")];
       if (relevant.length === 0) {
         parts.push(make("p", "empty", "No incidents for this selection."));
@@ -852,11 +910,12 @@ function renderTab(subject) {
         for (const [label, next] of [["Acknowledge", "acknowledged"], ["Resolve", "resolved"]]) {
           const button = make("button", "btn", label);
           button.type = "button";
-          button.disabled = (contractAxis("incident")?.terminal ?? []).includes(incident.state);
+          button.disabled = !state.current || (contractAxis("incident")?.terminal ?? []).includes(incident.state);
           button.addEventListener("click", async () => {
             button.disabled = true;
             try {
               const result = await api("acknowledgeIncident", {
+                runId: run.runId,
                 incidentId: incident.incidentId,
                 state: next,
                 reason: `${label} from the visualizer`,
@@ -965,7 +1024,12 @@ function renderComposerTargets() {
     return node;
   }));
   if (options.some((option) => option.value === previous)) dom.composerTarget.value = previous;
-  dom.composerSend.disabled = options.length === 0 || Boolean(run.outcome);
+  dom.composerSend.disabled = !state.current || options.length === 0 || Boolean(run.outcome);
+  if (!state.current) {
+    dom.composerNote.textContent = "Historical runs are read-only. Return to the attached run to send a message.";
+    dom.composerNote.dataset.tone = "";
+    return;
+  }
   if (run.outcome) {
     dom.composerNote.textContent = "The run reached an authoritative outcome; new messages are denied.";
     dom.composerNote.dataset.tone = "";
@@ -983,6 +1047,7 @@ dom.composer.addEventListener("submit", async (event) => {
   try {
     const selected = dom.composerTarget.selectedOptions[0];
     const result = await api("sendMessage", {
+      runId: state.run.runId,
       targetAppSessionId: target,
       targetNodeId: selected?.dataset.nodeId || null,
       body,

@@ -1,8 +1,9 @@
 import {
   existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync,
-  renameSync, rmSync, statSync, watch,
+  renameSync, rmSync, statSync, watch, openSync, writeSync, fsyncSync, closeSync,
+  constants as FS_CONSTANTS,
 } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { canonicalJson, sha256, LoopVizError, pad } from "./util.mjs";
 import { validateEvent } from "./contracts.mjs";
 
@@ -25,7 +26,10 @@ import { validateEvent } from "./contracts.mjs";
 export const DEFAULT_LIMITS = Object.freeze({
   maxEventsPerRun: 20000,
   maxRuns: 50,
-  maxRecordBytes: 262144,
+  maxRecordBytes: 1024 * 1024,
+  maxRunBytes: 100 * 1024 * 1024,
+  maxStoreBytes: 1024 * 1024 * 1024,
+  terminalRetentionMs: 90 * 24 * 60 * 60 * 1000,
   lockTtlMs: 5000,
   lockWaitMs: 4000,
 });
@@ -50,8 +54,23 @@ const STRUCTURAL_TYPES = new Set([
 /** Upper bound on how stale a writer's view of its peers' ordinals may be. */
 const CLOCK_REFRESH_MS = 1000;
 
-function fsSafe(segment) {
-  return String(segment).replace(/[^A-Za-z0-9._-]+/g, "_").slice(0, 96) || "unknown";
+export function encodePathSegment(segment) {
+  const value = String(segment);
+  if (value.length === 0) return "%EMPTY";
+  let encoded = encodeURIComponent(value).replace(/\./g, "%2E");
+  if (/^(con|prn|aux|nul|com[1-9]|lpt[1-9])$/i.test(encoded)) {
+    encoded = `%${encoded.charCodeAt(0).toString(16).toUpperCase()}${encoded.slice(1)}`;
+  }
+  return encoded;
+}
+
+export function decodePathSegment(segment) {
+  if (segment === "%EMPTY") return "";
+  try {
+    return decodeURIComponent(segment);
+  } catch {
+    return null;
+  }
 }
 
 function ensureDir(path) {
@@ -64,6 +83,64 @@ function readDirSafe(path) {
   } catch {
     return [];
   }
+}
+
+function directoryBytes(path) {
+  let total = 0;
+  for (const entry of readDirSafe(path)) {
+    const child = join(path, entry.name);
+    if (entry.isDirectory()) total += directoryBytes(child);
+    else if (entry.isFile()) {
+      try {
+        total += statSync(child).size;
+      } catch { /* a concurrent deletion simply contributes no bytes */ }
+    }
+  }
+  return total;
+}
+
+function syncDirectory(path) {
+  let descriptor = null;
+  try {
+    descriptor = openSync(path, "r");
+    fsyncSync(descriptor);
+  } catch (error) {
+    // Node/Windows rejects directory handles with EPERM. Event files use
+    // O_SYNC and an explicit file fsync there; POSIX additionally persists the
+    // containing directory here.
+    if (process.platform !== "win32" || error?.code !== "EPERM") throw error;
+  } finally {
+    if (descriptor !== null) closeSync(descriptor);
+  }
+}
+
+function durableExclusiveWrite(path, body) {
+  const flags = FS_CONSTANTS.O_CREAT | FS_CONSTANTS.O_EXCL | FS_CONSTANTS.O_WRONLY | FS_CONSTANTS.O_SYNC;
+  const descriptor = openSync(path, flags, 0o600);
+  try {
+    writeSync(descriptor, body, null, "utf8");
+    fsyncSync(descriptor);
+  } finally {
+    closeSync(descriptor);
+  }
+  syncDirectory(dirname(path));
+}
+
+function durableReplace(path, body) {
+  const tmp = `${path}.${process.pid}.${Date.now()}.tmp`;
+  const descriptor = openSync(
+    tmp,
+    FS_CONSTANTS.O_CREAT | FS_CONSTANTS.O_EXCL | FS_CONSTANTS.O_WRONLY | FS_CONSTANTS.O_SYNC,
+    0o600,
+  );
+  try {
+    writeSync(descriptor, body, null, "utf8");
+    fsyncSync(descriptor);
+  } finally {
+    closeSync(descriptor);
+  }
+  renameSync(tmp, path);
+  syncDirectory(dirname(path));
 }
 
 export function frameRecord(event) {
@@ -135,21 +212,67 @@ export function sortEvents(events) {
   return sorted;
 }
 
-export function openStore({ storeDir, sourceId, limits = DEFAULT_LIMITS, now = Date.now }) {
+export function openStore({ storeDir, sourceId, limits: configuredLimits = DEFAULT_LIMITS, now = Date.now }) {
   if (!storeDir) throw new LoopVizError("no_store_dir", "store directory is required");
-  const safeSource = fsSafe(sourceId);
+  const limits = { ...DEFAULT_LIMITS, ...configuredLimits };
+  const safeSource = encodePathSegment(sourceId);
   /** Run-global Lamport clock, advanced by our own writes and by every read. */
   const clockByRun = new Map();
   const clockScannedAt = new Map();
 
   const runsRoot = () => join(storeDir, "runs");
-  const runDir = (runId) => join(runsRoot(), fsSafe(runId));
+  const runDir = (runId) => join(runsRoot(), encodePathSegment(runId));
   const eventsDir = (runId) => join(runDir(runId), "events");
   const sourceDir = (runId) => join(eventsDir(runId), safeSource);
   const quarantineDir = (runId) => join(runDir(runId), "quarantine");
   const claimsDir = (runId) => join(runDir(runId), "claims");
   const locksDir = (runId) => join(runDir(runId), "locks");
   const indexDir = () => join(storeDir, "index");
+
+  function terminalInfo(runId) {
+    let outcomeAt = null;
+    for (const sourceEntry of readDirSafe(eventsDir(runId))) {
+      if (!sourceEntry.isDirectory()) continue;
+      for (const entry of readDirSafe(join(eventsDir(runId), sourceEntry.name))) {
+        if (!entry.isFile() || !entry.name.endsWith(".json")) continue;
+        try {
+          const parsed = parseRecord(readFileSync(join(eventsDir(runId), sourceEntry.name, entry.name), "utf8"));
+          if (parsed.ok && parsed.event.runId === runId && parsed.event.type === "run.outcome") {
+            outcomeAt = Math.max(outcomeAt ?? 0, Date.parse(parsed.event.recordedAt));
+          }
+        } catch { /* malformed records never prove terminal state */ }
+      }
+    }
+    return { terminal: outcomeAt !== null, outcomeAt };
+  }
+
+  function removeRun(runId) {
+    rmSync(runDir(runId), { recursive: true, force: true });
+    rmSync(join(indexDir(), `${encodePathSegment(runId)}.json`), { force: true });
+  }
+
+  function reclaimTerminalRuns(requiredBytes = 0, protectedRunId = null) {
+    const candidates = readDirSafe(runsRoot())
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => decodePathSegment(entry.name))
+      .filter((id) => id !== null && id !== protectedRunId)
+      .map((id) => ({ id, ...terminalInfo(id) }))
+      .filter((entry) => entry.terminal)
+      .sort((a, b) => a.outcomeAt - b.outcomeAt || a.id.localeCompare(b.id));
+    const removed = [];
+    const retentionCutoff = now() - limits.terminalRetentionMs;
+    for (const candidate of candidates.filter((entry) => entry.outcomeAt < retentionCutoff)) {
+      removeRun(candidate.id);
+      removed.push(candidate.id);
+    }
+    for (const candidate of candidates) {
+      if (removed.includes(candidate.id)) continue;
+      if (directoryBytes(storeDir) + requiredBytes <= limits.maxStoreBytes) break;
+      removeRun(candidate.id);
+      removed.push(candidate.id);
+    }
+    return removed;
+  }
 
   /** Raises the clock to at least `seq`; observing an event is what orders us after it. */
   function observe(runId, seq) {
@@ -208,12 +331,21 @@ export function openStore({ storeDir, sourceId, limits = DEFAULT_LIMITS, now = D
         const validation = validateEvent(candidate);
         if (!validation.ok) throw new LoopVizError("invalid_event", validation.reason, validation.errors);
         const framed = frameRecord(candidate);
-        if (Buffer.byteLength(framed, "utf8") > limits.maxRecordBytes) {
+        const recordBytes = Buffer.byteLength(framed, "utf8");
+        if (recordBytes > limits.maxRecordBytes) {
           throw new LoopVizError("record_too_large", `event ${candidate.type} exceeds ${limits.maxRecordBytes} bytes`);
+        }
+        const runBytes = directoryBytes(runDir(runId));
+        if (runBytes + recordBytes > limits.maxRunBytes) {
+          throw new LoopVizError("run_too_large", `run ${runId} exceeds ${limits.maxRunBytes} bytes`);
+        }
+        reclaimTerminalRuns(recordBytes, runId);
+        if (directoryBytes(storeDir) + recordBytes > limits.maxStoreBytes) {
+          throw new LoopVizError("store_too_large", `visualizer store exceeds ${limits.maxStoreBytes} bytes`);
         }
         const path = join(sourceDir(runId), `${pad(seq, SEQ_WIDTH)}.json`);
         try {
-          writeFileSync(path, framed, { flag: "wx", encoding: "utf8" });
+          durableExclusiveWrite(path, framed);
           return candidate;
         } catch (error) {
           if (error && error.code === "EEXIST" && attempt < 64) {
@@ -295,10 +427,10 @@ export function openStore({ storeDir, sourceId, limits = DEFAULT_LIMITS, now = D
     /** One-use claim. The first exclusive create wins; later callers observe it. */
     claim(runId, name, payload) {
       ensureDir(claimsDir(runId));
-      const path = join(claimsDir(runId), `${fsSafe(name)}.json`);
+      const path = join(claimsDir(runId), `${encodePathSegment(name)}.json`);
       const body = JSON.stringify({ at: new Date(now()).toISOString(), payload }, null, 2);
       try {
-        writeFileSync(path, body, { flag: "wx", encoding: "utf8" });
+        durableExclusiveWrite(path, body);
         return { claimed: true, existing: null };
       } catch (error) {
         if (error && error.code === "EEXIST") {
@@ -313,7 +445,7 @@ export function openStore({ storeDir, sourceId, limits = DEFAULT_LIMITS, now = D
     },
 
     readClaim(runId, name) {
-      const path = join(claimsDir(runId), `${fsSafe(name)}.json`);
+      const path = join(claimsDir(runId), `${encodePathSegment(name)}.json`);
       try {
         return JSON.parse(readFileSync(path, "utf8"));
       } catch {
@@ -324,7 +456,7 @@ export function openStore({ storeDir, sourceId, limits = DEFAULT_LIMITS, now = D
     /** Bounded expiring lock used only for mutable revisions. */
     async withLock(runId, name, fn, { ttlMs = limits.lockTtlMs, waitMs = limits.lockWaitMs } = {}) {
       ensureDir(locksDir(runId));
-      const path = join(locksDir(runId), `${fsSafe(name)}.lock`);
+      const path = join(locksDir(runId), `${encodePathSegment(name)}.lock`);
       const deadline = now() + waitMs;
       for (;;) {
         try {
@@ -361,7 +493,8 @@ export function openStore({ storeDir, sourceId, limits = DEFAULT_LIMITS, now = D
     listRunIds() {
       return readDirSafe(runsRoot())
         .filter((entry) => entry.isDirectory())
-        .map((entry) => entry.name);
+        .map((entry) => decodePathSegment(entry.name))
+        .filter((id) => id !== null);
     },
 
     runExists(runId) {
@@ -371,15 +504,10 @@ export function openStore({ storeDir, sourceId, limits = DEFAULT_LIMITS, now = D
     /** Index entries are a rebuildable cache; a missing or stale one is not an error. */
     writeIndexEntry(runId, summary) {
       ensureDir(indexDir());
-      const path = join(indexDir(), `${fsSafe(runId)}.json`);
-      const tmp = `${path}.${process.pid}.tmp`;
-      writeFileSync(tmp, JSON.stringify(summary, null, 2), "utf8");
+      const path = join(indexDir(), `${encodePathSegment(runId)}.json`);
       try {
-        // An atomic swap: a concurrent reader sees either the previous entry or
-        // the new one, never a missing file or a half-written one.
-        renameSync(tmp, path);
+        durableReplace(path, JSON.stringify(summary, null, 2));
       } catch (error) {
-        rmSync(tmp, { force: true });
         throw new LoopVizError("index_write_failed", `could not update index for ${runId}: ${error.message}`);
       }
     },
@@ -408,14 +536,16 @@ export function openStore({ storeDir, sourceId, limits = DEFAULT_LIMITS, now = D
         try {
           mtime = statSync(runDir(id)).mtimeMs;
         } catch { /* treat as oldest */ }
-        return { id, mtime };
+        return { id, mtime, ...terminalInfo(id) };
       }).sort((a, b) => b.mtime - a.mtime || (a.id < b.id ? -1 : 1));
       const dropped = [];
-      for (let i = keep; i < runs.length; i += 1) {
-        if (isProtected(runs[i].id)) continue;
-        rmSync(runDir(runs[i].id), { recursive: true, force: true });
-        rmSync(join(indexDir(), `${fsSafe(runs[i].id)}.json`), { force: true });
-        dropped.push(runs[i].id);
+      const retentionCutoff = now() - limits.terminalRetentionMs;
+      for (let i = 0; i < runs.length; i += 1) {
+        const run = runs[i];
+        if (isProtected(run.id) || !run.terminal) continue;
+        if (i < keep && run.outcomeAt >= retentionCutoff) continue;
+        removeRun(run.id);
+        dropped.push(run.id);
       }
       return dropped;
     },

@@ -66,6 +66,19 @@ function spec(runId, title, skill = "engineering-loop") {
   };
 }
 
+function parallelSpec(runId, title) {
+  return {
+    ...spec(runId, title),
+    nodes: [
+      { nodeId: "design", label: "Design", phase: "2", role: "worker", dependsOn: [] },
+      { nodeId: "contracts", label: "Contracts critique", phase: "3", role: "critique", dependsOn: ["design"] },
+      { nodeId: "operations", label: "Operations critique", phase: "3", role: "critique", dependsOn: ["design"] },
+      { nodeId: "boundaries", label: "Boundary critique", phase: "3", role: "critique", dependsOn: ["design"] },
+      { nodeId: "implementation", label: "Implementation", phase: "5", role: "worker", dependsOn: ["contracts", "operations", "boundaries"] },
+    ],
+  };
+}
+
 /** Completed historical run used to prove skill, status and time filtering. */
 async function scenarioArchived() {
   const now = clockFrom("2026-06-01T12:00:00.000Z");
@@ -80,8 +93,13 @@ async function scenarioArchived() {
     orch.setNodeState({ nodeId, state: "running", reason: "historical scenario" });
     orch.setAttemptState({ nodeId, attemptId, state: "running", reason: "historical scenario" });
     now.advance(1000 + index);
-    orch.setAttemptState({ nodeId, attemptId, state: "succeeded", reason: "historical scenario complete" });
-    orch.setNodeState({ nodeId, state: "succeeded", reason: "historical scenario complete" });
+    orch.settleEnvelope({
+      nodeId,
+      attemptId,
+      state: "succeeded",
+      reason: "historical scenario complete",
+      envelopeStatus: "COMPLETE",
+    });
   }
   orch.emit("run.outcome", {
     outcome: "completed",
@@ -228,8 +246,30 @@ async function scenarioUsage() {
   const orch = lead(now, { hostSessionId: "host-lead-3", appSessionId: "app-lead-3", pid: 9201 });
   orch.declareRun(spec("scn-usage", "Usage: blind window, model switch, single reconciliation"));
   orch.snapshotPrices([
-    { model: "claude-opus-5", creditsPerRequest: 1 },
-    { model: "gpt-5.4", creditsPerRequest: 0.5 },
+    {
+      id: "claude-opus-5",
+      name: "claude-opus-5",
+      billing: {
+        is_premium: true,
+        multiplier: 1,
+        token_prices: [
+          { token_type: "input", cost_per_batch: 0.01, batch_size: 1000 },
+          { token_type: "output", cost_per_batch: 0.03, batch_size: 1000 },
+        ],
+      },
+    },
+    {
+      id: "gpt-5.4",
+      name: "gpt-5.4",
+      billing: {
+        is_premium: true,
+        multiplier: 1,
+        token_prices: [
+          { token_type: "input", cost_per_batch: 0.005, batch_size: 1000 },
+          { token_type: "output", cost_per_batch: 0.015, batch_size: 1000 },
+        ],
+      },
+    },
   ]);
   const grant = orch.startAttempt({
     nodeId: "design", attemptId: "design-a1", attemptNumber: 1, kind: "initial",
@@ -287,25 +327,67 @@ async function scenarioUsage() {
   kid.close();
   const restarted = createReporter({
     storeDir, role: "child", hostSessionId: "host-design-3", appSessionId: "app-design-3",
-    extensionId: "plugin:engineering-loop:loop-execution-visualizer", pid: 9202, now, send,
+    extensionId: "plugin:engineering-loop:loop-execution-visualizer", pid: 9203, now, send,
   });
   restarted.attachRun("scn-usage");
   restarted.reconcileUsage(metrics, "checkpoint");
   restarted.flush();
 
   restarted.noteLifecycle({ phase: "end", reason: "child finished" });
-  orch.setAttemptState({ nodeId: "design", attemptId: "design-a1", state: "succeeded", reason: "envelope delivered" });  orch.flush();
+  orch.settleEnvelope({
+    nodeId: "design",
+    attemptId: "design-a1",
+    state: "succeeded",
+    reason: "envelope delivered",
+    envelopeStatus: "COMPLETE",
+  });
+  orch.flush();
   orch.close();
   restarted.close();
+}
+
+/** Parallel cards with retries exercise measured placement in both card modes. */
+async function scenarioParallelLayout() {
+  const now = clockFrom("2026-08-09T20:30:00.000Z");
+  const orch = lead(now, { hostSessionId: "host-layout", appSessionId: "app-layout", pid: 9401 });
+  orch.declareRun(parallelSpec("scn-parallel-layout", "Parallel critiques with expanded retry history"));
+  for (const nodeId of ["contracts", "operations", "boundaries"]) {
+    orch.startAttempt({
+      nodeId,
+      attemptId: `${nodeId}-a1`,
+      attemptNumber: 1,
+      kind: "initial",
+      model: "claude-opus-5",
+      reason: "parallel critique dispatched with enough detail to exercise measured card height",
+    });
+    orch.setNodeState({ nodeId, state: "running", reason: "parallel critique is running" });
+    orch.setAttemptState({ nodeId, attemptId: `${nodeId}-a1`, state: "running", reason: "reading design and contracts" });
+  }
+  orch.startAttempt({
+    nodeId: "operations",
+    attemptId: "operations-a2",
+    attemptNumber: 2,
+    kind: "retry",
+    model: "claude-opus-5",
+    reason: "retry retained beneath the original attempt to prove expanded height",
+  });
+  orch.setAttemptState({
+    nodeId: "operations",
+    attemptId: "operations-a2",
+    state: "running",
+    reason: "retry is collecting operational evidence",
+  });
+  orch.close();
 }
 
 await scenarioConnectionLost();
 await scenarioRecoveryPending();
 await scenarioUsage();
+await scenarioParallelLayout();
 await scenarioArchived();
 
 const reader = lead(clockFrom("2026-08-09T21:00:00.000Z"), { hostSessionId: "host-reader", appSessionId: "app-reader", pid: 9999 });
-for (const runId of ["scn-connection-lost", "scn-recovery-pending", "scn-parked", "scn-usage", "scn-archived"]) {
+for (const runId of ["scn-connection-lost", "scn-recovery-pending", "scn-parked", "scn-usage", "scn-parallel-layout", "scn-archived"]) {
   const run = reader.readRun(runId);
   const design = run.dag.nodes.find((n) => n.nodeId === "design");
   const attempt = design?.attempts?.[0] ?? null;

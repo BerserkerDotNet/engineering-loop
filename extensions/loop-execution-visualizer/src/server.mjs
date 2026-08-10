@@ -78,12 +78,14 @@ export function createLoopbackServer(options) {
 
   const bootstraps = new Map(); // token -> {issuedAt, usedAt}
   const credentials = new Map(); // credential -> {issuedAt, expiresAt, bootstrap}
+  const expiredCredentials = new Map(); // credential -> {reason, at}
   const nonces = new Map(); // nonce -> firstSeenMs
-  const streams = new Set();
+  const streams = new Map(); // response -> {credential}
   const staticRoot = resolvePath(uiDir);
 
   let server = null;
   let port = 0;
+  let sweepTimer = null;
 
   function issueBootstrap() {
     const token = randomToken(24);
@@ -92,15 +94,76 @@ export function createLoopbackServer(options) {
     return token;
   }
 
+  function issueCredential(bootstrap = null) {
+    const credential = randomToken(32);
+    credentials.set(credential, {
+      issuedAt: now(),
+      expiresAt: now() + credentialTtlMs,
+      maxLifetimeMs: credentialMaxLifetimeMs,
+      bootstrap,
+    });
+    return credential;
+  }
+
+  function closeCredentialStreams(credential, reason) {
+    for (const [stream, binding] of [...streams]) {
+      if (binding.credential !== credential) continue;
+      streams.delete(stream);
+      try {
+        stream.write(`event: credential_expired\ndata: ${JSON.stringify({ reason })}\n\n`);
+        stream.end();
+      } catch { /* already closed */ }
+    }
+  }
+
+  function rotateStreamCredentials(current) {
+    const byCredential = new Map();
+    for (const [stream, binding] of streams) {
+      const group = byCredential.get(binding.credential) ?? [];
+      group.push([stream, binding]);
+      byCredential.set(binding.credential, group);
+    }
+    for (const [credential, group] of byCredential) {
+      const record = credentials.get(credential);
+      if (!record) continue;
+      const hardExpiry = record.issuedAt + record.maxLifetimeMs;
+      const rotateAt = Math.min(record.expiresAt, hardExpiry) - Math.min(CREDENTIAL_RENEW_MS, credentialTtlMs / 2);
+      if (current < rotateAt) continue;
+      const replacement = issueCredential();
+      for (const [stream, binding] of group) {
+        try {
+          stream.write(`event: credential\ndata: ${JSON.stringify({
+            credential: replacement,
+            expiresInMs: credentialTtlMs,
+          })}\n\n`);
+          binding.credential = replacement;
+        } catch {
+          streams.delete(stream);
+        }
+      }
+      credentials.delete(credential);
+    }
+  }
+
   function sweep() {
     const current = now();
+    rotateStreamCredentials(current);
     for (const [token, entry] of bootstraps) {
       if (entry.usedAt !== null || current - entry.issuedAt > bootstrapTtlMs) {
         if (entry.usedAt === null || current - entry.usedAt > bootstrapTtlMs) bootstraps.delete(token);
       }
     }
     for (const [credential, entry] of credentials) {
-      if (current > entry.expiresAt) credentials.delete(credential);
+      const hardExpiry = entry.issuedAt + entry.maxLifetimeMs;
+      if (current > entry.expiresAt || current > hardExpiry) {
+        const reason = current > hardExpiry ? "instance credential reached its maximum lifetime" : "instance credential expired";
+        expiredCredentials.set(credential, { reason, at: current });
+        credentials.delete(credential);
+        closeCredentialStreams(credential, reason);
+      }
+    }
+    for (const [credential, entry] of expiredCredentials) {
+      if (current - entry.at > credentialMaxLifetimeMs) expiredCredentials.delete(credential);
     }
     for (const [nonce, seen] of nonces) {
       if (current - seen > NONCE_WINDOW_MS) nonces.delete(nonce);
@@ -119,13 +182,7 @@ export function createLoopbackServer(options) {
     if (record.usedAt !== null) return { ok: false, reason: "bootstrap token already redeemed" };
     if (now() - record.issuedAt > bootstrapTtlMs) return { ok: false, reason: "bootstrap token expired" };
     record.usedAt = now();
-    const credential = randomToken(32);
-    credentials.set(credential, {
-      issuedAt: now(),
-      expiresAt: now() + credentialTtlMs,
-      maxLifetimeMs: credentialMaxLifetimeMs,
-      bootstrap: key,
-    });
+    const credential = issueCredential(key);
     return { ok: true, credential, expiresInMs: credentialTtlMs, renewAfterMs: Math.min(CREDENTIAL_RENEW_MS, credentialTtlMs / 2) };
   }
 
@@ -136,7 +193,10 @@ export function createLoopbackServer(options) {
       return { ok: false, status: 401, reason: "missing instance credential" };
     }
     const found = [...credentials.entries()].find(([candidate]) => constantTimeEquals(candidate, presented));
-    if (!found) return { ok: false, status: 401, reason: "unknown instance credential" };
+    if (!found) {
+      const expired = [...expiredCredentials.entries()].find(([candidate]) => constantTimeEquals(candidate, presented));
+      return { ok: false, status: 401, reason: expired?.[1].reason ?? "unknown instance credential" };
+    }
     const [credential, record] = found;
     if (now() > record.expiresAt) {
       credentials.delete(credential);
@@ -240,8 +300,9 @@ export function createLoopbackServer(options) {
   }
 
   function broadcast(eventName, payload) {
+    sweep();
     const frame = `event: ${eventName}\ndata: ${JSON.stringify(payload)}\n\n`;
-    for (const stream of [...streams]) {
+    for (const [stream] of [...streams]) {
       try {
         stream.write(frame);
       } catch (error) {
@@ -287,6 +348,16 @@ export function createLoopbackServer(options) {
       if (!nonce.ok) return sendJson(res, nonce.status, { error: nonce.reason });
 
       const name = pathname.slice("/api/".length);
+      if (name === "renew") {
+        const credential = issueCredential();
+        credentials.delete(auth.credential);
+        closeCredentialStreams(auth.credential, "credential rotated");
+        return sendJson(res, 200, {
+          credential,
+          expiresInMs: credentialTtlMs,
+          renewAfterMs: Math.min(CREDENTIAL_RENEW_MS, credentialTtlMs / 2),
+        });
+      }
       const handler = handlers[name];
       if (!handler) return sendJson(res, 404, { error: `unknown endpoint ${name}` });
 
@@ -336,7 +407,7 @@ export function createLoopbackServer(options) {
         connection: "keep-alive",
       });
       res.write(`event: hello\ndata: ${JSON.stringify({ at: new Date(now()).toISOString() })}\n\n`);
-      streams.add(res);
+      streams.set(res, { credential: found[0] });
       req.on("close", () => streams.delete(res));
       return undefined;
     }
@@ -355,6 +426,7 @@ export function createLoopbackServer(options) {
     issueBootstrap,
     redeemBootstrap,
     broadcast,
+    sweep,
     async start() {
       if (server) return port;
       server = createServer((req, res) => {
@@ -371,10 +443,14 @@ export function createLoopbackServer(options) {
         server.listen(0, "127.0.0.1", done);
       });
       port = server.address().port;
+      sweepTimer = setInterval(sweep, Math.min(1000, Math.max(50, credentialTtlMs / 2)));
+      sweepTimer.unref?.();
       return port;
     },
     async stop() {
-      for (const stream of [...streams]) {
+      if (sweepTimer) clearInterval(sweepTimer);
+      sweepTimer = null;
+      for (const [stream] of [...streams]) {
         try {
           stream.end();
         } catch {

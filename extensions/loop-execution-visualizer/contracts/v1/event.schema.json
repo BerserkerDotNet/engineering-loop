@@ -135,7 +135,10 @@
         "properties": {
           "nodeId": { "$ref": "#/$defs/id" },
           "state": { "type": "string", "minLength": 1, "maxLength": 32 },
-          "reason": { "type": "string", "minLength": 1, "maxLength": 2000 }
+          "reason": { "type": "string", "minLength": 1, "maxLength": 2000 },
+          "attemptId": { "$ref": "#/$defs/nullableId" },
+          "envelopeStatus": { "$ref": "#/$defs/nullableString" },
+          "envelopeSequence": { "type": ["integer", "null"], "minimum": 0 }
         }
       },
       "attempt.started": {
@@ -157,7 +160,9 @@
               "status": { "type": "string", "minLength": 1, "maxLength": 64 },
               "sequence": { "type": ["integer", "null"], "minimum": 0 }
             }
-          }
+          },
+          "grantSecretHash": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+          "grantExpiresAt": { "$ref": "#/$defs/isoTime" }
         }
       },
       "attempt.state": {
@@ -168,8 +173,7 @@
           "nodeId": { "$ref": "#/$defs/id" },
           "attemptId": { "$ref": "#/$defs/id" },
           "state": { "type": "string", "minLength": 1, "maxLength": 32 },
-          "reason": { "type": "string", "minLength": 1, "maxLength": 2000 },
-          "authoritative": { "type": "boolean" }
+          "reason": { "type": "string", "minLength": 1, "maxLength": 2000 }
         }
       },
       "session.bound": {
@@ -182,7 +186,9 @@
           "appSessionId": { "$ref": "#/$defs/id" },
           "hostSessionId": { "$ref": "#/$defs/id" },
           "grantId": { "$ref": "#/$defs/nullableId" },
-          "workingDirectory": { "$ref": "#/$defs/nullableString" }
+          "workingDirectory": { "$ref": "#/$defs/nullableString" },
+          "redeemedAt": { "$ref": "#/$defs/isoTime" },
+          "redemptionProof": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" }
         }
       },
       "session.lifecycle": {

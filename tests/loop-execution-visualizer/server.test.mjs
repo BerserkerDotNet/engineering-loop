@@ -338,6 +338,48 @@ test("loopback: a credential slides but never outlives its hard lifetime", async
   }, { now: () => clock, credentialTtlMs: 10_000, credentialMaxLifetimeMs: 20_000 });
 });
 
+test("loopback: a passive event stream rotates credentials before expiry and revokes the old credential", async () => {
+  let clock = 1_000;
+  await withServer(async ({ server, base, port }) => {
+    const token = server.issueBootstrap();
+    const { credential } = await (await fetch(`${base}/bootstrap`, {
+      method: "POST",
+      headers: sameOrigin(port),
+      body: JSON.stringify({ bootstrap: token }),
+    })).json();
+    const controller = new AbortController();
+    const stream = await fetch(`${base}/events?credential=${encodeURIComponent(credential)}`, {
+      headers: { "sec-fetch-site": "same-origin", origin: `http://127.0.0.1:${port}` },
+      signal: controller.signal,
+    });
+    const reader = stream.body.getReader();
+    const decoder = new TextDecoder();
+    assert.match(decoder.decode((await reader.read()).value), /event: hello/);
+
+    clock += 6_000;
+    server.sweep();
+    const rotatedFrame = decoder.decode((await reader.read()).value);
+    assert.match(rotatedFrame, /event: credential/);
+    const rotated = JSON.parse(rotatedFrame.match(/data: (.+)\n/)[1]).credential;
+    assert.notEqual(rotated, credential);
+
+    const oldResponse = await fetch(`${base}/api/ping`, {
+      method: "POST",
+      headers: sameOrigin(port, { "x-loopviz-credential": credential, "x-loopviz-nonce": nonce("old-rotated") }),
+      body: "{}",
+    });
+    assert.equal(oldResponse.status, 401);
+    const renewedResponse = await fetch(`${base}/api/ping`, {
+      method: "POST",
+      headers: sameOrigin(port, { "x-loopviz-credential": rotated, "x-loopviz-nonce": nonce("new-rotated") }),
+      body: "{}",
+    });
+    assert.equal(renewedResponse.status, 200);
+    controller.abort();
+    await reader.cancel().catch(() => {});
+  }, { now: () => clock, credentialTtlMs: 10_000, credentialMaxLifetimeMs: 20_000 });
+});
+
 test("loopback: the event stream count is capped so a reload loop cannot exhaust the server", async () => {
   await withServer(async ({ server, base, port }) => {
     const token = server.issueBootstrap();
