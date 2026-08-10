@@ -7,15 +7,18 @@ const params = new URLSearchParams(location.search);
 const BOOTSTRAP = params.get("bootstrap") ?? "";
 const INITIAL_RUN = params.get("runId") || null;
 
+// The design fixes these eight tabs and their order. They are the contract the
+// inspector is checked against, so they are declared once here and consumed by
+// both the tab strip and the panel renderer.
 const TABS = [
   { id: "overview", label: "Overview" },
-  { id: "prompt", label: "Prompt" },
   { id: "plan", label: "Plan" },
-  { id: "progress", label: "Progress" },
-  { id: "details", label: "Details" },
-  { id: "usage", label: "Usage" },
-  { id: "incidents", label: "Incidents" },
+  { id: "prompt", label: "Prompt" },
+  { id: "timeline", label: "Timeline" },
   { id: "messages", label: "Messages" },
+  { id: "usage", label: "Usage/Cost" },
+  { id: "outputs", label: "Outputs" },
+  { id: "diagnostics", label: "Diagnostics" },
 ];
 
 const STAGE_W = 236;
@@ -142,6 +145,10 @@ function connectStream() {
 function setStatus(text, tone = "") {
   dom.status.textContent = text;
   dom.status.dataset.tone = tone;
+  // A routine tick and an incident must not be announced with the same urgency.
+  // Assertive is reserved for facts an operator has to act on, so screen reader
+  // users are not interrupted every second by a heartbeat update.
+  dom.status.setAttribute("aria-live", tone === "bad" || tone === "warn" ? "assertive" : "polite");
 }
 
 // ---------------------------------------------------------------------------
@@ -196,12 +203,18 @@ function clockTime(iso) {
 }
 
 /**
+ * The single word this UI uses for a fact the run does not carry. Defined once
+ * so a missing model, a missing heartbeat and a missing cost never appear in
+ * three different spellings.
+ */
+const UNAVAILABLE = "Unavailable";
+
+/**
  * Cost is only ever labelled "actual" when the projection says the provider
  * billed real currency. Copilot credits are always estimated or partial.
  */
 function costLabel(usage) {
-  if (!usage) return "—";
-  if (usage.confidence === "unavailable") return "unavailable";
+  if (!usage || usage.confidence === "unavailable") return UNAVAILABLE;
   // Show the reconciled total, not just what live sampling happened to catch.
   const credits = usage.totalCredits ?? usage.credits ?? 0;
   const amount = usage.currency
@@ -211,18 +224,41 @@ function costLabel(usage) {
   return `${amount} (${suffix})`;
 }
 
-function healthTone(health) {
-  if (health === "connection_lost") return "lost";
-  if (health === "healthy" || health === "recovered") return "ok";
-  if (health === "ended") return "neutral";
-  return "neutral";
+/**
+ * State vocabulary lookups.
+ *
+ * Every word and colour comes from the contract the extension shipped with, so
+ * the renderer can never invent a state, mislabel one, or drift out of step
+ * when the contract changes.
+ */
+function contractAxis(axis) {
+  return state.info?.contract?.[axis] ?? null;
 }
 
-function stateTone(value) {
-  if (["succeeded", "completed", "accepted", "resolved"].includes(value)) return "ok";
-  if (["failed", "denied", "rejected"].includes(value)) return "bad";
-  if (["waiting", "blocked", "expired", "recovery_pending", "awaiting_children"].includes(value)) return "warn";
-  return "neutral";
+function stateLabel(axis, value) {
+  if (value === undefined || value === null || value === "") return UNAVAILABLE;
+  return contractAxis(axis)?.labels?.[value] ?? String(value).replace(/_/g, " ");
+}
+
+function stateTone(axis, value) {
+  return contractAxis(axis)?.tones?.[value] ?? "neutral";
+}
+
+function isSettledNode(value) {
+  return (contractAxis("node")?.settled ?? []).includes(value);
+}
+
+function expectedLabel(expected) {
+  if (!expected) return null;
+  const target = expected.sequence === null || expected.sequence === undefined
+    ? expected.status
+    : `${expected.status} · sequence ${expected.sequence}`;
+  return expected.satisfied ? `${target} (received)` : `${target} (outstanding)`;
+}
+
+function firstLine(value) {
+  const line = String(value).split("\n").find((candidate) => candidate.trim().length > 0) ?? "";
+  return line.length > 72 ? `${line.slice(0, 71)}…` : line;
 }
 
 function text(node, value) {
@@ -276,13 +312,12 @@ function renderSummary() {
   dom.title.textContent = run.title || run.runId;
   dom.title.title = `${run.skill} · ${run.runId}`;
 
-  const settled = ["succeeded", "failed", "skipped", "canceled", "replaced"];
-  const done = run.dag.nodes.filter((n) => settled.includes(n.state)).length;
-  const openIncidents = run.incidents.filter((i) => !["resolved", "expired"].includes(i.state)).length;
+  const done = run.dag.nodes.filter((n) => isSettledNode(n.state)).length;
+  const openIncidents = run.incidents.filter((i) => !(contractAxis("incident")?.terminal ?? []).includes(i.state)).length;
 
   const facts = [
     ["Skill", run.skill],
-    ["State", run.outcome ? `${run.state} · ${run.outcome.outcome}` : run.state],
+    ["State", run.outcome ? `${stateLabel("controller", run.state)} · ${run.outcome.outcome}` : stateLabel("controller", run.state)],
     ["Stages", `${done}/${run.dag.nodes.length}`],
     ["Elapsed", duration(run.elapsedMs)],
     ["Cost", costLabel(run.usage)],
@@ -303,19 +338,48 @@ function renderSummary() {
 }
 
 function renderController() {
-  const controller = state.run.controller;
+  const run = state.run;
+  const controller = run.controller;
   const card = make("button", "controller-card");
   card.type = "button";
   card.setAttribute("aria-selected", String(state.selection?.kind === "controller"));
   card.append(make("span", "controller-card__pin", "Orchestrator"));
   card.append(make("span", "controller-card__name", controller.label));
-  card.append(badge(controller.workflowState.replace(/_/g, " "), stateTone(controller.workflowState)));
-  card.append(badge(`host ${controller.hostActivity.replace(/_/g, " ")}`, "neutral"));
-  card.append(badge(controller.session.health.replace(/_/g, " "), healthTone(controller.session.health)));
+  card.append(badge(stateLabel("controller", controller.workflowState), stateTone("controller", controller.workflowState)));
+  // Host activity is deliberately shown as a separate, subordinate fact: an
+  // idle host is never the same thing as a completed run.
+  card.append(badge(`host ${stateLabel("hostActivity", controller.hostActivity)}`, stateTone("hostActivity", controller.hostActivity)));
+  card.append(badge(stateLabel("health", controller.session.health), stateTone("health", controller.session.health)));
   card.append(make("span", "stage__meta", duration(controller.elapsedMs)));
+  card.append(make("span", "stage__meta", costLabel(controller.usage)));
+
+  // The counts an operator needs to answer "what is this run waiting on?"
+  // without opening every stage.
+  const counts = new Map();
+  for (const node of run.dag.nodes) counts.set(node.state, (counts.get(node.state) ?? 0) + 1);
+  const summary = [...counts.entries()]
+    .map(([value, count]) => `${count} ${stateLabel("node", value).toLowerCase()}`)
+    .join(" · ");
+  if (summary) card.append(make("span", "stage__meta", summary));
+
+  const waitingNodes = (contractAxis("node")?.waiting ?? []);
+  const pendingApproval = run.dag.nodes.filter((n) => n.state === "waiting_approval").length;
+  const pendingInput = run.dag.nodes.filter((n) => n.state === "waiting_input").length;
+  const openIncidents = run.incidents.filter((i) => !(contractAxis("incident")?.terminal ?? []).includes(i.state)).length;
   if (controller.waitingOnNodeIds?.length) {
     card.append(badge(`waiting on ${controller.waitingOnNodeIds.length}`, "warn"));
+  } else if (run.dag.nodes.some((n) => waitingNodes.includes(n.state))) {
+    card.append(badge("stages waiting", "warn"));
   }
+  if (pendingApproval > 0) card.append(badge(`${pendingApproval} awaiting approval`, "warn"));
+  if (pendingInput > 0) card.append(badge(`${pendingInput} awaiting input`, "warn"));
+  if (openIncidents > 0) card.append(badge(`${openIncidents} open incident${openIncidents === 1 ? "" : "s"}`, "bad"));
+  // Freshness is what tells an operator whether they are looking at live data
+  // or at the last thing that arrived before a stall.
+  card.append(make("span", "stage__meta", controller.session.lastHeartbeatAt
+    ? `heartbeat ${clockTime(controller.session.lastHeartbeatAt)}`
+    : `heartbeat ${UNAVAILABLE}`));
+
   card.addEventListener("click", () => {
     state.selection = { kind: "controller", nodeId: null, attemptId: null };
     render();
@@ -325,7 +389,9 @@ function renderController() {
 }
 
 function nodeHeight(node, expanded) {
-  const base = 62;
+  // The compact card now carries a focus row as well as the badge and meta
+  // rows, so the layout height has to account for it or cards overlap.
+  const base = 80;
   if (!expanded) return base + (node.attempts.length > 1 ? 18 : 0);
   return base + 18 + node.attempts.length * ROW_H;
 }
@@ -375,6 +441,14 @@ function renderGraph() {
     const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
     path.setAttribute("d", `M ${x1} ${y1} C ${mid} ${y1}, ${mid} ${y2}, ${x2} ${y2}`);
     path.dataset.added = String(edge.addedDuringRun === true);
+    // The graph itself is aria-hidden because the stage cards carry the same
+    // relationships in text, but a title still gives a sighted user hovering a
+    // dashed line the reason it is dashed rather than leaving it to be guessed.
+    const title = document.createElementNS("http://www.w3.org/2000/svg", "title");
+    title.textContent = edge.addedDuringRun === true
+      ? `${edge.from} → ${edge.to} (added during run)`
+      : `${edge.from} → ${edge.to}`;
+    path.append(title);
     svg.append(path);
   }
 
@@ -393,7 +467,7 @@ function renderStage(node, position) {
   card.setAttribute("aria-selected", String(state.selection?.kind !== "controller" && state.selection?.nodeId === node.nodeId));
 
   const attempt = node.attempts[node.attempts.length - 1];
-  const label = `${node.label}, ${node.state}${node.addedDuringRun ? ", added during run" : ""}${attempt ? `, attempt ${attempt.attemptNumber} ${attempt.state}` : ""}`;
+  const label = `${node.label}, ${stateLabel("node", node.state)}${node.addedDuringRun ? ", added during run" : ""}${attempt ? `, attempt ${attempt.attemptNumber} ${stateLabel("attempt", attempt.state)}` : ""}`;
   card.setAttribute("aria-label", label);
 
   const head = make("div", "stage__head");
@@ -402,18 +476,31 @@ function renderStage(node, position) {
   card.append(head);
 
   const badges = make("div", "stage__meta");
-  badges.append(badge(node.state, stateTone(node.state)));
+  badges.append(badge(stateLabel("node", node.state), stateTone("node", node.state)));
   if (node.addedDuringRun) badges.append(badge("Added during run", "neutral"));
   if (attempt?.session?.health && attempt.session.health !== "unknown") {
-    badges.append(badge(attempt.session.health.replace(/_/g, " "), healthTone(attempt.session.health)));
+    badges.append(badge(stateLabel("health", attempt.session.health), stateTone("health", attempt.session.health)));
   }
   card.append(badges);
 
   const meta = make("div", "stage__meta");
   meta.append(make("span", null, duration(node.elapsedMs)));
-  if (attempt?.model) meta.append(make("span", null, attempt.model));
+  meta.append(make("span", null, attempt?.model ?? UNAVAILABLE));
   meta.append(make("span", null, costLabel(node.usage)));
   card.append(meta);
+
+  // Plan progress and current focus are what make a running stage readable at a
+  // glance; the design requires both on the compact card, not only in the
+  // inspector.
+  const focus = make("div", "stage__meta");
+  const progress = attempt?.semantics?.progress ?? null;
+  focus.append(make("span", "stage__focus", progress ? firstLine(progress) : "No progress reported"));
+  const activity = attempt?.session?.activity;
+  if (activity && activity !== "unknown") {
+    const detail = attempt.session.activityDetail;
+    focus.append(make("span", "stage__focus", detail ? `${stateLabel("hostActivity", activity)} · ${detail}` : stateLabel("hostActivity", activity)));
+  }
+  card.append(focus);
 
   if (node.attempts.length > 0) {
     const expanded = isExpanded(node);
@@ -441,10 +528,10 @@ function renderStage(node, position) {
         button.setAttribute("aria-selected", String(state.selection?.attemptId === item.attemptId));
         button.append(make("span", "attempt__num", `#${item.attemptNumber}`));
         button.append(make("span", null, item.kind));
-        button.append(badge(item.state, stateTone(item.state)));
-        if (item.session.health === "connection_lost") button.append(badge("connection lost", "lost"));
+        button.append(badge(stateLabel("attempt", item.state), stateTone("attempt", item.state)));
+        if (item.session.health === "connection_lost") button.append(badge("Connection lost", "bad"));
         button.append(make("span", "attempt__num", duration(item.elapsedMs)));
-        button.setAttribute("aria-label", `Attempt ${item.attemptNumber}, ${item.kind}, ${item.state}, ${duration(item.elapsedMs)}`);
+        button.setAttribute("aria-label", `Attempt ${item.attemptNumber}, ${item.kind}, ${stateLabel("attempt", item.state)}, ${duration(item.elapsedMs)}`);
         button.addEventListener("click", (event) => {
           event.stopPropagation();
           state.selection = { kind: "attempt", nodeId: node.nodeId, attemptId: item.attemptId };
@@ -525,8 +612,8 @@ function renderInspector() {
 
   dom.inspectorTitle.textContent = subject.label;
   dom.inspectorSubtitle.textContent = subject.kind === "controller"
-    ? `Controller · ${subject.controller.workflowState.replace(/_/g, " ")} · host ${subject.controller.hostActivity.replace(/_/g, " ")}`
-    : `${subject.node.state}${subject.attempt ? ` · attempt ${subject.attempt.attemptNumber} (${subject.attempt.kind})` : ""}`;
+    ? `Controller · ${stateLabel("controller", subject.controller.workflowState)} · host ${stateLabel("hostActivity", subject.controller.hostActivity)}`
+    : `${stateLabel("node", subject.node.state)}${subject.attempt ? ` · attempt ${subject.attempt.attemptNumber} (${subject.attempt.kind}) · ${stateLabel("attempt", subject.attempt.state)}` : ""}`;
 
   dom.tabs.replaceChildren(...TABS.map((tab) => {
     const button = make("button", "tab", tab.label);
@@ -557,11 +644,18 @@ function renderInspector() {
   dom.panel.replaceChildren(...renderTab(subject));
 }
 
+/**
+ * Renders label/value pairs. A field the run does not carry is shown as
+ * `Unavailable` rather than omitted, because the design requires a missing
+ * field to be visibly missing instead of silently absent from the list.
+ */
 function kvList(pairs) {
   const list = make("dl", "kv");
   for (const [key, value] of pairs) {
-    if (value === undefined || value === null || value === "") continue;
-    list.append(make("dt", null, key), make("dd", null, String(value)));
+    const empty = value === undefined || value === null || value === "";
+    const dd = make("dd", null, empty ? UNAVAILABLE : String(value));
+    if (empty) dd.dataset.unavailable = "true";
+    list.append(make("dt", null, key), dd);
   }
   return list;
 }
@@ -581,27 +675,34 @@ function renderTab(subject) {
       if (subject.kind === "controller") {
         const controller = subject.controller;
         parts.push(kvList([
-          ["Workflow", controller.workflowState.replace(/_/g, " ")],
-          ["Host activity", controller.hostActivity.replace(/_/g, " ")],
-          ["Health", controller.session.health.replace(/_/g, " ")],
+          ["Workflow", stateLabel("controller", controller.workflowState)],
+          ["Host activity", stateLabel("hostActivity", controller.hostActivity)],
+          ["Activity detail", controller.hostActivityDetail],
+          ["Activity since", clockTime(controller.hostActivitySince)],
+          ["Health", stateLabel("health", controller.session.health)],
           ["Waiting on", controller.waitingOnNodeIds?.join(", ")],
           ["App session", controller.session.appSessionId],
+          ["Working directory", controller.session.workingDirectory],
+          ["Last heartbeat", clockTime(controller.session.lastHeartbeatAt)],
           ["Elapsed", duration(controller.elapsedMs)],
           ["Reason", controller.stateReason],
         ]));
-        if (["idle", "ended"].includes(controller.hostActivity)) {
+        // Which host states are not a completion signal is a contract fact, so
+        // the reassurance appears for every such state rather than for a list
+        // this file happened to remember.
+        if ((contractAxis("hostActivity")?.neverImpliesCompletion ?? []).includes(controller.hostActivity)) {
           parts.push(make("p", "empty",
-            "The orchestrator host is idle. That is host activity only and never means the run completed."));
+            `The orchestrator host is ${stateLabel("hostActivity", controller.hostActivity).toLowerCase()}. `
+            + "That is host activity only and never means the run completed."));
         }
-        parts.push(make("h3", null, "Timeline"), timeline(controller.timeline));
       } else {
         const node = subject.node;
         parts.push(kvList([
           ["Stage", node.label],
-          ["State", node.state],
+          ["State", stateLabel("node", node.state)],
           ["Phase", node.phase],
           ["Role", node.role],
-          ["Depends on", node.dependsOn.join(", ") || "—"],
+          ["Depends on", node.dependsOn.join(", ")],
           ["Added during run", node.addedDuringRun ? "yes" : "no"],
           ["Attempts", String(node.attempts.length)],
           ["Elapsed", duration(node.elapsedMs)],
@@ -611,16 +712,19 @@ function renderTab(subject) {
           parts.push(make("h3", null, `Attempt ${subject.attempt.attemptNumber}`));
           parts.push(kvList([
             ["Kind", subject.attempt.kind],
-            ["State", subject.attempt.state],
+            ["State", stateLabel("attempt", subject.attempt.state)],
             ["Authoritative failure", subject.attempt.authoritativeFailure ? "yes" : "no"],
             ["Model", subject.attempt.model],
-            ["Health", subject.attempt.session.health.replace(/_/g, " ")],
+            ["Health", stateLabel("health", subject.attempt.session.health)],
+            ["Host activity", stateLabel("hostActivity", subject.attempt.session.activity)],
+            ["Activity detail", subject.attempt.session.activityDetail],
             ["App session", subject.attempt.session.appSessionId],
+            ["Working directory", subject.attempt.session.workingDirectory],
             ["Last heartbeat", clockTime(subject.attempt.session.lastHeartbeatAt)],
+            ["Expected envelope", expectedLabel(subject.attempt.expected)],
             ["Elapsed", duration(subject.attempt.elapsedMs)],
             ["Reason", subject.attempt.stateReason],
           ]));
-          parts.push(make("h3", null, "Timeline"), timeline(subject.attempt.timeline));
         }
       }
       return parts;
@@ -630,10 +734,38 @@ function renderTab(subject) {
       return semanticField(subject, "prompt", "No prompt was reported for this stage.");
     case "plan":
       return semanticField(subject, "plan", "No plan was reported for this stage.");
-    case "progress":
-      return semanticField(subject, "progress", "No progress note was reported for this stage.");
-    case "details":
-      return semanticField(subject, "details", "No details were reported for this stage.");
+
+    case "timeline": {
+      const entries = subject.kind === "controller"
+        ? subject.controller.timeline
+        : (subject.attempt?.timeline ?? []);
+      const parts = [];
+      if (subject.kind !== "controller" && !subject.attempt) {
+        parts.push(make("p", "empty", "Select an attempt to see its timeline."));
+        return parts;
+      }
+      parts.push(timeline(entries));
+      return parts;
+    }
+
+    case "outputs": {
+      const semantics = subject.attempt?.semantics ?? subject.controller?.semantics ?? null;
+      const parts = [];
+      parts.push(make("h3", null, "Progress"));
+      parts.push(...semanticField(subject, "progress", "No progress note was reported for this stage."));
+      parts.push(make("h3", null, "Details"));
+      parts.push(...semanticField(subject, "details", "No details were reported for this stage."));
+      parts.push(make("h3", null, "Artifacts"));
+      const artifacts = semantics?.artifacts ?? [];
+      if (artifacts.length === 0) {
+        parts.push(make("p", "empty", "No artifacts were reported for this stage."));
+      } else {
+        const list = make("ul", "timeline");
+        for (const artifact of artifacts) list.append(make("li", null, String(artifact)));
+        parts.push(list);
+      }
+      return parts;
+    }
 
     case "usage": {
       const usage = subject.kind === "controller"
@@ -669,22 +801,25 @@ function renderTab(subject) {
       return parts;
     }
 
-    case "incidents": {
+    case "diagnostics": {
       const relevant = run.incidents.filter((incident) =>
         subject.kind === "controller" ? true : incident.nodeId === subject.node.nodeId);
-      if (relevant.length === 0) return [make("p", "empty", "No incidents for this selection.")];
-      return relevant.map((incident) => {
+      const parts = [make("h3", null, "Incidents")];
+      if (relevant.length === 0) {
+        parts.push(make("p", "empty", "No incidents for this selection."));
+      } else {
+        parts.push(...relevant.map((incident) => {
         const card = make("div", "incident");
         card.dataset.kind = incident.kind;
         card.append(make("h3", null, incident.summary));
         card.append(make("p", null,
-          `${incident.kind.replace(/_/g, " ")} · ${incident.state.replace(/_/g, " ")} · opened ${clockTime(incident.openedAt)} · ${incident.attempts} delivery attempt${incident.attempts === 1 ? "" : "s"}`));
+          `${incident.kind.replace(/_/g, " ")} · ${stateLabel("incident", incident.state)} · opened ${clockTime(incident.openedAt)} · ${incident.attempts} delivery attempt${incident.attempts === 1 ? "" : "s"}`));
         if (incident.envelope) card.append(make("pre", "pre", incident.envelope));
         const actions = make("div", "composer__row");
         for (const [label, next] of [["Acknowledge", "acknowledged"], ["Resolve", "resolved"]]) {
           const button = make("button", "btn", label);
           button.type = "button";
-          button.disabled = ["resolved", "expired"].includes(incident.state);
+          button.disabled = (contractAxis("incident")?.terminal ?? []).includes(incident.state);
           button.addEventListener("click", async () => {
             button.disabled = true;
             try {
@@ -700,7 +835,29 @@ function renderTab(subject) {
           "Acknowledging never grants approval, delivery authority, push authority or terminal status."));
         card.append(actions);
         return card;
-      });
+        }));
+      }
+
+      // Integrity issues are the other half of diagnostics: a projection that
+      // had to skip or quarantine a record must say so where an operator will
+      // look, rather than only in the log.
+      const issues = run.integrity?.notes ?? [];
+      parts.push(make("h3", null, "Integrity"));
+      parts.push(kvList([
+        ["Events applied", run.integrity?.eventsApplied],
+        ["Rejected", run.integrity?.rejected],
+        ["Quarantined", run.integrity?.quarantined],
+        ["Truncated records", run.integrity?.truncated],
+        ["Dropped by retention", run.integrity?.retentionDroppedEvents],
+      ]));
+      if (issues.length === 0) {
+        parts.push(make("p", "empty", "No integrity issues were recorded for this run."));
+      } else {
+        const list = make("ul", "timeline");
+        for (const issue of issues) list.append(make("li", null, String(issue)));
+        parts.push(list);
+      }
+      return parts;
     }
 
     case "messages": {
@@ -713,7 +870,7 @@ function renderTab(subject) {
       return relevant.map((message) => {
         const card = make("div", "incident");
         card.dataset.kind = "message";
-        card.append(make("h3", null, `${message.state} · ${clockTime(message.queuedAt)}`));
+        card.append(make("h3", null, `${stateLabel("outbox", message.state)} · ${clockTime(message.queuedAt)}`));
         card.append(make("p", null,
           `${message.attempts} delivery attempt${message.attempts === 1 ? "" : "s"} · expires ${clockTime(message.expiresAt)} · ${message.stateReason ?? ""}`));
         card.append(make("pre", "pre", message.body));

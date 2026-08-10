@@ -264,8 +264,12 @@ body {
 .stage[data-state="succeeded"] { border-left-color: var(--ok); }
 .stage[data-state="failed"] { border-left-color: var(--bad); }
 .stage[data-state="running"] { border-left-color: var(--accent); }
-.stage[data-state="waiting"] { border-left-color: var(--warn); }
+.stage[data-state="waiting_input"],
+.stage[data-state="waiting_approval"] { border-left-color: var(--warn); }
 .stage[data-state="blocked"] { border-left-color: var(--warn); }
+.stage[data-state="ready"] { border-left-color: var(--ok); }
+.stage[data-state="pending"],
+.stage[data-state="creating_queued"] { border-left-color: var(--border-strong); }
 .stage[data-state="replaced"], .stage[data-state="skipped"], .stage[data-state="canceled"] { border-left-color: var(--neutral); }
 
 .stage__head { display: flex; align-items: baseline; gap: 6px; justify-content: space-between; }
@@ -273,6 +277,13 @@ body {
 .stage__phase { color: var(--text-muted); font-size: 11px; white-space: nowrap; }
 .stage__meta { display: flex; flex-wrap: wrap; gap: 4px 10px; font-size: 11px; color: var(--text-muted); }
 .stage__meta span { font-variant-numeric: tabular-nums; }
+.stage__focus {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 100%;
+  font-variant-numeric: normal;
+}
 
 .badge {
   display: inline-flex;
@@ -289,6 +300,8 @@ body {
 .badge[data-tone="bad"] { color: var(--bad); border-color: var(--bad); }
 .badge[data-tone="warn"] { color: var(--warn); border-color: var(--warn); }
 .badge[data-tone="lost"] { color: var(--lost); border-color: var(--lost); }
+.badge[data-tone="active"] { color: var(--accent); border-color: var(--accent); }
+.kv dd[data-unavailable="true"] { color: var(--text-muted); font-style: italic; }
 .badge[data-tone="neutral"] { color: var(--text-muted); }
 
 .attempts { list-style: none; margin: 2px 0 0; padding: 0; display: flex; flex-direction: column; gap: 3px; }

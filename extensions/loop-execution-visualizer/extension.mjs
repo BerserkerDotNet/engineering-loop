@@ -24,6 +24,7 @@ import { resolveStorageLocation, assertPluginScoped, describeLocation } from "./
 import { createReporter } from "./src/reporter.mjs";
 import { createTools, assertToolCoverage } from "./src/tools.mjs";
 import { createLoopbackServer } from "./src/server.mjs";
+import { createCanvasHandlers } from "./src/handlers.mjs";
 import { summarizeRun } from "./src/projection.mjs";
 import { extractEnrollmentToken } from "./src/authority.mjs";
 import { STATES } from "./src/contracts.mjs";
@@ -41,7 +42,11 @@ const runtime = {
   server: null,
   location: null,
   storageError: null,
-  hostActivity: "starting",
+  workingDirectory: null,
+  repository: null,
+  branch: null,
+  hostActivity: "unknown",
+  hostActivityDetail: null,
   timers: [],
   canvasInstances: new Set(),
   started: false,
@@ -89,7 +94,10 @@ async function waitForServer(timeoutMs = SERVER_READY_TIMEOUT_MS) {
   return runtime.server;
 }
 
-/** Never let a reporting failure break the workflow it is observing. */function guard(what, fn) {
+/**
+ * Never let a reporting failure break the workflow it is observing.
+ */
+function guard(what, fn) {
   try {
     const result = fn();
     if (result && typeof result.catch === "function") {
@@ -115,11 +123,17 @@ function notifyCanvas(reason) {
 }
 
 function setHostActivity(activity, detail) {
-  if (!runtime.reporter || runtime.hostActivity === activity) return;
+  if (!runtime.reporter) return;
+  const normalizedDetail = detail ?? null;
+  // Host activity is a coarse liveness axis and the detail carries what the host
+  // is actually doing, so a detail-only change (a different tool, a different
+  // reason) must still be reported or the lane shows a stale explanation.
+  if (runtime.hostActivity === activity && runtime.hostActivityDetail === normalizedDetail) return;
   runtime.hostActivity = activity;
+  runtime.hostActivityDetail = normalizedDetail;
   // Host activity is a separate axis from workflow state. The reporter owns the
   // event shape; nothing here can imply the run finished.
-  guard("host activity", () => runtime.reporter.noteActivity(activity, detail));
+  guard("host activity", () => runtime.reporter.noteActivity(activity, normalizedDetail));
   notifyCanvas(`activity:${activity}`);
 }
 
@@ -154,7 +168,7 @@ function tryEnroll(text, where) {
 async function reconcileUsage(window) {
   if (!runtime.reporter || !runtime.reporter.runId) return;
   await guard("usage reconciliation", async () => {
-    const metrics = await runtime.session.rpc.usage.getMetrics({ sessionId: runtime.session.sessionId });
+    const metrics = await runtime.session.rpc.usage.getMetrics();
     runtime.reporter.reconcileUsage(metrics, window);
   });
 }
@@ -162,12 +176,21 @@ async function reconcileUsage(window) {
 async function snapshotPrices() {
   if (!runtime.reporter || !runtime.reporter.runId) return;
   await guard("price snapshot", async () => {
-    const models = await runtime.session.rpc.model.list({});
-    // Copilot prices are AI credits, not a billed currency, so the snapshot is
-    // recorded with currency: null and can never be relabelled "actual". The
-    // reporter owns the shape of a price record, so the raw list is handed over
-    // unshaped rather than transformed here.
-    runtime.reporter.snapshotPrices(models?.models ?? [], { unit: "copilot_ai_credits", currency: null });
+    const listed = await runtime.session.rpc.model.list({});
+    // The host returns the models under `list`. Copilot prices are AI credits,
+    // not a billed currency, so the snapshot is recorded with currency: null and
+    // can never be relabelled "actual". The reporter owns the shape of a price
+    // record, so the raw list is handed over unshaped rather than transformed
+    // here. An empty list is normal and is not an error: per-call prices are
+    // still captured from each usage payload.
+    const models = Array.isArray(listed?.list) ? listed.list
+      : Array.isArray(listed?.models) ? listed.models
+      : [];
+    if (models.length === 0) {
+      log("model listing carried no prices; per-call usage prices will be used instead");
+      return;
+    }
+    runtime.reporter.snapshotPrices(models, { unit: "copilot_ai_credits", currency: null });
   });
 }
 
@@ -215,60 +238,12 @@ function startTimers() {
 // never show state that the projection would not accept.
 // ---------------------------------------------------------------------------
 
-const handlers = {
-  bootstrapInfo() {
-    return {
-      role: runtime.reporter?.role ?? "unknown",
-      runId: runtime.reporter?.runId ?? null,
-      appSessionId: runtime.reporter?.appSessionId ?? null,
-      storage: runtime.location?.available ? runtime.location.storeDir : null,
-      storageError: runtime.storageError,
-      heartbeatIntervalMs: HEARTBEAT_MS,
-      missingHeartbeatMs: STATES.health.missingHeartbeatMs,
-    };
-  },
-
-  run(input) {
-    if (!runtime.reporter) return { ok: false, reason: "the reporter is not available" };
-    const runId = input.runId || runtime.reporter.runId;
-    if (!runId) return { ok: false, reason: "no run is attached to this session" };
-    const projection = runtime.reporter.readRun(runId);
-    if (!projection) return { ok: false, reason: `run ${runId} has no readable events` };
-    return { ok: true, run: projection, current: runId === runtime.reporter.runId };
-  },
-
-  runs() {
-    if (!runtime.reporter) return { ok: false, reason: "the reporter is not available" };
-    return { ok: true, runs: runtime.reporter.listRuns(), currentRunId: runtime.reporter.runId };
-  },
-
-  async sendMessage(input) {
-    if (!runtime.reporter?.runId) return { ok: false, reason: "no run is attached to this session" };
-    const queued = runtime.reporter.queueMessage({
-      targetAppSessionId: String(input.targetAppSessionId ?? ""),
-      targetNodeId: input.targetNodeId ?? null,
-      body: String(input.body ?? ""),
-    });
-    notifyCanvas("outbox");
-    if (!queued.ok) return queued;
-    // Deliver immediately if this process owns the target session.
-    await maintenanceTick();
-    const projection = runtime.reporter.projection({ force: true });
-    const message = projection.outbox.find((m) => m.messageId === queued.messageId);
-    return { ok: true, messageId: queued.messageId, state: message?.state ?? "queued" };
-  },
-
-  async acknowledgeIncident(input) {
-    if (!runtime.reporter?.runId) return { ok: false, reason: "no run is attached to this session" };
-    const result = runtime.reporter.resolveIncident(
-      String(input.incidentId ?? ""),
-      input.state === "resolved" ? "resolved" : "acknowledged",
-      String(input.reason ?? "acknowledged from the visualizer"),
-    );
-    notifyCanvas("incident");
-    return result;
-  },
-};
+const handlers = createCanvasHandlers({
+  runtime,
+  heartbeatMs: HEARTBEAT_MS,
+  notifyCanvas,
+  maintenanceTick: () => maintenanceTick(),
+});
 
 // ---------------------------------------------------------------------------
 // Host wiring
@@ -332,7 +307,7 @@ const session = await joinSession({
               nodeId: { type: "string" },
               tab: {
                 type: "string",
-                enum: ["overview", "prompt", "plan", "progress", "details", "usage", "incidents", "messages"],
+                enum: ["overview", "plan", "prompt", "timeline", "messages", "usage", "outputs", "diagnostics"],
               },
             },
             required: ["nodeId"],
@@ -378,7 +353,8 @@ const session = await joinSession({
     // Hooks append synchronously before returning, so a callback is always
     // durable before the host proceeds.
     onSessionStart: (input) => {
-      runtime.hostActivity = "starting";
+      runtime.hostActivity = "active";
+      runtime.hostActivityDetail = "session started";
       if (runtime.reporter) {
         lifecycle("start", input?.source ?? null, false);
         tryEnroll(input?.initialPrompt ?? "", "initial prompt");
@@ -390,7 +366,7 @@ const session = await joinSession({
 
     onUserPromptSubmitted: (input) => {
       const prompt = typeof input?.prompt === "string" ? input.prompt : "";
-      setHostActivity("thinking", "user prompt submitted");
+      setHostActivity("active", "user prompt submitted");
       if (runtime.reporter) {
         tryEnroll(prompt, "user prompt");
         guard("outbox acceptance", () => {
@@ -402,24 +378,35 @@ const session = await joinSession({
     },
 
     onPreToolUse: (input) => {
-      setHostActivity("tool_running", input?.toolName ?? null);
+      setHostActivity("active", `running tool ${input?.toolName ?? "unknown"}`);
       return undefined;
     },
 
     onPostToolUse: () => {
-      setHostActivity("thinking", "tool completed");
+      setHostActivity("active", "tool completed");
       return undefined;
     },
 
     onPostToolUseFailure: (input) => {
-      setHostActivity("thinking", `tool ${input?.toolName ?? "unknown"} failed`);
+      // A tool failure is an operation-level fact only. It is recorded as host
+      // detail and must never become an attempt failure.
+      setHostActivity("active", `tool ${input?.toolName ?? "unknown"} failed`);
       return undefined;
     },
 
     onErrorOccurred: (input) => {
-      // An error is recorded, but only an authoritative terminal signal may
-      // fail an attempt; this hook is not one.
-      lifecycle("error", input?.message ?? input?.errorType ?? "unspecified error", false);
+      // The host reports `{error, errorContext, recoverable}`. A non-recoverable
+      // error is one of the design's authoritative failure signals; a recoverable
+      // one is recorded but must never fail the attempt.
+      const authoritative = input?.recoverable === false;
+      const reason = typeof input?.error === "string" && input.error.trim()
+        ? input.error.trim()
+        : "host reported an error with no description";
+      const context = typeof input?.errorContext === "string" && input.errorContext.trim()
+        ? ` (${input.errorContext.trim()})`
+        : "";
+      setHostActivity("error", reason);
+      lifecycle("error", `${reason}${context}`, authoritative);
       return undefined;
     },
 
@@ -453,19 +440,30 @@ if (!scope.ok) {
   log(`refusing to resolve storage: ${scope.reason}`);
 } else {
   try {
-    const workspace = await session.rpc.workspaces.getWorkspace({ sessionId: session.sessionId });
+    const workspace = await session.rpc.workspaces.getWorkspace();
+    // The host is the only trusted source of the runtime working directory.
+    // `process.cwd()` is the CLI's own directory, not the run's repository, so
+    // it is never used as an identity fact.
+    runtime.workingDirectory = workspace?.workspace?.cwd
+      ?? workspace?.workspace?.git_root
+      ?? null;
+    runtime.repository = workspace?.workspace?.repository ?? null;
+    runtime.branch = workspace?.workspace?.branch ?? null;
     let plugins = [];
     try {
-      const listed = await session.rpc.plugins.list({});
+      const listed = await session.rpc.plugins.list();
       plugins = listed?.plugins ?? [];
-    } catch {
+    } catch (error) {
+      // The plugin list is required to name the marketplace directory. Losing it
+      // is reported explicitly and makes storage unavailable rather than
+      // silently resolving somewhere else.
+      log(`plugin list unavailable: ${error.message}`);
       plugins = [];
     }
     const location = resolveStorageLocation({
       extensionPath: process.env.EXTENSION_PATH ?? "",
       workspacePath: workspace?.path ?? null,
       plugins,
-      extensionId: process.env.COPILOT_EXTENSION_ID ?? null,
     });
     if (!location.available) {
       runtime.storageError = location.reason;
@@ -485,10 +483,12 @@ if (runtime.location) {
     storeDir: runtime.location.storeDir,
     role: "unknown",
     hostSessionId: session.sessionId,
-    appSessionId: process.env.COPILOT_AGENT_SESSION_ID ?? session.sessionId,
-    extensionId: process.env.COPILOT_EXTENSION_ID ?? `plugin:${runtime.location.pluginName}:loop-execution-visualizer`,
+    // The host session id is the app session id: it is the identifier the app
+    // uses for this session and the one a target composer must address.
+    appSessionId: session.sessionId,
+    extensionId: `plugin:${runtime.location.pluginName}:loop-execution-visualizer`,
     pid: process.pid,
-    workingDirectory: session.workingDirectory ?? process.cwd(),
+    workingDirectory: runtime.workingDirectory,
     send: async (body) => {
       await session.send({ prompt: body });
     },
@@ -547,7 +547,7 @@ if (runtime.location) {
         }
 
         case "assistant.turn_start":
-          setHostActivity("thinking", "turn started");
+          setHostActivity("active", "turn started");
           break;
 
         case "assistant.turn_end":
@@ -559,14 +559,16 @@ if (runtime.location) {
           break;
 
         case "permission.requested":
-          setHostActivity("awaiting_permission", null);
+          setHostActivity("active", "awaiting permission");
           break;
 
         case "user_input.requested":
-          setHostActivity("awaiting_user", null);
+          setHostActivity("active", "awaiting user input");
           break;
 
         case "session.error":
+          // `session.error` preserves and renders the payload but is not by
+          // itself authoritative: a terminal authority signal is still required.
           lifecycle("error", event.data?.message ?? event.data?.errorType ?? "session error", false);
           break;
 

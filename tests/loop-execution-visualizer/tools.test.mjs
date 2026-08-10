@@ -107,12 +107,12 @@ test("tools: the orchestrator drives a run from declaration to authoritative out
     assert.equal(again.alreadyDeclared, true);
 
     const waiting = await tools.get("loopviz_controller_state").handler({
-      workflowState: "awaiting_children",
+      workflowState: "waiting_children",
       reason: "requirements session is running",
       waitingOnNodeIds: ["requirements"],
     });
     assert.equal(waiting.ok, true);
-    assert.equal(waiting.workflowState, "awaiting_children");
+    assert.equal(waiting.workflowState, "waiting_children");
 
     const started = await tools.get("loopviz_attempt_start").handler({
       nodeId: "requirements",
@@ -145,7 +145,7 @@ test("tools: the orchestrator drives a run from declaration to authoritative out
     const status = await tools.get("loopviz_status").handler({});
     assert.equal(status.ok, true);
     assert.equal(status.summary.runId, spec.runId);
-    assert.equal(status.controller.workflowState, "awaiting_children");
+    assert.equal(status.controller.workflowState, "waiting_children");
     assert.deepEqual(status.controller.waitingOn, ["requirements"]);
     const requirements = status.nodes.find((n) => n.nodeId === "requirements");
     assert.equal(requirements.state, "succeeded");
@@ -248,7 +248,7 @@ test("tools: a child session may report detail but may not control the run", asy
     const misStated = await childTools.get("loopviz_attempt_state").handler({
       nodeId: "requirements",
       attemptId: "requirements-a1",
-      state: "waiting",
+      state: "waiting_input",
       reason: "asked a question",
     });
     assert.equal(misStated.ok, true);
@@ -258,7 +258,7 @@ test("tools: a child session may report detail but may not control the run", asy
     const design = projection.dag.nodes.find((n) => n.nodeId === "design");
     assert.equal(design.attempts[0].semantics.plan, "1. contracts 2. store 3. projection");
     assert.equal(design.attempts[0].semantics.progress, "still on the bound stage");
-    assert.equal(design.attempts[0].state, "waiting");
+    assert.equal(design.attempts[0].state, "waiting_input");
     assert.equal(
       projection.dag.nodes.find((n) => n.nodeId === "requirements").attempts.length,
       0,
@@ -513,7 +513,7 @@ test("tools: a session that has done nothing yet can declare a run and becomes i
     // The role is now real, so control operations work without any assertion
     // from the caller.
     const controller = await tools.get("loopviz_controller_state").handler({
-      workflowState: "planning",
+      workflowState: "scheduling",
       reason: "phase 0",
     });
     assert.equal(controller.ok, true);

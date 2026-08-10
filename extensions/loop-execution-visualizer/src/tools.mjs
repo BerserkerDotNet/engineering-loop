@@ -189,6 +189,15 @@ export function createTools({ reporter, onChange = () => {} }) {
           kind: { type: "string", enum: ["initial", "retry", "replacement", "recovery"] },
           model: { type: "string", description: "Model the child session will run." },
           reason: { type: "string" },
+          expectedEnvelope: {
+            type: "object",
+            description: "The envelope this attempt is required to deliver back. Recording it is what makes a missing envelope detectable; without it no envelope_missing incident can be raised for this attempt.",
+            properties: {
+              status: { type: "string", description: "Expected terminal status word, e.g. COMPLETE." },
+              sequence: { type: "integer", minimum: 0, description: "Expected SEQUENCE value, when the skill uses one." },
+            },
+            required: ["status"],
+          },
         },
         required: ["nodeId", "attemptId", "attemptNumber", "kind"],
       },
@@ -202,6 +211,7 @@ export function createTools({ reporter, onChange = () => {} }) {
           kind: args.kind,
           model: args.model ?? null,
           reason: args.reason ?? null,
+          expectedEnvelope: args.expectedEnvelope ?? null,
         });
         return changed({
           ok: true,
@@ -464,7 +474,7 @@ export function createTools({ reporter, onChange = () => {} }) {
               elapsedMs: attempt.elapsedMs,
             })),
           })),
-          openIncidents: projection.incidents.filter((i) => !["resolved", "expired"].includes(i.state)).length,
+          openIncidents: projection.incidents.filter((i) => !STATES.incident.terminal.includes(i.state)).length,
           usage: projection.usage,
           integrity: projection.integrity,
         };

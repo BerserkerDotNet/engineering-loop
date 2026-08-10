@@ -146,9 +146,18 @@
           "nodeId": { "$ref": "#/$defs/id" },
           "attemptId": { "$ref": "#/$defs/id" },
           "attemptNumber": { "type": "integer", "minimum": 1 },
-          "kind": { "enum": ["initial", "retry", "replacement"] },
+          "kind": { "enum": ["initial", "retry", "replacement", "recovery"] },
           "model": { "$ref": "#/$defs/nullableString" },
-          "reason": { "$ref": "#/$defs/nullableString" }
+          "reason": { "$ref": "#/$defs/nullableString" },
+          "expectedEnvelope": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["status"],
+            "properties": {
+              "status": { "type": "string", "minLength": 1, "maxLength": 64 },
+              "sequence": { "type": ["integer", "null"], "minimum": 0 }
+            }
+          }
         }
       },
       "attempt.state": {
@@ -293,6 +302,7 @@
             }
           },
           "attributedSampleCredits": { "$ref": "#/$defs/nonNegativeNumber" },
+          "deltaCredits": { "$ref": "#/$defs/nonNegativeNumber" },
           "confidence": { "enum": ["actual", "estimated", "partial", "unavailable"] }
         }
       },

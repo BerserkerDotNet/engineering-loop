@@ -11,9 +11,11 @@ const UI_DIR = join(HERE, "ui");
 const MAX_BODY_BYTES = 64 * 1024;
 const BOOTSTRAP_TTL_MS = 30_000;
 const CREDENTIAL_TTL_MS = 10 * 60_000;
+const CREDENTIAL_MAX_LIFETIME_MS = 12 * 60 * 60_000;
 const CREDENTIAL_RENEW_MS = 60_000;
 const NONCE_WINDOW_MS = 5 * 60_000;
 const MAX_NONCES = 4096;
+const MAX_STREAMS = 16;
 
 const CONTENT_TYPES = {
   ".html": "text/html; charset=utf-8",
@@ -34,7 +36,18 @@ const CSP = [
   "form-action 'none'",
   "base-uri 'none'",
   "object-src 'none'",
+  // The canvas is the only intended embedder. Denying framing outright stops a
+  // hostile local page from loading the UI and driving it through the user.
+  "frame-ancestors 'none'",
 ].join("; ");
+
+const SECURITY_HEADERS = {
+  "cache-control": "no-store",
+  "content-security-policy": CSP,
+  "x-content-type-options": "nosniff",
+  "referrer-policy": "no-referrer",
+  "x-frame-options": "DENY",
+};
 
 function constantTimeEquals(a, b) {
   return timingSafeEqualString(a, b);
@@ -59,6 +72,7 @@ export function createLoopbackServer(options) {
     log = () => {},
     uiDir = UI_DIR,
     credentialTtlMs = CREDENTIAL_TTL_MS,
+    credentialMaxLifetimeMs = CREDENTIAL_MAX_LIFETIME_MS,
     bootstrapTtlMs = BOOTSTRAP_TTL_MS,
   } = options;
 
@@ -106,7 +120,12 @@ export function createLoopbackServer(options) {
     if (now() - record.issuedAt > bootstrapTtlMs) return { ok: false, reason: "bootstrap token expired" };
     record.usedAt = now();
     const credential = randomToken(32);
-    credentials.set(credential, { issuedAt: now(), expiresAt: now() + credentialTtlMs, bootstrap: key });
+    credentials.set(credential, {
+      issuedAt: now(),
+      expiresAt: now() + credentialTtlMs,
+      maxLifetimeMs: credentialMaxLifetimeMs,
+      bootstrap: key,
+    });
     return { ok: true, credential, expiresInMs: credentialTtlMs, renewAfterMs: Math.min(CREDENTIAL_RENEW_MS, credentialTtlMs / 2) };
   }
 
@@ -123,7 +142,13 @@ export function createLoopbackServer(options) {
       credentials.delete(credential);
       return { ok: false, status: 401, reason: "instance credential expired" };
     }
-    // Sliding renewal keeps a live canvas working without a long-lived secret.
+    // Sliding renewal keeps a live canvas working without a long-lived secret,
+    // but never past the hard lifetime: an always-open canvas must re-bootstrap
+    // rather than hold one credential indefinitely.
+    if (now() - record.issuedAt > record.maxLifetimeMs) {
+      credentials.delete(credential);
+      return { ok: false, status: 401, reason: "instance credential reached its maximum lifetime" };
+    }
     record.expiresAt = now() + credentialTtlMs;
     return { ok: true, credential };
   }
@@ -138,7 +163,13 @@ export function createLoopbackServer(options) {
     return { ok: true };
   }
 
-  function checkOrigin(req) {
+  /**
+   * The same-site checks every request must pass, including ones a browser
+   * makes without custom headers. Split from the CSRF header check because
+   * EventSource cannot set headers, yet must still be refused when a hostile
+   * origin opens it.
+   */
+  function checkSite(req) {
     const origin = req.headers.origin;
     const site = req.headers["sec-fetch-site"];
     if (site !== undefined && site !== "same-origin" && site !== "none") {
@@ -148,6 +179,12 @@ export function createLoopbackServer(options) {
       const expected = new Set([`http://127.0.0.1:${port}`, `http://localhost:${port}`]);
       if (!expected.has(origin)) return { ok: false, status: 403, reason: `disallowed origin ${origin}` };
     }
+    return { ok: true };
+  }
+
+  function checkOrigin(req) {
+    const site = checkSite(req);
+    if (!site.ok) return site;
     if (req.headers["x-loopviz-csrf"] !== "1") {
       return { ok: false, status: 403, reason: "missing CSRF header" };
     }
@@ -175,12 +212,9 @@ export function createLoopbackServer(options) {
   function sendJson(res, status, payload) {
     const body = JSON.stringify(payload);
     res.writeHead(status, {
+      ...SECURITY_HEADERS,
       "content-type": "application/json; charset=utf-8",
       "content-length": Buffer.byteLength(body),
-      "cache-control": "no-store",
-      "content-security-policy": CSP,
-      "x-content-type-options": "nosniff",
-      "referrer-policy": "no-referrer",
     });
     res.end(body);
   }
@@ -198,12 +232,9 @@ export function createLoopbackServer(options) {
     }
     const body = readFileSync(target);
     res.writeHead(200, {
+      ...SECURITY_HEADERS,
       "content-type": CONTENT_TYPES[extname(target)] ?? "application/octet-stream",
       "content-length": body.length,
-      "cache-control": "no-store",
-      "content-security-policy": CSP,
-      "x-content-type-options": "nosniff",
-      "referrer-policy": "no-referrer",
     });
     res.end(body);
   }
@@ -213,7 +244,10 @@ export function createLoopbackServer(options) {
     for (const stream of [...streams]) {
       try {
         stream.write(frame);
-      } catch {
+      } catch (error) {
+        // A stream that cannot be written to is gone; dropping it here is what
+        // keeps the set from growing across canvas reloads.
+        log(`dropping closed event stream: ${error.message}`);
         streams.delete(stream);
       }
     }
@@ -280,17 +314,26 @@ export function createLoopbackServer(options) {
 
     if (pathname === "/events") {
       // EventSource cannot set headers, so the credential travels as a query
-      // parameter here; it is still single-instance, short lived and local only.
+      // parameter here. Every check that does not require a custom header still
+      // applies: a hostile origin is refused before the stream is opened.
+      const site = checkSite(req);
+      if (!site.ok) return sendJson(res, site.status, { error: site.reason });
+      const dest = req.headers["sec-fetch-dest"];
+      if (dest !== undefined && dest !== "empty") {
+        return sendJson(res, 403, { error: `event stream cannot be requested as ${dest}` });
+      }
+      if (streams.size >= MAX_STREAMS) {
+        return sendJson(res, 503, { error: `event stream limit of ${MAX_STREAMS} reached` });
+      }
       const presented = url.searchParams.get("credential") ?? "";
       const found = [...credentials.entries()].find(([candidate]) => constantTimeEquals(candidate, presented));
       if (!found || now() > found[1].expiresAt) {
         return sendJson(res, 401, { error: "unknown or expired instance credential" });
       }
       res.writeHead(200, {
+        ...SECURITY_HEADERS,
         "content-type": "text/event-stream",
-        "cache-control": "no-store",
         connection: "keep-alive",
-        "x-content-type-options": "nosniff",
       });
       res.write(`event: hello\ndata: ${JSON.stringify({ at: new Date(now()).toISOString() })}\n\n`);
       streams.add(res);

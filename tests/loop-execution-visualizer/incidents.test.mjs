@@ -307,6 +307,9 @@ test("incidents: a child process may not deliver, resolve, or invent an incident
       authoritative: true,
     });
     lead.detectIncidents();
+    // The orchestrator is alive and beating at this point, so the incident it
+    // just opened has a reachable delivery target.
+    lead.heartbeat("active");
 
     const child = createReporter({
       storeDir: store.storeDir,
@@ -324,8 +327,27 @@ test("incidents: a child process may not deliver, resolve, or invent an incident
     assert.deepEqual(childDelivered, [], "a child never delivers an incident");
     assert.equal(childSink.length, 0, "a child never sends the wake");
 
-    const state = child.projection({ force: true }).incidents[0].state;
-    assert.equal(state, "recovery_pending", "a child may only mark it as awaiting the orchestrator");
+    // Delivery is target local, so a child observing an incident it cannot
+    // deliver must stay silent. Claiming recovery_pending here would assert the
+    // orchestrator is unreachable, which the child has no evidence for and
+    // which would hide a wake the orchestrator's own process is about to send.
+    assert.equal(
+      child.projection({ force: true }).incidents[0].state,
+      "open",
+      "a healthy orchestrator's incident is left untouched by a child",
+    );
+
+    // Only once the orchestrator's own heartbeat is genuinely stale does the
+    // incident become recovery_pending, and then any process may record it.
+    clock.advance(STATES.health.missingHeartbeatMs + 1000);
+    child.watchdogTick();
+    await child.incidentTick();
+    assert.equal(
+      child.projection({ force: true }).incidents[0].state,
+      "recovery_pending",
+      "an unreachable orchestrator parks the incident for replay on resume",
+    );
+    assert.equal(childSink.length, 0, "parking an incident still sends nothing");
 
     child.close();
     lead.close();

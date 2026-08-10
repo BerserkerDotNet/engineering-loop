@@ -19,6 +19,7 @@
         "healthReason": { "$ref": "#/$defs/nullableString" },
         "activity": { "type": "string", "minLength": 1, "maxLength": 32 },
         "activityDetail": { "$ref": "#/$defs/nullableString" },
+        "activitySince": { "$ref": "#/$defs/nullableIso" },
         "lastHeartbeatAt": { "$ref": "#/$defs/nullableIso" },
         "workingDirectory": { "$ref": "#/$defs/nullableString" }
       }
@@ -89,10 +90,27 @@
       "properties": {
         "attemptId": { "$ref": "#/$defs/id" },
         "attemptNumber": { "type": "integer", "minimum": 1 },
-        "kind": { "enum": ["initial", "retry", "replacement"] },
+        "kind": { "enum": ["initial", "retry", "replacement", "recovery"] },
         "state": { "type": "string", "minLength": 1, "maxLength": 32 },
         "stateReason": { "$ref": "#/$defs/nullableString" },
         "authoritativeFailure": { "type": "boolean" },
+        "expected": {
+          "anyOf": [
+            { "type": "null" },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["status", "sequence", "satisfied", "satisfiedAt", "satisfiedBy"],
+              "properties": {
+                "status": { "type": "string", "minLength": 1, "maxLength": 64 },
+                "sequence": { "type": ["integer", "null"], "minimum": 0 },
+                "satisfied": { "type": "boolean" },
+                "satisfiedAt": { "$ref": "#/$defs/nullableIso" },
+                "satisfiedBy": { "$ref": "#/$defs/nullableString" }
+              }
+            }
+          ]
+        },
         "startedAt": { "$ref": "#/$defs/isoTime" },
         "endedAt": { "$ref": "#/$defs/nullableIso" },
         "elapsedMs": { "type": "number", "minimum": 0 },

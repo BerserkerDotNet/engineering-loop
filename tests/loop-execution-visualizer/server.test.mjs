@@ -262,3 +262,117 @@ test("loopback: the event stream requires a live credential and receives broadca
     await reader.cancel().catch(() => {});
   });
 });
+
+test("loopback: the event stream refuses a cross-site opener before the credential is even read", async () => {
+  await withServer(async ({ server, base, port }) => {
+    const token = server.issueBootstrap();
+    const { credential } = await (await fetch(`${base}/bootstrap`, {
+      method: "POST",
+      headers: sameOrigin(port),
+      body: JSON.stringify({ bootstrap: token }),
+    })).json();
+    const query = `credential=${encodeURIComponent(credential)}`;
+
+    // EventSource cannot send the CSRF header, so the stream has to be defended
+    // by the headers a browser sets itself. A valid credential must not be
+    // enough when the request came from another site.
+    const crossSite = await fetch(`${base}/events?${query}`, {
+      headers: { "sec-fetch-site": "cross-site", origin: "http://evil.example" },
+    });
+    assert.equal(crossSite.status, 403, "a cross-site event stream is refused");
+    assert.match((await crossSite.json()).error, /cross-site/);
+
+    const foreignOrigin = await fetch(`${base}/events?${query}`, {
+      headers: { origin: "http://evil.example" },
+    });
+    assert.equal(foreignOrigin.status, 403, "a foreign origin is refused even without the site header");
+
+    const framed = await fetch(`${base}/events?${query}`, {
+      headers: { "sec-fetch-site": "same-origin", "sec-fetch-dest": "iframe" },
+    });
+    assert.equal(framed.status, 403, "the stream cannot be requested as a document");
+
+    // The same request from the canvas itself still works, so the check is a
+    // filter rather than a blanket refusal.
+    const controller = new AbortController();
+    const ok = await fetch(`${base}/events?${query}`, {
+      headers: { "sec-fetch-site": "same-origin", "sec-fetch-dest": "empty", origin: `http://127.0.0.1:${port}` },
+      signal: controller.signal,
+    });
+    assert.equal(ok.status, 200);
+    assert.equal(ok.headers.get("x-frame-options"), "DENY");
+    assert.match(ok.headers.get("content-security-policy"), /frame-ancestors 'none'/);
+    controller.abort();
+    await ok.body.getReader().cancel().catch(() => {});
+  });
+});
+
+test("loopback: a credential slides but never outlives its hard lifetime", async () => {
+  let clock = 1_000;
+  await withServer(async ({ server, base, port }) => {
+    const token = server.issueBootstrap();
+    const { credential } = await (await fetch(`${base}/bootstrap`, {
+      method: "POST",
+      headers: sameOrigin(port),
+      body: JSON.stringify({ bootstrap: token }),
+    })).json();
+
+    const call = (seed) => fetch(`${base}/api/ping`, {
+      method: "POST",
+      headers: sameOrigin(port, { "x-loopviz-credential": credential, "x-loopviz-nonce": nonce(seed) }),
+      body: "{}",
+    });
+
+    // Renewal keeps a working canvas alive across the sliding window.
+    clock += 8_000;
+    assert.equal((await call("slide-1")).status, 200);
+    clock += 8_000;
+    assert.equal((await call("slide-2")).status, 200);
+
+    // The sliding window is still open here, so the only thing that can refuse
+    // this call is the hard lifetime measured from issue.
+    clock += 8_000;
+    const expired = await call("slide-3");
+    assert.equal(expired.status, 401);
+    assert.match((await expired.json()).error, /maximum lifetime/);
+  }, { now: () => clock, credentialTtlMs: 10_000, credentialMaxLifetimeMs: 20_000 });
+});
+
+test("loopback: the event stream count is capped so a reload loop cannot exhaust the server", async () => {
+  await withServer(async ({ server, base, port }) => {
+    const token = server.issueBootstrap();
+    const { credential } = await (await fetch(`${base}/bootstrap`, {
+      method: "POST",
+      headers: sameOrigin(port),
+      body: JSON.stringify({ bootstrap: token }),
+    })).json();
+    const query = `credential=${encodeURIComponent(credential)}`;
+    const headers = { "sec-fetch-site": "same-origin", origin: `http://127.0.0.1:${port}` };
+
+    const opened = [];
+    let rejectedError = null;
+    for (let i = 0; i < 20; i += 1) {
+      const controller = new AbortController();
+      const response = await fetch(`${base}/events?${query}`, { headers, signal: controller.signal });
+      if (response.status === 503) {
+        rejectedError = (await response.json()).error;
+        break;
+      }
+      opened.push({ controller, response });
+      // Reading the greeting is what makes the server register the stream, and
+      // the reader is kept so it can be cancelled instead of re-acquired.
+      const reader = response.body.getReader();
+      opened[opened.length - 1].reader = reader;
+      await reader.read();
+    }
+
+    assert.ok(rejectedError, "the server refuses further streams once the cap is reached");
+    assert.match(rejectedError, /event stream limit/);
+    assert.ok(opened.length <= 16, `no more than the cap were accepted, saw ${opened.length}`);
+
+    for (const entry of opened) {
+      await entry.reader.cancel().catch(() => {});
+      entry.controller.abort();
+    }
+  });
+});

@@ -89,9 +89,36 @@ function newSessionRef() {
     healthReason: null,
     activity: "unknown",
     activityDetail: null,
+    // When the current activity began. The expected-envelope settle window is
+    // measured from here, so a child that has only just gone idle is never
+    // reported as having skipped its envelope.
+    activitySince: null,
     lastHeartbeatAt: null,
     workingDirectory: null,
   };
+}
+
+/**
+ * Applies host activity to a controller lane or a child attempt.
+ *
+ * Both the periodic heartbeat and an explicit activity change report the same
+ * fact, and the "since" stamp must only move when the activity actually
+ * changes, or a two second heartbeat would keep resetting the settle window the
+ * expected-envelope check depends on. Writing that rule once here is what keeps
+ * every caller consistent.
+ */
+function applyHostActivity(run, target, activity, detail, at) {
+  if (typeof activity !== "string" || !activity) return;
+  if (target === run.controller) {
+    if (run.controller.hostActivity !== activity) run.controller.hostActivitySince = at;
+    run.controller.hostActivity = activity;
+    if (detail !== null) run.controller.hostActivityDetail = detail;
+    return;
+  }
+  const ref = target.session;
+  if (ref.activity !== activity) ref.activitySince = at;
+  ref.activity = activity;
+  if (detail !== null) ref.activityDetail = detail;
 }
 
 function newSemantics() {
@@ -136,10 +163,17 @@ function makeNode(spec, addedDuringRun, addedReason, replacesNodeId) {
 function deriveNodeState(node, explicitNodeState, at) {
   if (explicitNodeState.has(node.nodeId)) return;
   if (node.attempts.length === 0) return;
-  const live = node.attempts.some((a) => !STATES.attempt.terminal.includes(a.state));
+  const liveAttempts = node.attempts.filter((a) => !STATES.attempt.terminal.includes(a.state));
   let next;
-  if (live) {
-    next = "running";
+  if (liveAttempts.length > 0) {
+    // A node whose only live attempt is waiting for input or approval is not
+    // "in progress": PRD FR2 requires one unambiguous state per block, so the
+    // wait is mirrored rather than flattened into running. A node with any
+    // genuinely running attempt is running even if another attempt waits.
+    const latest = liveAttempts[liveAttempts.length - 1];
+    next = liveAttempts.some((a) => !STATES.attempt.waiting.includes(a.state))
+      ? "running"
+      : latest.state;
   } else {
     const last = node.attempts[node.attempts.length - 1];
     next = last.state === "succeeded" ? "succeeded" : last.state === "canceled" ? "canceled" : "failed";
@@ -208,6 +242,7 @@ export function buildProjection({ events, quarantined = [], truncated = false, d
       waitingOnNodeIds: [],
       hostActivity: STATES.hostActivity.initial,
       hostActivityDetail: null,
+      hostActivitySince: null,
       startedAt: declaration.data.createdAt,
       elapsedMs: 0,
       session: newSessionRef(),
@@ -400,6 +435,18 @@ export function buildProjection({ events, quarantined = [], truncated = false, d
           state: "running",
           stateReason: event.data.reason ?? null,
           authoritativeFailure: false,
+          // The orchestrator's expected-envelope ledger entry for this attempt.
+          // Without an exact expectation recorded here, a missing envelope is
+          // unknowable and no incident may be opened for it.
+          expected: event.data.expectedEnvelope
+            ? {
+              status: event.data.expectedEnvelope.status,
+              sequence: event.data.expectedEnvelope.sequence ?? null,
+              satisfied: false,
+              satisfiedAt: null,
+              satisfiedBy: null,
+            }
+            : null,
           startedAt: event.recordedAt,
           endedAt: null,
           elapsedMs: 0,
@@ -451,6 +498,14 @@ export function buildProjection({ events, quarantined = [], truncated = false, d
         owner.attempt.stateReason = event.data.reason;
         if (event.data.state === "failed") owner.attempt.authoritativeFailure = true;
         if (STATES.attempt.terminal.includes(event.data.state)) owner.attempt.endedAt = event.recordedAt;
+        // Only the orchestrator can close its own expectation: recording a
+        // terminal state for the attempt is the act of having received and used
+        // the child's envelope.
+        if (owner.attempt.expected && !owner.attempt.expected.satisfied && authoritative && STATES.attempt.terminal.includes(event.data.state)) {
+          owner.attempt.expected.satisfied = true;
+          owner.attempt.expected.satisfiedAt = event.recordedAt;
+          owner.attempt.expected.satisfiedBy = "attempt_state";
+        }
         pushTimeline(owner.attempt.timeline, {
           at: event.recordedAt,
           kind: "state",
@@ -491,11 +546,11 @@ export function buildProjection({ events, quarantined = [], truncated = false, d
         const target = isOrchestratorSource(event) ? run.controller : owner?.attempt ?? null;
         if (!target) break;
         const map = {
-          start: "starting",
-          prompt_submitted: "thinking",
+          start: "active",
+          prompt_submitted: "active",
           idle: "idle",
           end: "ended",
-          error: "ended",
+          error: "error",
           shutdown: "ended",
         };
         const activity = map[event.data.phase] ?? "unknown";
@@ -544,15 +599,8 @@ export function buildProjection({ events, quarantined = [], truncated = false, d
       case "session.activity": {
         const target = isOrchestratorSource(event) ? run.controller : attemptOwner(event)?.attempt ?? null;
         if (!target) break;
-        if (target === run.controller) {
-          run.controller.hostActivity = event.data.activity;
-          run.controller.hostActivityDetail = event.data.detail ?? null;
-          if (event.data.model) run.controller.semantics.model = event.data.model;
-        } else {
-          target.session.activity = event.data.activity;
-          target.session.activityDetail = event.data.detail ?? null;
-          if (event.data.model) target.semantics.model = event.data.model;
-        }
+        applyHostActivity(run, target, event.data.activity, event.data.detail ?? null, event.recordedAt);
+        if (event.data.model) target.semantics.model = event.data.model;
         break;
       }
 
@@ -563,6 +611,12 @@ export function buildProjection({ events, quarantined = [], truncated = false, d
         ref.lastHeartbeatAt = event.occurredAt;
         if (ref.health !== "ended") {
           ref.health = ref.health === "connection_lost" ? "recovered" : "healthy";
+        }
+        // A heartbeat reports what the host is doing right now. Ignoring that
+        // payload would leave activity to arrive only on a change event, so a
+        // session that started idle would read as `unknown` forever.
+        if (typeof event.data.activity === "string" && event.data.activity) {
+          applyHostActivity(run, target, event.data.activity, null, event.recordedAt);
         }
         break;
       }
@@ -633,7 +687,9 @@ export function buildProjection({ events, quarantined = [], truncated = false, d
         const owner = attemptOwner(event);
         const bucket = owner ? owner.attempt.usage : isOrchestratorSource(event) ? run.controller.usage : null;
         if (!bucket) break;
-        const deltaCredits = event.data.delta.premiumRequestCost ?? 0;
+        // The reporter owns the single definition of what an aggregate window
+        // cost in credits; older records carry only the premium request cost.
+        const deltaCredits = event.data.deltaCredits ?? event.data.delta.premiumRequestCost ?? 0;
         const attributed = event.data.attributedSampleCredits ?? 0;
         // The aggregate is monotonic, so only the uncovered remainder is added.
         const uncovered = Math.max(0, deltaCredits - attributed);

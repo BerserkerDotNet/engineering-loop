@@ -22,6 +22,7 @@
         "waitingOnNodeIds": { "type": "array", "maxItems": 256, "items": { "$ref": "#/$defs/id" } },
         "hostActivity": { "type": "string", "minLength": 1, "maxLength": 32 },
         "hostActivityDetail": { "$ref": "#/$defs/nullableString" },
+        "hostActivitySince": { "$ref": "#/$defs/nullableIso" },
         "startedAt": { "$ref": "#/$defs/nullableIso" },
         "elapsedMs": { "type": "number", "minimum": 0 },
         "session": { "$ref": "dag.schema.json#/$defs/sessionRef" },

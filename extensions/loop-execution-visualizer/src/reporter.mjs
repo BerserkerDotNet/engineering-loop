@@ -73,6 +73,30 @@ function normalizePriceModels(models) {
 }
 
 /**
+ * Extracts the prices the host actually charged from a usage payload.
+ *
+ * `assistant.usage` carries `copilotUsage.tokenDetails` with the exact
+ * `batchSize`/`costPerBatch` in force for that call, which is the only price
+ * basis guaranteed to be available. Recording it makes a historical estimate
+ * recomputable with the prices that applied at the time.
+ */
+function priceModelsFromUsagePayload(payload, model) {
+  const details = payload?.copilotUsage?.tokenDetails;
+  if (!Array.isArray(details) || details.length === 0) return [];
+  if (typeof model !== "string" || !model || model === "unknown") return [];
+  const prices = [];
+  for (const detail of details) {
+    if (!detail || typeof detail !== "object") continue;
+    prices.push({
+      tokenType: detail.tokenType,
+      unitPrice: detail.costPerBatch,
+      batchSize: detail.batchSize,
+    });
+  }
+  return prices.length > 0 ? [{ model, prices }] : [];
+}
+
+/**
  * Turns a host `assistant.usage` payload into the contract's usage sample.
  *
  * The host reports live token counts and a per-batch price breakdown; when that
@@ -116,7 +140,9 @@ function normalizeUsageSample(payload) {
     confidence: "estimated",
     priceSnapshotId: typeof data.priceSnapshotId === "string" ? data.priceSnapshotId : null,
   };
-  const durationMs = Number(data.durationMs ?? data.apiDurationMs);
+  // The host reports elapsed model time as `duration`; older and normalised
+  // payloads use the explicit millisecond names.
+  const durationMs = Number(data.durationMs ?? data.apiDurationMs ?? data.duration);
   if (Number.isFinite(durationMs) && durationMs >= 0) sample.durationMs = durationMs;
   return sample;
 }
@@ -136,7 +162,13 @@ export function createReporter({
 }) {
   if (!hostSessionId) throw new LoopVizError("no_identity", "a trusted host session id is required");
 
-  const sourceId = toId(`${role}-${hostSessionId}-${pid}`, `${role}-unknown`);
+  // The role is not known at construction time: a session becomes orchestrator or
+  // child only when it declares a run or accepts an enrollment grant. Embedding a
+  // role here would freeze "unknown" into the store file names and every event's
+  // source identity for the whole run. The host session and pid already identify
+  // this writer uniquely and stably, and the live role travels separately on each
+  // event as `kind`, so the source identity deliberately omits it.
+  const sourceId = toId(`${hostSessionId}-${pid}`, "unknown-source");
   const store = openStore({ storeDir, sourceId, limits, now });
 
   const state = {
@@ -157,6 +189,7 @@ export function createReporter({
     incidentAttempts: new Map(),
     lastUsageAggregate: null,
     attributedSinceReconcile: 0,
+    priceSnapshotIds: new Set(),
     closed: false,
   };
 
@@ -299,6 +332,67 @@ export function createReporter({
       } catch { /* the index is only a cache */ }
     }
     return state.projection;
+  }
+
+  /**
+   * Writes a price snapshot exactly once per distinct set of prices.
+   *
+   * Snapshots are immutable and content-addressed, so recording the same prices
+   * again is a no-op that returns the existing id rather than a second record.
+   */
+  function writePriceSnapshot(models, { unit = "copilot_ai_credits", currency = null } = {}) {
+    const normalized = normalizePriceModels(models);
+    if (normalized.length === 0) return null;
+    const snapshotId = toId(`price-${sha256(JSON.stringify(normalized)).slice(7, 23)}`);
+    if (state.priceSnapshotIds.has(snapshotId)) return snapshotId;
+    const current = projection();
+    if (current && current.priceSnapshots.some((s) => s.snapshotId === snapshotId)) {
+      state.priceSnapshotIds.add(snapshotId);
+      return snapshotId;
+    }
+    emit("price.snapshot", { snapshotId, unit, currency, models: normalized }, { immediate: true });
+    state.priceSnapshotIds.add(snapshotId);
+    return snapshotId;
+  }
+
+  /**
+   * Rebuilds this source's usage window from the durable log.
+   *
+   * Usage reconciliation is a delta against the host's monotonic per-session
+   * counter, so the baseline belongs to one source and cannot be taken from the
+   * run-wide rollup: another session's counter says nothing about this one. Both
+   * halves of the window are recovered together — the last aggregate this source
+   * reported, and the sample credits it recorded after that point — because a
+   * baseline without its matching attribution would report every pre-crash
+   * sample as an unattributed blind window.
+   */
+  function recoverUsageWindow() {
+    const empty = { premiumRequestCost: 0, userRequests: 0, nanoAiu: 0, apiDurationMs: 0 };
+    if (!state.runId) return { aggregate: empty, attributed: 0 };
+    // Buffered samples have to reach the log before it can be treated as the
+    // complete record of this source, or live samples would be recovered as
+    // zero and their credits reported as an unattributed blind window.
+    flush();
+    let events;
+    try {
+      events = store.read(state.runId).events;
+    } catch {
+      // A store that cannot be read is surfaced by the integrity panel. Here it
+      // only means there is no recoverable baseline.
+      return { aggregate: empty, attributed: 0 };
+    }
+    let aggregate = empty;
+    let attributed = 0;
+    for (const event of events) {
+      if (event.source?.sourceId !== sourceId) continue;
+      if (event.type === "usage.reconciliation") {
+        aggregate = { ...empty, ...event.data.aggregate };
+        attributed = 0;
+      } else if (event.type === "usage.sample") {
+        attributed += event.data.creditCost ?? 0;
+      }
+    }
+    return { aggregate, attributed };
   }
 
   return {
@@ -554,13 +648,23 @@ export function createReporter({
       return { ok: true, binding: state.binding, runId: parsed.runId };
     },
 
-    startAttempt({ nodeId, attemptId, attemptNumber, kind, model, reason }) {
+    startAttempt({ nodeId, attemptId, attemptNumber, kind, model, reason, expectedEnvelope = null }) {
       const grant = this.issueEnrollment(nodeId, attemptId);
-      emit("attempt.started", {
+      const data = {
         nodeId, attemptId, attemptNumber, kind,
         model: model ?? null,
         reason: reason ?? null,
-      }, { grantId: grant.grantId });
+      };
+      // Only recorded when the orchestrator actually declared one: an absent
+      // expectation must stay absent rather than becoming an empty object that
+      // later reads as "an envelope was expected".
+      if (expectedEnvelope && typeof expectedEnvelope.status === "string") {
+        data.expectedEnvelope = {
+          status: expectedEnvelope.status,
+          sequence: Number.isInteger(expectedEnvelope.sequence) ? expectedEnvelope.sequence : null,
+        };
+      }
+      emit("attempt.started", data, { grantId: grant.grantId });
       return grant;
     },
 
@@ -626,26 +730,29 @@ export function createReporter({
       if (!current) return [];
       const changed = [];
       const cutoff = now() - MISSING_HEARTBEAT_MS;
-      const check = (ref, label) => {
+      const check = (ref, label, lostState) => {
         // A peer is only watched once it bound a runtime identity and started
         // beating, and no process ever declares itself lost.
         if (!ref.hostSessionId || ref.hostSessionId === hostSessionId) return;
-        if (ref.health === "ended" || ref.health === "connection_lost") return;
+        if (ref.health === "ended" || ref.health === lostState) return;
         const last = ref.lastHeartbeatAt ? Date.parse(ref.lastHeartbeatAt) : null;
         if (last === null || last >= cutoff) return;
         emit("health.state", {
           subjectHostSessionId: ref.hostSessionId,
-          state: "connection_lost",
+          state: lostState,
           reason: `no heartbeat for ${Math.round((now() - last) / 1000)}s`,
           lastHeartbeatAt: ref.lastHeartbeatAt,
         }, { kind: "system", basis: "system", immediate: true });
-        changed.push({ subjectHostSessionId: ref.hostSessionId, label, state: "connection_lost" });
+        changed.push({ subjectHostSessionId: ref.hostSessionId, label, state: lostState });
       };
-      check(current.controller.session, current.controller.label);
+      // The orchestrator's own liveness has its own health value, because a
+      // stale controller means queued incidents have nowhere to be delivered
+      // and must be parked for replay rather than merely noted as quiet.
+      check(current.controller.session, current.controller.label, "orchestrator_unavailable");
       for (const node of current.dag.nodes) {
         for (const attempt of node.attempts) {
           if (STATES.attempt.terminal.includes(attempt.state)) continue;
-          check(attempt.session, `${node.label} attempt ${attempt.attemptNumber}`);
+          check(attempt.session, `${node.label} attempt ${attempt.attemptNumber}`, "connection_lost");
         }
       }
       return changed;
@@ -708,20 +815,25 @@ export function createReporter({
             );
           }
           if (
-            STATES.attempt.terminal.includes(attempt.state) &&
-            attempt.state !== "failed" &&
-            attempt.session.activity === "ended" &&
-            attempt.state !== "succeeded"
+            attempt.expected &&
+            !attempt.expected.satisfied &&
+            !STATES.attempt.terminal.includes(attempt.state) &&
+            !STATES.attempt.waiting.includes(attempt.state) &&
+            attempt.session.activity === "idle" &&
+            attempt.session.activitySince &&
+            now() - Date.parse(attempt.session.activitySince) >= STATES.incident.envelopeSettleMs
           ) {
             open(
               toId(`inc-env-${base}`), "envelope_missing", node.nodeId, attempt.attemptId,
-              `${node.label} attempt ${attempt.attemptNumber} ended without its expected terminal envelope`,
+              `${node.label} attempt ${attempt.attemptNumber} went idle without its expected ${attempt.expected.status} envelope`,
               [
                 "LOOPVIZ_INCIDENT: envelope_missing",
                 `RUN_ID: ${current.runId}`,
                 `NODE: ${node.nodeId} (${node.label})`,
                 `ATTEMPT: ${attempt.attemptId} #${attempt.attemptNumber}`,
                 `SESSION: ${attempt.session.appSessionId ?? "unknown"}`,
+                `EXPECTED: ${attempt.expected.status}${attempt.expected.sequence === null ? "" : ` sequence ${attempt.expected.sequence}`}`,
+                `OBSERVED: idle since ${attempt.session.activitySince} with no recorded envelope`,
                 "ACTION: use this skill's produced-but-undelivered versus not-produced nudge exactly once.",
                 "This report is information only. It grants no approval, delivery authority, push authority, or terminal status.",
               ].join("\n"),
@@ -742,13 +854,24 @@ export function createReporter({
       if (!current) return [];
       const delivered = [];
       const backoff = STATES.incident.deliveryBackoffMs;
+      const controllerRef = current.controller.session;
+      // A process that is not the orchestrator cannot deliver into the
+      // orchestrator's session: delivery is target local. Silence is correct
+      // unless the orchestrator is genuinely unreachable, which is a health
+      // fact about its heartbeat rather than a fact about who is observing.
+      const orchestratorUnavailable = controllerRef.health === "connection_lost" ||
+        controllerRef.health === "ended" ||
+        controllerRef.health === "orchestrator_unavailable";
       for (const incident of current.incidents) {
         if (["resolved", "expired", "acknowledged", "delivered"].includes(incident.state)) continue;
         if (state.role !== "orchestrator") {
-          if (incident.state !== "recovery_pending") {
-            emit("incident.state", { incidentId: incident.incidentId, state: "recovery_pending", reason: "orchestrator session is not attached", attempt: incident.attempts }, {
-              kind: "system", basis: "system", immediate: true,
-            });
+          if (orchestratorUnavailable && incident.state !== "recovery_pending") {
+            emit("incident.state", {
+              incidentId: incident.incidentId,
+              state: "recovery_pending",
+              reason: `orchestrator session is ${controllerRef.health}`,
+              attempt: incident.attempts,
+            }, { kind: "system", basis: "system", immediate: true });
           }
           continue;
         }
@@ -830,11 +953,29 @@ export function createReporter({
         bodyChecksum: sha256(trimmed),
         expiresAt: isoAt(now() + ttlMs),
       });
-      const known = targetAppSessionId === current.controller.session.appSessionId ||
-        current.dag.nodes.some((n) => n.attempts.some((a) => a.session.appSessionId === targetAppSessionId));
-      if (!known) {
-        emit("outbox.state", { messageId, state: "denied", reason: "target session is not part of this run", attempt: 0 }, { immediate: true });
-        return { ok: false, messageId, reason: "target session is not part of this run" };
+      const deny = (reason) => {
+        emit("outbox.state", { messageId, state: "denied", reason, attempt: 0 }, { immediate: true });
+        return { ok: false, messageId, reason };
+      };
+      if (targetAppSessionId === current.controller.session.appSessionId) {
+        return { ok: true, messageId };
+      }
+      // Addressing a child requires naming a session this run actually owns, and
+      // one that can still read a turn. A settled or superseded attempt will
+      // never consume the message, so it is denied with its exact target and
+      // reason instead of being queued until it silently expires.
+      let target = null;
+      for (const node of current.dag.nodes) {
+        for (const attempt of node.attempts) {
+          if (attempt.session.appSessionId === targetAppSessionId) target = { node, attempt };
+        }
+      }
+      if (!target) return deny(`target session ${targetAppSessionId} is not part of this run`);
+      if (STATES.attempt.terminal.includes(target.attempt.state)) {
+        return deny(`target session ${targetAppSessionId} is ${target.attempt.state} on ${target.node.nodeId} and cannot receive a message`);
+      }
+      if (target.attempt.session.health === "ended") {
+        return deny(`target session ${targetAppSessionId} has ended and cannot receive a message`);
       }
       return { ok: true, messageId };
     },
@@ -876,22 +1017,40 @@ export function createReporter({
 
     /**
      * Acceptance is proved by the exact bytes reappearing as a user turn in the
-     * target session, so a truncated or rewritten body is never accepted.
+     * target session, so a truncated or rewritten body is never accepted. The
+     * candidate set is read from the durable projection rather than from memory
+     * alone, so a process restart between delivery and acceptance still settles
+     * the message instead of stranding it.
      */
     noteUserMessage(content) {
-      if (typeof content !== "string" || state.deliveredMessages.size === 0) return null;
-      for (const [messageId, body] of state.deliveredMessages) {
-        if (content.includes(body)) {
-          state.deliveredMessages.delete(messageId);
-          emit("outbox.state", { messageId, state: "accepted", reason: "exact message body observed in the target session", attempt: 0 }, { immediate: true });
-          return messageId;
-        }
+      if (typeof content !== "string" || content.length === 0) return null;
+      const current = projection({ force: true });
+      const pending = (current?.outbox ?? []).filter((m) => m.state === "delivered" && !m.terminal);
+      for (const message of pending) {
+        if (typeof message.body !== "string" || message.body.length === 0) continue;
+        if (!content.includes(message.body)) continue;
+        // Containment alone is not proof: the recorded checksum must match the
+        // bytes that were actually observed, so a body that was rewritten while
+        // still containing the original text is never accepted.
+        if (sha256(message.body) !== message.bodyChecksum) continue;
+        state.deliveredMessages.delete(message.messageId);
+        emit("outbox.state", { messageId: message.messageId, state: "accepted", reason: "exact message body observed in the target session", attempt: message.attempts }, { immediate: true });
+        return message.messageId;
       }
       return null;
     },
 
     recordUsageSample(payload) {
       const sample = normalizeUsageSample(payload);
+      // The host carries the exact per-batch prices it charged on the usage
+      // payload itself. Recording them as an immutable snapshot is the only way
+      // a historical estimate can be recomputed later with the prices that were
+      // actually in force, so it is not left to a separate model listing that
+      // may be empty or may have changed since.
+      if (!sample.priceSnapshotId) {
+        const inlinePrices = priceModelsFromUsagePayload(payload, sample.model);
+        if (inlinePrices.length > 0) sample.priceSnapshotId = writePriceSnapshot(inlinePrices);
+      }
       state.attributedSinceReconcile += sample.creditCost;
       emit("usage.sample", sample, { coalesceKey: null });
       return sample;
@@ -909,6 +1068,18 @@ export function createReporter({
         nanoAiu: metrics?.totalNanoAiu ?? 0,
         apiDurationMs: metrics?.totalApiDurationMs ?? 0,
       };
+      // The baseline has to survive a restart. The host counter is monotonic for
+      // the life of its session, so a reporter that came up after a crash and
+      // started from zero would treat the entire historical aggregate as fresh
+      // spend and add it on top of the samples already recorded. The durable log
+      // is the complete record of this source, so it replaces the in-memory
+      // window rather than adding to it: adding would count live samples twice
+      // and hide the blind window they were meant to reveal.
+      if (state.lastUsageAggregate === null) {
+        const recovered = recoverUsageWindow();
+        state.lastUsageAggregate = recovered.aggregate;
+        state.attributedSinceReconcile = recovered.attributed;
+      }
       const previous = state.lastUsageAggregate ?? { premiumRequestCost: 0, userRequests: 0, nanoAiu: 0, apiDurationMs: 0 };
       const delta = {
         premiumRequestCost: Math.max(0, aggregate.premiumRequestCost - previous.premiumRequestCost),
@@ -919,31 +1090,36 @@ export function createReporter({
       const attributed = state.attributedSinceReconcile;
       state.lastUsageAggregate = aggregate;
       state.attributedSinceReconcile = 0;
-      if (delta.premiumRequestCost === 0 && delta.userRequests === 0 && window !== "final") return null;
+      // The host exposes the same spend two ways: a premium request cost and a
+      // nano-AIU total. Both are credit measures, and either can be the only one
+      // that moves. Deciding here which one the window is worth means there is
+      // exactly one definition of an aggregate credit delta, and the projection
+      // never has to guess.
+      const deltaCredits = Math.max(delta.premiumRequestCost, delta.nanoAiu / NANO_PER_CREDIT);
+      if (deltaCredits === 0 && delta.userRequests === 0 && window !== "final") return null;
       return emit("usage.reconciliation", {
         window,
         aggregate,
         delta,
+        deltaCredits,
         attributedSampleCredits: attributed,
-        confidence: delta.premiumRequestCost > attributed ? "partial" : "estimated",
+        // Credits the host billed that were never seen as a live sample are a
+        // blind window: the total is real but its per-attempt attribution is
+        // incomplete, which FR10 requires to be shown as partial.
+        confidence: deltaCredits > attributed ? "partial" : "estimated",
       }, { immediate: window === "final" });
     },
 
     /**
      * Historical estimates stay immutable: a snapshot is written once per id.
      *
-     * Callers hand over whatever `model.list` returned. Normalising to the
+     * Callers hand over whatever the host's model listing returned, or the
+     * per-token price breakdown carried on a usage payload. Normalising to the
      * contract shape here means there is exactly one definition of how a model
      * price becomes a recorded price, and a producer cannot drift away from it.
      */
-    snapshotPrices(models, { unit = "copilot_ai_credits", currency = null } = {}) {
-      const normalized = normalizePriceModels(models);
-      if (normalized.length === 0) return null;
-      const snapshotId = toId(`price-${sha256(JSON.stringify(normalized)).slice(7, 23)}`);
-      const current = projection();
-      if (current && current.priceSnapshots.some((s) => s.snapshotId === snapshotId)) return snapshotId;
-      emit("price.snapshot", { snapshotId, unit, currency, models: normalized }, { immediate: true });
-      return snapshotId;
+    snapshotPrices(models, options = {}) {
+      return writePriceSnapshot(models, options);
     },
 
     /**

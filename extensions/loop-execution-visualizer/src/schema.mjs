@@ -130,13 +130,17 @@ export function createRegistry(documents, options = {}) {
         : typeof value === "number"
           ? (Number.isInteger(value) ? "integer" : "number")
           : typeof value;
-      const ok = schema.type === "integer"
+      // JSON Schema allows a union of permitted types. A nullable field is the
+      // common case here, and treating the union as an opaque string would
+      // reject every value it is supposed to allow.
+      const allowed = Array.isArray(schema.type) ? schema.type : [schema.type];
+      const accepts = (expected) => expected === "integer"
         ? actual === "integer"
-        : schema.type === "number"
+        : expected === "number"
           ? (actual === "number" || actual === "integer")
-          : actual === schema.type;
-      if (!ok) {
-        errors.push({ path, message: `expected type ${schema.type}, received ${actual}` });
+          : actual === expected;
+      if (!allowed.some(accepts)) {
+        errors.push({ path, message: `expected type ${allowed.join(",")}, received ${actual}` });
         return;
       }
     }

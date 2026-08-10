@@ -249,7 +249,7 @@ test("store: a crashed writer leaves a replayable log and a fresh process resume
     const beforeCrash = eventFiles(store.storeDir, "crash-run").length;
 
     // The process dies mid-write: a half record lands on disk.
-    const dir = join(store.storeDir, "runs", "crash-run", "events", "orchestrator-host-lead-111");
+    const dir = join(store.storeDir, "runs", "crash-run", "events", lead.sourceId);
     const highest = readdirSync(dir).sort().at(-1);
     const tornSeq = String(Number.parseInt(highest.slice(0, 12), 10) + 1).padStart(12, "0");
     writeFileSync(join(dir, `${tornSeq}.json`), '{"checksum":"sha256:aaa","event":{"runId":"crash-run"', "utf8");

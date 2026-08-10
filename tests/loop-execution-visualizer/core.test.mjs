@@ -123,7 +123,7 @@ test("contracts: schema validator rejects malformed and wrong-typed events separ
     occurredAt: "2026-08-09T00:00:00.000Z",
     recordedAt: "2026-08-09T00:00:00.000Z",
     causalParentId: null,
-    data: { workflowState: "planning", reason: "phase 0" },
+    data: { workflowState: "scheduling", reason: "phase 0" },
   };
   assert.equal(validateEvent(base).ok, true);
 
@@ -141,7 +141,7 @@ test("contracts: schema validator rejects malformed and wrong-typed events separ
   const unknownType = { ...base, type: "totally.invented", data: {} };
   assert.match(validateEvent(unknownType).reason, /unknown event type/);
 
-  const extraProperty = { ...base, data: { workflowState: "planning", reason: "x", smuggled: true } };
+  const extraProperty = { ...base, data: { workflowState: "scheduling", reason: "x", smuggled: true } };
   assert.equal(validateEvent(extraProperty).ok, false);
 });
 
@@ -157,7 +157,7 @@ test("store: records are checksum framed and a tampered record is rejected", () 
     occurredAt: "2026-08-09T00:00:00.000Z",
     recordedAt: "2026-08-09T00:00:00.000Z",
     causalParentId: null,
-    data: { workflowState: "planning", reason: "phase 0" },
+    data: { workflowState: "scheduling", reason: "phase 0" },
   };
   const framed = frameRecord(event);
   assert.equal(parseRecord(framed).ok, true);
@@ -176,7 +176,7 @@ test("store: writes are immutable, sequences resume at max+1 and torn files are 
   try {
     const first = orchestrator(tmp.storeDir, clock);
     first.declareRun(sampleRunSpec("store-run"));
-    first.emit("controller.state", { workflowState: "planning", reason: "first process" });
+    first.emit("controller.state", { workflowState: "scheduling", reason: "first process" });
     first.flush();
 
     const sourceDirs = readdirSync(join(tmp.storeDir, "runs", "store-run", "events"));
@@ -188,7 +188,7 @@ test("store: writes are immutable, sequences resume at max+1 and torn files are 
     // A restarted process with the same identity must not overwrite anything.
     const restarted = orchestrator(tmp.storeDir, clock);
     restarted.attachRun("store-run");
-    restarted.emit("controller.state", { workflowState: "dispatching", reason: "after restart" });
+    restarted.emit("controller.state", { workflowState: "scheduling", reason: "after restart" });
     restarted.flush();
     const after = readdirSync(eventDir).sort();
     assert.deepEqual(after, ["000000000001.json", "000000000002.json", "000000000003.json"]);
@@ -244,7 +244,7 @@ test("projection: full engineering-loop flow yields a schema-valid run", async (
     const coord = orchestrator(tmp.storeDir, clock);
     const spec = sampleRunSpec("el-run");
     coord.declareRun(spec);
-    coord.emit("controller.state", { workflowState: "dispatching", reason: "starting requirements", waitingOnNodeIds: ["requirements"] });
+    coord.emit("controller.state", { workflowState: "scheduling", reason: "starting requirements", waitingOnNodeIds: ["requirements"] });
 
     const grant = coord.startAttempt({
       nodeId: "requirements", attemptId: "requirements-a1", attemptNumber: 1,
@@ -258,7 +258,7 @@ test("projection: full engineering-loop flow yields a schema-valid run", async (
     assert.equal(redeem.ok, true, redeem.reason);
     assert.deepEqual(redeem.binding, { grantId: grant.grantId, nodeId: "requirements", attemptId: "requirements-a1" });
 
-    worker.heartbeat("thinking");
+    worker.heartbeat("active");
     worker.emit("semantic.report", {
       nodeId: "requirements",
       attemptId: "requirements-a1",
@@ -317,25 +317,25 @@ test("projection: the orchestrator's own health and host activity are recorded, 
 
     // An orchestrator has no enrollment binding. Its runtime identity has to
     // carry these events or the controller lane can never leave `unknown`.
-    coord.heartbeat("responding");
-    coord.noteActivity("tool_running", "loopviz_controller_state");
+    coord.heartbeat("active");
+    coord.noteActivity("active", "running tool loopviz_controller_state");
     coord.flush();
 
     let run = coord.projection({ force: true });
     assert.equal(run.integrity.rejected, 0, "self-reported controller telemetry is authorized");
     assert.equal(run.controller.session.health, "healthy");
-    assert.equal(run.controller.hostActivity, "tool_running");
-    assert.equal(run.controller.hostActivityDetail, "loopviz_controller_state");
+    assert.equal(run.controller.hostActivity, "active");
+    assert.equal(run.controller.hostActivityDetail, "running tool loopviz_controller_state");
 
     // Going idle describes the process only. It can never complete the run.
     clock.advance(1000);
     coord.noteActivity("idle", "waiting for children");
-    coord.emit("controller.state", { workflowState: "awaiting_children", reason: "children dispatched", waitingOnNodeIds: ["design"] });
+    coord.emit("controller.state", { workflowState: "waiting_children", reason: "children dispatched", waitingOnNodeIds: ["design"] });
     coord.flush();
 
     run = coord.projection({ force: true });
     assert.equal(run.controller.hostActivity, "idle");
-    assert.equal(run.controller.workflowState, "awaiting_children", "host idle never becomes a workflow state");
+    assert.equal(run.controller.workflowState, "waiting_children", "host idle never becomes a workflow state");
     assert.equal(run.state, "running");
     assert.equal(run.outcome, null);
     assert.ok(
@@ -356,7 +356,7 @@ test("store: a restarted orchestrator re-adopts its own live run and no other", 
   try {
     const first = orchestrator(tmp.storeDir, clock);
     first.declareRun(sampleRunSpec("resume-mine"));
-    first.emit("controller.state", { workflowState: "awaiting_children", reason: "children dispatched" });
+    first.emit("controller.state", { workflowState: "waiting_children", reason: "children dispatched" });
     first.flush();
     first.close();
 
