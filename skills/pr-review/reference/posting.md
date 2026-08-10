@@ -83,7 +83,7 @@ For each approved item in order:
 |---|---|
 | Exactly one new matching immutable object | `confirmed` |
 | Multiple, delayed, or ambiguous matches | `uncertain` |
-| Zero matches after authoritative pre-acceptance rejection or certified polling | `proven_unposted` |
+| Zero matches after authoritative pre-acceptance rejection or bounded consistency polling | `proven_unposted` |
 | Zero matches otherwise | `uncertain` |
 
 A GitHub invalid-anchor `422` is `proven_unposted` and may return only to the separately approved

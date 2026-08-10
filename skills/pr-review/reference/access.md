@@ -83,13 +83,11 @@ endpoint, provider authority and organization/host, acting-identity route, and a
 operation-name to tool mapping for every read and write operation. The declared provider
 authority, never a local or stdio transport host, must match the locator.
 
-For Azure DevOps, rank every qualifying MCP candidate ahead of installed `az devops`. The
-certification step must confirm that the preferred candidate has an enabled ledger row before
-selection. Display the MCP fields above and obtain explicit user confirmation, even when it is
-the only candidate. Use installed `az devops` only when no qualifying, ledger-enabled MCP
-candidate exists. For GitHub, otherwise use installed `gh`. Present ambiguity among
-equal-priority candidates as a sorted, visible choice and never switch silently. A failure
-never falls back to another candidate.
+Use installed `gh` for GitHub. For Azure DevOps, rank every qualifying ADO MCP candidate ahead of
+installed `az devops`. Display the MCP fields above and obtain explicit user confirmation, even
+when it is the only candidate. Use `az devops` only when no qualifying MCP candidate exists.
+Present ambiguity among equal-priority candidates as a sorted, visible choice and never switch
+silently. A failure never falls back to another candidate.
 
 After authentication, probe the chosen adapter for immutable IDs and semantic read-back of
 acting identity, pull request and revision, merge-base metadata, one paged change read, and the
@@ -99,19 +97,7 @@ identity, or adapter version, disqualifies the adapter and invalidates any appro
 A missing adapter reports the exact install, enable, or authentication action the user must
 perform, and executes none of it.
 
-## Certification and credential handling
-
-Read `certification.md`. A versioned, release-owned certification ledger enables exactly the
-current GitHub `gh` row, the current Azure DevOps `az` row, and one row per specifically
-advertised and selected MCP. No row means the adapter is disabled. An
-`enabled-uncertified` row may be used, but no report may claim certified provider behavior.
-A normal run is never represented as certification evidence.
-
-A live certification write additionally requires an operator-approved, expiring, nonce and
-run-scoped fixture authorization manifest naming the immutable fixture IDs, acting identity,
-allowed comment types and count, cleanup owner, and an explicit no-other-mutation clause. Bind
-it into `AccessContext`, every `ApprovedRequest`, the journal, and the pre-write guard. Without
-it, no certification write may happen and the run reports `BLOCKED`.
+## Credential handling
 
 When `az devops` is selected, follow the `terminal.*` blocks in `commands.md`.
 `terminal.preflight` must execute before secret entry and prove a visible interactive terminal,
@@ -150,7 +136,7 @@ user request. Windows grants the current user plus `Administrators` and `SYSTEM`
 ## AccessContext
 
 `AccessContext` binds the canonical host, provider, immutable project, repository, pull-request,
-and acting-identity IDs, adapter identity/version and operation mapping, certification row,
-fixture manifest, and authentication epoch. Its `access_digest` hashes that canonical object
-and appears in every run state, child envelope, `ApprovedRequest`, and journal row. Create it
-atomically at the end of bootstrap; nothing earlier may use it.
+and acting-identity IDs, adapter identity/version and operation mapping, and authentication
+epoch. Its `access_digest` hashes that canonical object and appears in every run state, child
+envelope, `ApprovedRequest`, and journal row. Create it atomically at the end of bootstrap;
+nothing earlier may use it.

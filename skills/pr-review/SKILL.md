@@ -14,7 +14,7 @@ state.
 
 | When | Read |
 |---|---|
-| Before any provider action | `reference/access.md`, then `reference/certification.md` |
+| Before any provider action | `reference/access.md` |
 | During acquisition | `reference/acquisition.md` |
 | Before launching reviewers | `reference/review.md` and `prompts/area-review.md` |
 | Before exploration | `reference/review.md` and `prompts/exploration.md` |
@@ -41,10 +41,9 @@ sending; a prompt still containing `<PLACEHOLDER>` is not ready.
 8. Any mutation to text, target, suggestion, identity, adapter, revision, order, or membership
    revokes approval.
 9. Never install, enable, authenticate, or silently switch an adapter.
-10. Prefer a qualifying, ledger-enabled Azure DevOps MCP adapter after explicit confirmation.
-    Use PAT-backed `az devops` only when no such MCP exists. Its credential remains only as
-    process-scoped `AZURE_DEVOPS_EXT_PAT` in the visible credential terminal; never use
-    `az devops login`.
+10. Use `gh` for GitHub. For Azure DevOps, prefer an available ADO MCP adapter after explicit
+    confirmation; otherwise use `az devops`. Keep its PAT only as process-scoped
+    `AZURE_DEVOPS_EXT_PAT` in the visible credential terminal; never use `az devops login`.
 11. Every child delivers each requested terminal envelope exactly once through
     `send_session_message`.
 12. Never retry a confirmed or uncertain write. Retry only a proven-unposted comment after a

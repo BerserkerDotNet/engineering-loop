@@ -21,9 +21,7 @@
     The contract checks are structural: they parse Markdown and prove that the skills
     state their rules. They do not execute any agent, provider adapter, terminal, or
     network operation, and they therefore prove nothing about run-time agent or
-    provider behavior. Claiming provider behavior requires live certification against
-    explicitly authorized disposable fixtures, which this script neither performs nor
-    simulates.
+    provider behavior.
 
     -SelfTest additionally runs three executable proofs, all against throwaway paths
     under the temporary directory and never against the inspected repository. The
@@ -128,8 +126,7 @@ $script:SkillCatalog = [ordered]@{
             'reference/review.md',
             'reference/posting.md',
             'reference/operations.md',
-            'reference/commands.md',
-            'reference/certification.md'
+            'reference/commands.md'
         )
         RequiredDescriptionTokens  = @('pull request', 'review', 'GitHub', 'Azure DevOps', 'comment')
         ForbiddenDescriptionTokens = @('product requirements', 'root cause', 'reproduc')
@@ -1179,25 +1176,16 @@ function Test-ReviewAccessSelection {
         'discoverable-not-active' = 'Discoverable is not active, dynamic extension installation is disabled, and\s*Agent Finder results are excluded\.'
         'mcp-qualification'      = 'a stable adapter identity\s*and version, its transport endpoint, the provider authority with organization and host it acts\s*against, its acting-identity route, and a complete operation-name to tool mapping for every\s*read and write operation'
         'mcp-authority-match'    = 'The declared provider authority, never a local\s*or stdio transport host, must match the locator\.'
-        'ado-mcp-preferred'      = 'For Azure DevOps, rank every qualifying MCP candidate ahead of installed `az devops`\.'
-        'mcp-ledger-enabled'     = 'Step 4\s*must confirm that the preferred candidate has an enabled ledger row before selection\.'
+        'ado-mcp-preferred'        = 'For Azure DevOps, rank every qualifying MCP candidate ahead of installed `az devops`\.'
         'mcp-confirmed'          = 'Display\s*the MCP fields above and obtain explicit user confirmation, even when it is the only candidate\.'
-        'ado-cli-fallback-scope' = 'Use installed `az devops` only when no qualifying, ledger-enabled MCP candidate exists\.'
+        'ado-cli-fallback-scope' = 'Use `az devops` only when no qualifying MCP candidate exists\.'
         'github-cli-scope'       = 'For\s*GitHub, otherwise use installed `gh`\.'
         'no-silent-switch'       = 'never switch silently'
         'no-cross-candidate-fallback' = 'A failure never falls back to\s*another candidate\.'
         'probe-read-back'        = 'probe the chosen adapter for immutable IDs and semantic read-back of\s*acting identity, pull request and revision, paging, one pinned blob, and the complete comment\s*inventory'
         'drift-disqualifies'     = 'A missing operation, or drift in mapping, provider authority, acting identity, or\s*adapter version, disqualifies the adapter and invalidates any approval bound to it\.'
         'never-installs'         = 'reports the exact install, enable, or authentication action the user must\s*perform, and executes none of it'
-        'ledger-shape'           = 'Read `reference/certification\.md`\. A versioned, release-owned certification ledger enables\s*exactly the current GitHub `gh` row, the current Azure DevOps `az` row, and one row per\s*specifically advertised and selected MCP\.'
-        'no-row-disabled'        = 'No row means the adapter is disabled\.'
-        'uncertified-not-claimed' = 'An adapter whose\s*row is `enabled-uncertified` may be used, but no report may claim certified provider behavior\.'
-        'normal-run-not-evidence' = 'A\s*normal run is never represented as certification evidence\.'
-        'fixture-manifest'       = 'A live certification write additionally requires an operator-approved, expiring, nonce and\s*run-scoped fixture authorization manifest'
-        'fixture-manifest-fields' = 'naming the immutable fixture IDs, the acting\s*identity, the allowed comment types and count, the cleanup owner, and an explicit\s*no-other-mutation clause'
-        'fixture-manifest-bound' = 'bound into `AccessContext`, into every\s*`ApprovedRequest`, into the journal, and into the pre-write guard'
-        'fixture-missing-blocks' = 'Without it, no certification\s*write may happen and the run reports `BLOCKED` with the exact missing fixture or evidence\.'
-        'access-context-binding' = '`AccessContext` binds the canonical host, provider, immutable project, repository,\s*pull-request, and acting-identity IDs, the adapter identity and version, the operation mapping,\s*the certification ledger row, any fixture authorization manifest, and the authentication epoch\.'
+        'access-context-binding' = '`AccessContext` binds the canonical host, provider, immutable project, repository,\s*pull-request, and acting-identity IDs, adapter identity/version and operation mapping, and authentication\s*epoch\.'
         'access-digest-flow'     = 'Its `access_digest` is a SHA-256 over that canonical object and appears in every run state\s*record, every child envelope, every `ApprovedRequest`, and every journal row\.'
         'access-context-atomic'  = 'Create it\s*atomically at the end of bootstrap; nothing earlier may use it\.'
     }
@@ -1281,14 +1269,14 @@ function Test-ReviewModelContract {
     foreach ($row in $script:ReviewModelTable) {
         $id = $row.Model.Trim('`')
         if ($script:AllowedReviewModelIds -notcontains $id) {
-            Add-Violation $Violations 'review-model-table' "Role '$($row.Role)' names model '$id', which is not in the certified review model set."
+            Add-Violation $Violations 'review-model-table' "Role '$($row.Role)' names model '$id', which is not in the allowed review model set."
         }
     }
 
     $required = [ordered]@{
         'explicit-kickoff-model' = 'Pass every selection explicitly in `kickoff\.model`\.'
         'missing-model-blocks'   = 'stop\s*before creating that session and report `BLOCKED` with the exact missing ID'
-        'rotation-recertifies'   = 'Rotating a model\s*requires a versioned change to this table and full recertification\.'
+        'rotation-revalidates'   = 'Rotating a model\s*requires a versioned change to this table and full validation\.'
         'one-replacement'        = 'exactly one recorded same-model replacement is allowed, after which the run blocks'
         'child-launch-shape'     = '`project_id`, top-level `execution_location: "local"`, `coordinate_with_creator: true`,\s*`notify_on_idle: "always"`, plus `kickoff` with `mode: "autopilot"`'
         'child-prompt-binding'   = 'carrying `COORDINATOR_SESSION_ID`, `RUN_ID`, `PHASE`, a\s*monotonically increasing `SEQUENCE`, the isolated bundle path, `bundle_digest`, `access_digest`,\s*and `review_digest`'
@@ -1352,7 +1340,7 @@ function Test-ReviewPostingContract {
     $itemRows = [ordered]@{
         'confirmed'      = '\| Exactly one new matching immutable object \| `confirmed` \|'
         'uncertain-many' = '\| Multiple, delayed, or ambiguous matches \| `uncertain` \|'
-        'proven-unposted' = '\| Zero matches after an authoritative pre-acceptance rejection or a certified consistency polling window \| `proven_unposted` \|'
+        'proven-unposted' = '\| Zero matches after authoritative pre-acceptance rejection or bounded consistency polling \| `proven_unposted` \|'
         'uncertain-zero' = '\| Zero matches otherwise \| `uncertain` \|'
     }
     foreach ($id in $itemRows.Keys) {
@@ -2309,116 +2297,6 @@ function Test-ReviewDecisionPredicate {
     }
 }
 
-function Test-ReviewCertificationLedger {
-    param([string] $Root, [System.Collections.Generic.List[string]] $Violations)
-
-    $relative = "skills/$($script:ReviewSkill)/reference/certification.md"
-    $path = Join-Path $Root $relative
-    if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { return }
-
-    $text = Get-NormalizedText -Path $path
-
-    $required = [ordered]@{
-        'release-owned'      = 'Release-owned\. This file, not a run, decides which adapters this workflow may use and which\s*provider behavior may be claimed\.'
-        'never-infer-row'    = 'Read it during Phase 1 Step 4 and never infer a row\.'
-        'no-row-disabled'    = 'An adapter with no row is disabled\. Selecting it is a `BLOCKED` outcome, not a fallback\.'
-        'github-row'         = '\| `gh` \| `github` \| [^|]+ \| [^|]+ \| [^|]+ \| `enabled-uncertified` \|'
-        'ado-row'            = '\| `az devops` \| `ado` \| [^|]+ \| [^|]+ \| [^|]+ \| `enabled-uncertified` \|'
-        'no-mcp-row'         = 'No MCP row exists\.'
-        'mcp-disabled'       = 'every MCP candidate is disabled, however capable it appears at run time'
-        'uncertified-meaning' = 'no report, summary, or envelope may state that this workflow''s provider behavior is certified'
-        'normal-run-not-evidence' = 'A normal run\s*is never certification evidence\.'
-        'manifest-required'  = 'A live certification write requires an operator-approved manifest\.'
-        'manifest-missing-blocks' = 'no\s*certification write may happen and the run reports `BLOCKED` naming the exact missing field'
-        'pre-write-guard'    = 'The pre-write guard compares the manifest nonce, expiry, run, fixture IDs, acting identity, type,\s*and remaining count before every certification write, and blocks on the first mismatch\.'
-        'never-real-target'  = 'A\s*manifest never authorizes a write against a real, shared, or production pull request\.'
-        'matrix-quotes-prd'  = 'Every row is one committed product acceptance criterion, quoted verbatim from the committed\s*product requirements document that governs this release\.'
-        'subcases-not-substitutes' = 'Internal entry, workspace, model, serializer, and\s*provider scenarios are subcases listed inside the criterion they serve; they never substitute for\s*it\.'
-        'matrix-mandatory'   = 'Every row must pass on current `gh`, on current `az devops`, and on each MCP row this release\s*enables, before that adapter''s row may move to `enabled`\. A skipped row is a failed row\.'
-        'top-override'       = 'Paging mechanics may use a small fixture with a certification-only `\$top` override\.'
-        'cap-spot-check'     = 'The\s*authoritative 2,000 ceiling gets a separately recorded spot check, refreshed whenever the API\s*version changes\.'
-        'cap-fixture-record' = 'without that\s*recorded proof, the paging criterion fails'
-        'rate-limit-not-required' = 'Neither the committed product requirements nor the approved design enumerates provider rate\s*limiting as a required live scenario, so no row requires it and no certification run may generate\s*write volume in order to induce it\.'
-        'no-abusive-traffic' = 'Deliberately exceeding a documented provider limit is abusive\s*traffic against a live service and is never certification evidence\.'
-        'forbidden-403-route' = 'by repeating the exact same operation against the same\s*fixture with a deliberately read-only credential, which creates nothing'
-        'rate-limit-supplemental' = 'A genuine provider rate-limit response observed on a non-mutating read may be recorded as\s*supplemental transport evidence and run through the identical classifier the write loop uses\.'
-        'supplemental-never-certifies' = 'Supplemental transport evidence never moves a row to `enabled` on its own, never substitutes for a\s*criterion or any of its subcases, and never proves write-path behavior or provider parity\.'
-        'no-injection'       = 'Simulated, injected, intercepted, proxied, and locally synthesized provider responses are never\s*evidence\.'
-        'only-sanctioned-deviation' = 'Every certification response comes from the declared provider authority through the\s*exact command form in `reference/commands\.md`, and the certification-only `\$top` paging override\s*recorded above is the only sanctioned deviation from a normal run\.'
-        'cap-fixture-read-only' = 'It is a separate persistent\s*fixture, it is read-only after creation, it is outside every disposable fixture cleanup, it is\s*outside `fixture-ids` and outside every mutation authorization, and it is refreshed whenever the\s*API version changes\.'
-        'cap-fixture-no-write' = 'No manifest authorizes any write against it, and only `GET` reads may target\s*it\.'
-        'cap-ceiling-behavior' = 'A request above the ceiling returns the ceiling and non-zero continuation cursors rather than an\s*error, so a reader that trusts its own requested page size silently loses changes\.'
-        'cap-paging-termination' = 'Paging\s*therefore terminates only when both cursors are zero, never when a page returns fewer entries\s*than requested\.'
-        'cap-moves-no-row'   = 'It is one\s*required spot check, not a criterion and not a matrix, so it moves no row: both rows stay\s*`enabled-uncertified` until every AC1-AC8 row passes\.'
-        'status-uncertified' = 'No live AC1-AC8 matrix has been executed for any adapter in this release, because no\s*operator-approved fixture authorization manifest exists\.'
-        'status-no-claim'    = 'Do not claim certified provider behavior, and do not perform a\s*certification write, until an operator supplies the manifest and this file records the result\.'
-    }
-    foreach ($id in $required.Keys) {
-        if (-not (Test-Contains $text $required[$id])) {
-            Add-Violation $Violations 'review-certification' "$relative no longer states '$id'."
-        }
-    }
-
-    foreach ($field in @('manifest-id', 'nonce', 'expires-at', 'run-id', 'fixture-ids', 'acting-identity', 'comment-types', 'comment-count', 'cleanup-owner', 'no-other-mutation')) {
-        if (-not (Test-Contains $text ('\| `' + [regex]::Escape($field) + '` \| [^|]+ \|'))) {
-            Add-Violation $Violations 'review-certification' "$relative no longer requires fixture authorization field '$field'."
-        }
-    }
-
-    # The recorded cap fixture is the authoritative ceiling proof. Its identity, API version, and
-    # observed boundary results must all be present, or the paging criterion has no evidence.
-    foreach ($field in @('provider', 'project-id', 'repository-id', 'pull-request-id', 'iteration', 'api-version', 'observed-at', 'authorization')) {
-        if (-not (Test-Contains $text ('\| `' + [regex]::Escape($field) + '` \| [^|]+ \|'))) {
-            Add-Violation $Violations 'review-certification' "$relative records no '$field' for the persistent cap fixture, so the 2,000 ceiling has no recorded proof."
-        }
-    }
-    $capRows = [ordered]@{
-        '1999' = '\| `1999` \| `200` \| `1999` \| `2` \| `1999` \|'
-        '2000' = '\| `2000` \| `200` \| `2000` \| `1` \| `2000` \|'
-        '2001' = '\| `2001` \| `200` \| `2000` \| `1` \| `2000` \|'
-    }
-    foreach ($id in $capRows.Keys) {
-        if (-not (Test-Contains $text $capRows[$id])) {
-            Add-Violation $Violations 'review-certification' "$relative records no observed '`$top=$id' result for the persistent cap fixture."
-        }
-    }
-
-    # Rate limiting is not a committed criterion or an approved-design scenario. Restoring it as a
-    # mandatory live subcase would require a certification run to generate abusive write volume
-    # against a live provider in order to pass. The ledger text is whitespace-normalized to one
-    # line, so the row is bounded by the next criterion cell rather than by a line break.
-    $ac7Row = [regex]::Match($text, '\| AC7 \|(.*?)\| AC8 \|')
-    if ($ac7Row.Success -and $ac7Row.Groups[1].Value -match 'rate.limit') {
-        Add-Violation $Violations 'review-certification' "The 'AC7' row in $relative requires rate limiting as a live subcase, which neither the committed PRD nor the approved design enumerates and which no run can induce without abusive provider traffic."
-    }
-
-    # Each row must quote the actual committed criterion, not merely carry the label. Derive the
-    # expected text from the PRD so a relabeled internal check cannot masquerade as a criterion.
-    $prdPath = Join-Path $Root 'docs/engineering-loop/pr-review-skill/prd.md'
-    $prdCriteria = @{}
-    if (Test-Path -LiteralPath $prdPath -PathType Leaf) {
-        $prdText = Get-NormalizedText -Path $prdPath
-        foreach ($match in [regex]::Matches($prdText, '- (AC[1-8])\. (.+?) \((?:G|NG|FR|EF|C)[^)]*\)')) {
-            $prdCriteria[$match.Groups[1].Value] = $match.Groups[2].Value.Trim()
-        }
-    }
-
-    foreach ($criterion in @('AC1', 'AC2', 'AC3', 'AC4', 'AC5', 'AC6', 'AC7', 'AC8')) {
-        if (-not (Test-Contains $text ('\| ' + $criterion + ' \| "[^|]+" \| [^|]+ \| [^|]+ \|'))) {
-            Add-Violation $Violations 'review-certification' "$relative has no four-column live certification row quoting the committed PRD text for '$criterion'."
-            continue
-        }
-        if (-not $prdCriteria.ContainsKey($criterion)) {
-            Add-Violation $Violations 'review-certification' "The committed PRD has no parsable '$criterion', so $relative cannot be checked against it."
-            continue
-        }
-        $quoted = '\| ' + $criterion + ' \| "' + [regex]::Escape($prdCriteria[$criterion]) + '" \|'
-        if (-not (Test-Contains $text $quoted)) {
-            Add-Violation $Violations 'review-certification' "The '$criterion' row in $relative does not quote the committed PRD criterion text, so it maps a label rather than the criterion."
-        }
-    }
-}
-
 function Test-ReviewSkill {
     param([string] $Root, [System.Collections.Generic.List[string]] $Violations)
 
@@ -2435,8 +2313,9 @@ function Test-ReviewSkill {
     $required = [ordered]@{
         'bootstrap-scope'          = 'Bootstrap must not open\s*the review workspace, launch a child, preview, approve, journal, or write\.'
         'ascii-host'               = 'the host must already be ASCII lowercase and exactly `github\.com`,\s*`dev\.azure\.com`, or `<org>\.visualstudio\.com`'
-        'ado-mcp-preferred'        = 'For Azure DevOps, rank every qualifying MCP candidate ahead of installed `az devops`\.'
-        'ado-cli-fallback'         = 'Use installed `az devops` only when no qualifying, ledger-enabled MCP\s*candidate exists\.'
+        'github-tool'              = 'Use installed `gh` for GitHub\.'
+        'ado-mcp-preferred'        = 'For Azure DevOps, rank every qualifying ADO MCP candidate ahead of\s*installed `az devops`\.'
+        'ado-cli-fallback'         = 'Use `az devops` only when no qualifying MCP candidate exists\.'
         'no-adapter-fallback'      = 'A failure\s*never falls back to another candidate\.'
         'terminal-allowlist'       = '\| `terminal-allow:cleanup` \| The credential clear and terminal close \|'
         'terminal-end-events'      = 'a five-minute idle timeout, cancellation, terminal\s*close, a block, logout, run end, adapter or version change, an invalid or insufficient PAT, or a\s*user request'
@@ -2469,7 +2348,6 @@ function Test-ReviewSkill {
     Test-ReviewProbeAndPreflight -Root $Root -SkillText $skillText -Violations $Violations
     Test-ReviewDecisionPredicate -Root $Root -SkillText $skillText -Violations $Violations
     Test-ReviewContractBlocks -Root $Root -Violations $Violations
-    Test-ReviewCertificationLedger -Root $Root -Violations $Violations
     Test-ReviewOperationBijection -Root $Root -Violations $Violations
     Test-ReviewPromptContracts -Root $Root -Violations $Violations
 }
@@ -3288,101 +3166,8 @@ capability: general-create' `
             Apply = {
                 param([string] $Dir)
                 Edit-FixtureFile -Path (Join-Path $Dir 'skills/pr-review/reference/access.md') `
-                    -Find 'For Azure DevOps, rank every qualifying MCP candidate ahead of installed `az devops`.' `
+                    -Find 'For Azure DevOps, rank every qualifying ADO MCP candidate ahead of installed `az devops`.' `
                     -ReplaceWith 'For Azure DevOps, prefer installed `az devops` over MCP candidates.'
-            }
-        },
-        @{
-            Name  = 'review-certification-mcp-row-added'
-            Apply = {
-                param([string] $Dir)
-                # An unadvertised MCP row is how an uncertified adapter becomes selectable.
-                Edit-FixtureFile -Path (Join-Path $Dir 'skills/pr-review/reference/certification.md') `
-                    -Find 'No MCP row exists.' `
-                    -ReplaceWith 'Any MCP that declares a mapping is treated as an implicit row.'
-            }
-        },
-        @{
-            Name  = 'review-certification-status-overclaimed'
-            Apply = {
-                param([string] $Dir)
-                Edit-FixtureFile -Path (Join-Path $Dir 'skills/pr-review/reference/certification.md') `
-                    -Find '| `gh` | `github` | `>= 2.40.0` | `none` | `never` | `enabled-uncertified` |' `
-                    -ReplaceWith '| `gh` | `github` | `>= 2.40.0` | `all` | `2026-01-01` | `enabled` |'
-            }
-        },
-        @{
-            Name  = 'review-certification-manifest-field-dropped'
-            Apply = {
-                param([string] $Dir)
-                Edit-FixtureFile -Path (Join-Path $Dir 'skills/pr-review/reference/certification.md') `
-                    -Find '| `no-other-mutation` | An explicit clause that nothing outside `fixture-ids` may be mutated |' `
-                    -ReplaceWith ''
-            }
-        },
-        @{
-            Name  = 'review-certification-criterion-dropped'
-            Apply = {
-                param([string] $Dir)
-                Edit-FixtureFile -Path (Join-Path $Dir 'skills/pr-review/reference/certification.md') `
-                    -Find '| AC7 |' `
-                    -ReplaceWith '| AC7-optional |'
-            }
-        },
-        @{
-            Name  = 'review-certification-rate-limit-storm-required'
-            Apply = {
-                param([string] $Dir)
-                # Restoring rate limiting as a mandatory subcase forces abusive write volume
-                # against a live provider, which neither the PRD nor the approved design requires.
-                Edit-FixtureFile -Path (Join-Path $Dir 'skills/pr-review/reference/certification.md') `
-                    -Find 'a 403 raised by repeating the same operation with a deliberately read-only credential, duplicate identical comments' `
-                    -ReplaceWith 'a 403, rate limiting reached by repeated writes, duplicate identical comments'
-            }
-        },
-        @{
-            Name  = 'review-certification-injection-allowed'
-            Apply = {
-                param([string] $Dir)
-                Edit-FixtureFile -Path (Join-Path $Dir 'skills/pr-review/reference/certification.md') `
-                    -Find 'Simulated, injected, intercepted, proxied, and locally synthesized provider responses are never evidence.' `
-                    -ReplaceWith 'An injected or proxied provider response is acceptable evidence when a live one is inconvenient.'
-            }
-        },
-        @{
-            Name  = 'review-certification-supplemental-evidence-overclaimed'
-            Apply = {
-                param([string] $Dir)
-                Edit-FixtureFile -Path (Join-Path $Dir 'skills/pr-review/reference/certification.md') `
-                    -Find 'Supplemental transport evidence never moves a row to `enabled` on its own, never substitutes for a criterion or any of its subcases, and never proves write-path behavior or provider parity.' `
-                    -ReplaceWith 'Supplemental transport evidence satisfies the criterion it resembles.'
-            }
-        },
-        @{
-            Name  = 'review-certification-cap-fixture-result-dropped'
-            Apply = {
-                param([string] $Dir)
-                Edit-FixtureFile -Path (Join-Path $Dir 'skills/pr-review/reference/certification.md') `
-                    -Find '| `2001` | `200` | `2000` | `1` | `2000` |' `
-                    -ReplaceWith ''
-            }
-        },
-        @{
-            Name  = 'review-certification-cap-fixture-made-mutable'
-            Apply = {
-                param([string] $Dir)
-                Edit-FixtureFile -Path (Join-Path $Dir 'skills/pr-review/reference/certification.md') `
-                    -Find 'No manifest authorizes any write against it, and only `GET` reads may target it.' `
-                    -ReplaceWith 'A manifest may extend to it when convenient.'
-            }
-        },
-        @{
-            Name  = 'review-certification-cap-fixture-moves-row'
-            Apply = {
-                param([string] $Dir)
-                Edit-FixtureFile -Path (Join-Path $Dir 'skills/pr-review/reference/certification.md') `
-                    -Find 'It is one required spot check, not a criterion and not a matrix, so it moves no row: both rows stay `enabled-uncertified` until every AC1-AC8 row passes.' `
-                    -ReplaceWith 'It certifies the Azure DevOps adapter for paging.'
             }
         },
         @{
@@ -3682,78 +3467,6 @@ resource: /user' `
                 Edit-FixtureFile -Path (Join-Path $Dir 'skills/pr-review/reference/commands.md') `
                     -Find 'then send `(Get-PSReadLineOption).HistorySaveStyle` and re-read the transcription policy inside this exact terminal and require both to still prove history saving and transcription off' `
                     -ReplaceWith 'then trust the preflight result for this terminal'
-            }
-        },
-        @{
-            Name  = 'review-certification-ac1-mapping-relabelled'
-            Apply = {
-                param([string] $Dir)
-                Edit-FixtureFile -Path (Join-Path $Dir 'skills/pr-review/reference/certification.md') `
-                    -Find '| AC1 | "Given an ADO locator, selection derives its organization/host' `
-                    -ReplaceWith '| AC1 | "Entry-guard routing covers every tagged entry'
-            }
-        },
-        @{
-            Name  = 'review-certification-ac2-mapping-relabelled'
-            Apply = {
-                param([string] $Dir)
-                Edit-FixtureFile -Path (Join-Path $Dir 'skills/pr-review/reference/certification.md') `
-                    -Find '| AC2 | "An authenticated GitHub or ADO review displays revision' `
-                    -ReplaceWith '| AC2 | "Bundle admission blocks above every declared threshold'
-            }
-        },
-        @{
-            Name  = 'review-certification-ac3-mapping-relabelled'
-            Apply = {
-                param([string] $Dir)
-                Edit-FixtureFile -Path (Join-Path $Dir 'skills/pr-review/reference/certification.md') `
-                    -Find '| AC3 | "During exploration and composition, interaction remains in the coordinator' `
-                    -ReplaceWith '| AC3 | "The fixed-model table admits no runtime substitution'
-            }
-        },
-        @{
-            Name  = 'review-certification-ac4-mapping-relabelled'
-            Apply = {
-                param([string] $Dir)
-                Edit-FixtureFile -Path (Join-Path $Dir 'skills/pr-review/reference/certification.md') `
-                    -Find '| AC4 | "Changed/deferred pending sets create nothing until the displayed exact set is approved."' `
-                    -ReplaceWith '| AC4 | "The canonical serializer is deterministic across hosts."'
-            }
-        },
-        @{
-            Name  = 'review-certification-ac5-mapping-relabelled'
-            Apply = {
-                param([string] $Dir)
-                Edit-FixtureFile -Path (Join-Path $Dir 'skills/pr-review/reference/certification.md') `
-                    -Find '| AC5 | "With approval and no drift, shared-local-project/Git-common-directory runs coordinate' `
-                    -ReplaceWith '| AC5 | "The lease record carries every declared field'
-            }
-        },
-        @{
-            Name  = 'review-certification-ac6-mapping-relabelled'
-            Apply = {
-                param([string] $Dir)
-                Edit-FixtureFile -Path (Join-Path $Dir 'skills/pr-review/reference/certification.md') `
-                    -Find '| AC6 | "Given provider, acquisition, or review failure, the coordinator identifies the gap' `
-                    -ReplaceWith '| AC6 | "The operation registry and the contract blocks are a bijection'
-            }
-        },
-        @{
-            Name  = 'review-certification-ac7-mapping-relabelled'
-            Apply = {
-                param([string] $Dir)
-                Edit-FixtureFile -Path (Join-Path $Dir 'skills/pr-review/reference/certification.md') `
-                    -Find '| AC7 | "Drift or posting failure pauses with refreshed review or per-comment status' `
-                    -ReplaceWith '| AC7 | "The locator grammar rejects every disallowed host form'
-            }
-        },
-        @{
-            Name  = 'review-certification-ac8-mapping-relabelled'
-            Apply = {
-                param([string] $Dir)
-                Edit-FixtureFile -Path (Join-Path $Dir 'skills/pr-review/reference/certification.md') `
-                    -Find '| AC8 | "Given concurrent or resumed use, review context and credentials remain scoped' `
-                    -ReplaceWith '| AC8 | "The credential terminal allowlist is closed'
             }
         }
     )

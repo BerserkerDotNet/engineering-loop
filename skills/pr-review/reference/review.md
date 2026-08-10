@@ -71,7 +71,7 @@ and digests.
 ## Ledger and recovery
 
 Use session SQL when available, otherwise coordinator context. Preserve run/locator/immutable
-IDs, pinned revisions, adapter/access/certification data, review workspace and review digests, child
+IDs, pinned revisions, adapter/access data, review workspace and review digests, child
 sessions/models/outcomes, drafts and approved set, lease owner/epoch, and item/provider IDs.
 Never rely on child session names.
 

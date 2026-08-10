@@ -84,12 +84,8 @@ paging, and complete comments. Missing operations or mapping/authority/identity/
 disqualifies and invalidates approval. `AccessContext` and its digest bind all fields plus auth
 epoch and appear in all state/envelopes/approval/journal.
 
-A versioned release-owned certification ledger enables exactly current GitHub-`gh`, ADO-`az`,
-and one row per specifically advertised/selected MCP; no row means disabled. Certification runs additionally
-require an operator-approved, expiring, nonce/run-scoped fixture authorization manifest
-(immutable IDs, identity, allowed comment types/count, cleanup owner, no-other-mutation), bound
-into `AccessContext`, `ApprovedRequest`, journal, and the production pre-write guard. Normal runs cannot be
-represented as certification evidence.
+Use installed `gh` for GitHub. For Azure DevOps, prefer a qualifying active ADO MCP adapter after
+explicit confirmation and use installed `az devops` only when no qualifying MCP is available.
 
 For ADO CLI, open one visible persistent PowerShell terminal at the derived organization.
 Preflight Windows PowerShell secure prompt/process environment/ACL support or Unix equivalent;
@@ -185,7 +181,7 @@ lease, never another clone/machine/global exactly-once; disclose different/unpro
 
 Each item takes complete before/after inventories. Exactly one new matching immutable object
 confirms; multiple/delayed/ambiguous is uncertain. Zero is proven-unposted only after an
-authoritative pre-acceptance rejection or a certified consistency polling window; otherwise
+authoritative pre-acceptance rejection or a bounded consistency polling window; otherwise
 uncertain. Invalid-anchor `422` is proven-unposted and may return to separately approved
 fallback; `403`, rate limit, transport/unknown stop according to evidence. Retry only
 proven-unposted after fresh approval. Revalidate displayed acting identity immediately
@@ -220,17 +216,9 @@ terminal allowlist, budgets, exact checkout, clean workspace, complete app diff,
 citations, anchors, serializers, lease, and final predicates.
 They prove contract structure, never runtime behavior.
 
-Only the live AC1-AC8 matrix proves agent/provider behavior, against mandatory current
-GitHub-`gh`, ADO-`az`, and each enabled certification-ledger MCP. Authorized disposable runs
-dry-run every tagged bootstrap/guarded entry, then exercise four reviewers/explorer, full
-draft/defer/invalidation/reapproval/write/recovery;
-Unicode/normalization/CRLF/quoting/fences, duplicate identical comments, delayed visibility,
-zero/one/multiple candidates, both sides, and lost response; hostile child mutation; and
-two-process/crash-at-every-transition, stale takeover, different/read-only common-dir.
-GitHub adds lease denial/head drift; ADO adds thread variants and 1999/2000/2001 paging.
-Paging mechanics use small fixtures with certification-only top override; the authoritative
-2,000 ceiling gets a recorded spot check refreshed on API-version change. Persistent cap
-fixtures record IDs/date/limit; absent real proof blocks certification.
+Provider behavior is checked by the normal access probe and posting read-back. Structural
+validation proves only that the workflow states those contracts; it does not simulate provider
+behavior.
 
 ## Open design questions
 

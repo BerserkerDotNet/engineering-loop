@@ -137,11 +137,7 @@ ordered Azure DevOps probe, isolated-workspace revision checks, app-diff citatio
 transmitted provider Accept and API-version headers,
 approval serializers and response projectors, lease fencing, journal creation, and
 outcome classification, the review-decision predicate, the
-operation-to-command-contract bijection, that every live certification row quotes
-its committed PRD acceptance criterion and mandates no scenario the committed
-requirements and approved design do not enumerate, that the recorded persistent
-cap fixture keeps its read-only paging-ceiling evidence and moves no adapter row,
-prohibited actions, that each skill is
+operation-to-command-contract bijection, prohibited actions, that each skill is
 self-contained and never references another, and that every skill states the
 shared safety baseline in its own `SKILL.md`.
 
@@ -157,9 +153,8 @@ never writes into this repository.
 
 The contract checks are structural: they parse Markdown and prove the skills state
 their rules. They execute no agent, provider adapter, terminal, or network
-operation, so they prove nothing about run-time agent or provider behavior;
-claiming provider behavior requires live certification against explicitly
-authorized disposable fixtures. `-SelfTest` adds executable proofs, each run
+operation, so they prove nothing about run-time agent or provider behavior.
+`-SelfTest` adds executable proofs, each run
 in a throwaway directory and each reported as skipped when its prerequisite is
 missing:
 

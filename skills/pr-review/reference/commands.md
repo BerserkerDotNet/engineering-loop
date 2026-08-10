@@ -246,7 +246,7 @@ method: az devops invoke --organization https://dev.azure.com/<org> --detect fal
 resource: git/repositories/{repositoryId}/pullRequests/{pullRequestId}/iterations/{iterationId}/changes
 api-version: 7.1
 accept: application/json
-paging: follow the service-returned `nextTop` and `nextSkip` until both are zero, require monotonic `$skip` progress and unique `changeTrackingId` values, and never assume a fixed page size; only a certification run may override `$top`
+paging: follow the service-returned `nextTop` and `nextSkip` until both are zero, require monotonic `$skip` progress and unique `changeTrackingId` values, and never assume a fixed page size
 input: n/a
 output: per change `changeTrackingId`, `changeId`, `changeType`, `item.path`, `originalPath`, `item.objectId`, `item.originalObjectId`, `item.isFolder`, `item.gitObjectType`; retain this metadata only to project and revalidate Azure DevOps inline anchors
 ```
@@ -473,7 +473,7 @@ api-version: n/a
 accept: n/a
 paging: n/a
 input: n/a
-output: the temporary file no longer exists; provider content and reusable certification fixtures are never deleted automatically
+output: the temporary file no longer exists
 ```
 
 ## Local: lease and journal
