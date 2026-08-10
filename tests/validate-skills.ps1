@@ -2454,6 +2454,8 @@ function Test-ReviewSkill {
         'admission'                = '\| Changed files \| 3,000 \|'
         'finding-citation'         = 'Every finding must cite a bundle path plus that entry''s blob\s*SHA-256\.'
         'canonical-model'          = '\| Canonical \| `\[Canonical\]` \| `gemini-3\.1-pro-preview` \|'
+        'minimum-review-set'       = 'Security, Design, Canonical, and Performance are the minimum review set and may not be omitted\.'
+        'adaptive-review-set'      = 'the coordinator may add one or more specialist\s*topic reviews when the change warrants them'
         'review-budget'            = 'Prompts are capped at 16 KiB, envelopes at 64 KiB, a single finding at 4 KiB, and findings at\s*100 per role\.'
         'anchor-side'              = 'Never infer the opposite side, and never read a side from a checkout or provider patch\.'
         'github-position'          = 'GitHub binds the exact approved `commit_id` and never sends the deprecated `position` field\.'
@@ -3109,6 +3111,24 @@ function Get-NegativeFixtures {
                 Edit-FixtureFile -Path (Join-Path $Dir 'skills/pr-review/reference/review.md') `
                     -Find '| Canonical | `[Canonical]` | `gemini-3.1-pro-preview` |' `
                     -ReplaceWith '| Canonical | `[Canonical]` | `claude-sonnet-4.6` |'
+            }
+        },
+        @{
+            Name  = 'review-minimum-coverage-dropped'
+            Apply = {
+                param([string] $Dir)
+                Edit-FixtureFile -Path (Join-Path $Dir 'skills/pr-review/reference/review.md') `
+                    -Find 'Security, Design, Canonical, and Performance are the minimum review set and may not be omitted.' `
+                    -ReplaceWith 'The coordinator may omit baseline reviews that seem irrelevant.'
+            }
+        },
+        @{
+            Name  = 'review-adaptive-coverage-dropped'
+            Apply = {
+                param([string] $Dir)
+                Edit-FixtureFile -Path (Join-Path $Dir 'skills/pr-review/reference/review.md') `
+                    -Find 'the coordinator may add one or more specialist topic reviews when the change warrants them' `
+                    -ReplaceWith 'the coordinator must never add another review topic'
             }
         },
         @{

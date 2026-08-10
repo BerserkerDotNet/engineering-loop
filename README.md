@@ -48,8 +48,9 @@ Coordinates a review of an existing GitHub or Azure DevOps pull request through:
 1. Access selection: strict locator grammar, an inventory of already-callable
    adapters, an explicitly confirmed adapter, and a probed `AccessContext`
 2. Acquisition: a size-admitted, sealed, content-addressed snapshot bundle
-3. Four independent fixed-model reviews of security, design, canonical codebase
-   practice, and runtime performance
+3. A minimum of four independent reviews of security, design, canonical codebase
+   practice, and runtime performance, plus scoped topic reviews when the change or
+   codebase warrants them
 4. Reconciliation into one presented summary with `[<Area>] <Text>` findings
 5. Exploration by one advisory explorer and user-authored comment composition
 6. Preview and explicit approval of the exact comment set

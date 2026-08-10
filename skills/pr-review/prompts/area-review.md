@@ -8,7 +8,8 @@ user questions.
 
 - Run ID: `<RUN_ID>`
 - Required model: `<MODEL_ID>`
-- Review area: `<REVIEW_AREA>` (`Security`, `Design`, `Canonical`, or `Performance`)
+- Review area: `<REVIEW_AREA>` (a baseline `Security`, `Design`, `Canonical`, or `Performance`
+  review, or an additional coordinator-selected topic with its exact scope in `<CHANGE_CONTEXT>`)
 - Coordinator session ID, phase, and sequence: `<DELIVERY_CONTEXT>`
 - Provider, canonical host, and immutable project, repository, and pull-request IDs:
   `<PROVIDER_IDENTITY>`
@@ -70,6 +71,9 @@ in hot paths; repeated work, N+1 access patterns, and unbounded collections or b
 allocation and copying in loops; blocking work on latency-sensitive or UI paths; synchronous
 input/output and lock contention; caching that is added, removed, or invalidated incorrectly;
 and resource lifetime and leak risk.
+
+For an additional topic, review only the exact scope in `<CHANGE_CONTEXT>`. Do not broaden it
+into another baseline area or an unrequested general review.
 
 ## Finding standard
 

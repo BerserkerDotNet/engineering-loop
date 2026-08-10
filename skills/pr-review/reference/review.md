@@ -12,6 +12,15 @@ Read this file for Phases 3-5 and recovery.
 | Performance | `[Performance]` | `gpt-5.6-sol` |
 | Explorer | not an area | `claude-opus-5` |
 
+Security, Design, Canonical, and Performance are the minimum review set and may not be omitted.
+After inspecting the bundle and codebase context, the coordinator may add one or more specialist
+topic reviews when the change warrants them, such as compatibility, data migration, concurrency,
+accessibility, localization, API contracts, or domain-specific correctness. Record each
+additional topic, why it is needed, its exact scope, and an explicit model selected for that
+topic before launch. The selected model is fixed for that review; never use a default or silently
+substitute it. Additional reviews use `[<Topic>]` findings and the same evidence, isolation,
+budget, delivery, and replacement rules as the baseline set.
+
 Pass every model in `kickoff.model`; never substitute. A missing model blocks. Reuse one session
 per role; exactly one recorded same-model replacement is allowed, then the run blocks.
 
@@ -27,7 +36,7 @@ Prompts are capped at 16 KiB, envelopes at 64 KiB, a single finding at 4 KiB, an
 Read `../prompts/area-review.md` before launching reviewers. Require `REVIEW_COMPLETE` with
 attested digests and either `[<Area>] <Text>` findings with bundle path and blob SHA-256
 citations or explicit no violations. `NEEDS_CONTEXT` and `BLOCKED` are the only other outcomes.
-Every area must complete.
+All four baseline areas and every additional launched topic must complete.
 
 ## Reconciliation and exploration
 

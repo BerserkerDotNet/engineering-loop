@@ -64,7 +64,8 @@ Run these phases in order:
    and atomically create `AccessContext`.
 2. **Acquire** - Pin immutable source and merge-base revisions, enforce admission limits, compute
    the diff, and seal a verified `SnapshotBundle`.
-3. **Review** - Launch the four fixed-model reviewers against isolated bundle copies.
+3. **Review** - Launch the four baseline reviewers, then add scoped topic reviewers when the
+   change or codebase warrants them. Every reviewer gets an isolated bundle copy.
 4. **Reconcile** - Verify child identity and digests; present the summary, codebase fit, findings,
    citations, uncertainty, and explicit no-findings results.
 5. **Explore and compose** - Use the fixed explorer for user questions. Add only user-authored or
@@ -94,6 +95,7 @@ clones or machines.
 
 ## Done
 
-Complete only after all four areas finish, the bundle and digests verify, the user approves the
-exact set, every approved item has terminal provider evidence, and no item is uncertain.
-Otherwise report `BLOCKED` or the current incomplete state.
+Complete only after all four baseline areas and every additional launched review finish, the
+bundle and digests verify, the user approves the exact set, every approved item has terminal
+provider evidence, and no item is uncertain. Otherwise report `BLOCKED` or the current
+incomplete state.

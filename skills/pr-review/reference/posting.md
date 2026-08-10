@@ -106,6 +106,6 @@ projection/equality evidence. Record `complete` only when every item is terminal
 `uncertain`. If posting fails before a confirmed write, report no comment as posted.
 
 The run is complete only when access and immutable IDs were proven, admission passed, the bundle
-was verified, all four reviews completed, the exact set was approved, every approved comment has
-terminal provider evidence, local-only exactly-once scope was disclosed, and no item is
-`uncertain`. Otherwise report the state and blocker.
+was verified, all four baseline reviews and every additional launched topic completed, the exact
+set was approved, every approved comment has terminal provider evidence, local-only exactly-once
+scope was disclosed, and no item is `uncertain`. Otherwise report the state and blocker.
