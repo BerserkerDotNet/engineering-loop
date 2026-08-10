@@ -4,6 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Loop execution</title>
+    <link rel="icon" href="data:," />
     <link rel="stylesheet" href="./app.css" />
   </head>
   <body>
@@ -40,6 +41,34 @@
           <div class="graph-canvas" id="graph-canvas"></div>
         </div>
 
+        <form class="runs-filter" id="runs-filter" hidden aria-label="Filter runs">
+          <label>
+            Skill
+            <select id="runs-filter-skill">
+              <option value="all">All skills</option>
+            </select>
+          </label>
+          <label>
+            Status
+            <select id="runs-filter-status">
+              <option value="all">All statuses</option>
+              <option value="active">Active</option>
+              <option value="completed">Completed</option>
+              <option value="failed">Failed</option>
+              <option value="canceled">Canceled</option>
+            </select>
+          </label>
+          <label>
+            Updated
+            <select id="runs-filter-time">
+              <option value="all">Any time</option>
+              <option value="day">Past 24 hours</option>
+              <option value="week">Past 7 days</option>
+              <option value="month">Past 30 days</option>
+            </select>
+          </label>
+          <output id="runs-filter-result" aria-live="polite"></output>
+        </form>
         <ul class="runs-list" id="runs-list" hidden aria-label="All runs"></ul>
       </section>
 

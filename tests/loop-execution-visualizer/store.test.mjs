@@ -291,11 +291,21 @@ test("store: the index is a rebuildable cache and a corrupt entry is not fatal",
     const cached = JSON.parse(readFileSync(indexPath, "utf8"));
     assert.equal(cached.runId, "index-run");
 
+    lead.setNodeState({ nodeId: "requirements", state: "running", reason: "work started" });
+    lead.flush();
+    const fresh = lead.listRuns();
+    assert.equal(fresh[0].state, "running", "history rebuilds a stale cache after new durable events");
+    assert.equal(
+      JSON.parse(readFileSync(indexPath, "utf8")).state,
+      "running",
+      "the rebuilt summary refreshes the index cache",
+    );
+
     writeFileSync(indexPath, "{ this is not json", "utf8");
     const listed = lead.listRuns();
     assert.equal(listed.length, 1, "a corrupt cache entry does not hide the run");
     assert.equal(listed[0].runId, "index-run");
-    assert.equal(listed[0].state, cached.state, "the summary is rebuilt from the log");
+    assert.equal(listed[0].state, "running", "the summary is rebuilt from the log");
 
     rmSync(join(store.storeDir, "index"), { recursive: true, force: true });
     const rebuilt = lead.listRuns();

@@ -572,9 +572,15 @@ export function createReporter({
       }
       return store.listRunIds().map((runId) => {
         const cached = summaries.get(runId);
-        if (cached) return cached;
         const rebuilt = this.readRun(runId);
-        return rebuilt ? summarizeRun(rebuilt) : { runId, state: "unknown" };
+        if (!rebuilt) return cached ?? { runId, state: "unknown" };
+        const summary = summarizeRun(rebuilt);
+        if (JSON.stringify(summary) !== JSON.stringify(cached)) {
+          try {
+            store.writeIndexEntry(runId, summary);
+          } catch { /* the index is only a cache */ }
+        }
+        return summary;
       }).sort((a, b) => String(b.createdAt ?? "").localeCompare(String(a.createdAt ?? "")));
     },
 

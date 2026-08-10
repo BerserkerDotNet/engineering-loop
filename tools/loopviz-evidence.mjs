@@ -11,7 +11,7 @@
  * are redeemed by the app's canvas panel, which leaves no way to capture the
  * rendered UI independently.
  *
- * Usage: node tools/loopviz-evidence.mjs <storeDir> <runId> [appSessionId]
+ * Usage: node tools/loopviz-evidence.mjs <storeDir> <runId> [appSessionId] [role] [hostSessionId]
  */
 import { createReporter } from "../extensions/loop-execution-visualizer/src/reporter.mjs";
 import { createLoopbackServer } from "../extensions/loop-execution-visualizer/src/server.mjs";
@@ -25,7 +25,13 @@ import { tmpdir } from "node:os";
 const urlFile = join(tmpdir(), "loopviz-evidence-url.txt");
 const ENTRY_PORT = 57999;
 
-const [storeDir, runId, appSessionId = "app-evidence"] = process.argv.slice(2);
+const [
+  storeDir,
+  runId,
+  appSessionId = "app-evidence",
+  role = "observer",
+  hostSessionId = `evidence-${process.pid}`,
+] = process.argv.slice(2);
 if (!storeDir || !runId) {
   process.stderr.write("usage: node tools/loopviz-evidence.mjs <storeDir> <runId> [appSessionId]\n");
   process.exit(2);
@@ -33,8 +39,8 @@ if (!storeDir || !runId) {
 
 const reporter = createReporter({
   storeDir,
-  role: "observer",
-  hostSessionId: `evidence-${process.pid}`,
+  role,
+  hostSessionId,
   appSessionId,
   extensionId: "plugin:engineering-loop:loop-execution-visualizer",
   pid: process.pid,
@@ -54,14 +60,21 @@ const runtime = {
   storageError: null,
 };
 
+let server;
 const handlers = createCanvasHandlers({
   runtime,
   heartbeatMs: STATES.health.heartbeatIntervalMs,
-  notifyCanvas: () => {},
+  notifyCanvas: (reason) => {
+    server?.broadcast("run", {
+      reason,
+      run: reporter.projection({ force: true }),
+      at: new Date().toISOString(),
+    });
+  },
   maintenanceTick: async () => {},
 });
 
-const server = createLoopbackServer({ handlers, log: (line) => process.stdout.write(`[server] ${line}\n`) });
+server = createLoopbackServer({ handlers, log: (line) => process.stdout.write(`[server] ${line}\n`) });
 await server.start();
 
 /**

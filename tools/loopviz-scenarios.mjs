@@ -48,10 +48,10 @@ function lead(now, { role = "orchestrator", hostSessionId = "host-lead", appSess
   });
 }
 
-function spec(runId, title) {
+function spec(runId, title, skill = "engineering-loop") {
   return {
     runId,
-    skill: "engineering-loop",
+    skill,
     skillVersion: "1.2.0",
     title,
     orchestratorNodeId: "orchestrator",
@@ -64,6 +64,31 @@ function spec(runId, title) {
       { nodeId: "critique", label: "Critique", phase: "3", role: "critique", dependsOn: ["design"] },
     ],
   };
+}
+
+/** Completed historical run used to prove skill, status and time filtering. */
+async function scenarioArchived() {
+  const now = clockFrom("2026-06-01T12:00:00.000Z");
+  const orch = lead(now, { hostSessionId: "host-archived", appSessionId: "app-archived", pid: 8801 });
+  orch.declareRun(spec("scn-archived", "Archived issue-resolution run", "issue-resolution"));
+  for (const [index, nodeId] of ["requirements", "design", "critique"].entries()) {
+    const attemptId = `${nodeId}-a1`;
+    orch.startAttempt({
+      nodeId, attemptId, attemptNumber: 1, kind: "initial",
+      model: "gpt-5.6-sol", reason: "historical scenario",
+    });
+    orch.setNodeState({ nodeId, state: "running", reason: "historical scenario" });
+    orch.setAttemptState({ nodeId, attemptId, state: "running", reason: "historical scenario" });
+    now.advance(1000 + index);
+    orch.setAttemptState({ nodeId, attemptId, state: "succeeded", reason: "historical scenario complete" });
+    orch.setNodeState({ nodeId, state: "succeeded", reason: "historical scenario complete" });
+  }
+  orch.emit("run.outcome", {
+    outcome: "completed",
+    reason: "historical scenario complete",
+    prUrl: null,
+  }, { immediate: true });
+  orch.close();
 }
 
 /**
@@ -277,9 +302,10 @@ async function scenarioUsage() {
 await scenarioConnectionLost();
 await scenarioRecoveryPending();
 await scenarioUsage();
+await scenarioArchived();
 
 const reader = lead(clockFrom("2026-08-09T21:00:00.000Z"), { hostSessionId: "host-reader", appSessionId: "app-reader", pid: 9999 });
-for (const runId of ["scn-connection-lost", "scn-recovery-pending", "scn-parked", "scn-usage"]) {
+for (const runId of ["scn-connection-lost", "scn-recovery-pending", "scn-parked", "scn-usage", "scn-archived"]) {
   const run = reader.readRun(runId);
   const design = run.dag.nodes.find((n) => n.nodeId === "design");
   const attempt = design?.attempts?.[0] ?? null;

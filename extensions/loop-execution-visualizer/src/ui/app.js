@@ -38,6 +38,7 @@ const state = {
   expanded: new Set(),
   info: null,
   connected: false,
+  runFilters: { skill: "all", status: "all", time: "all" },
 };
 
 const el = (id) => document.getElementById(id);
@@ -51,6 +52,11 @@ const dom = {
   graph: el("graph"),
   canvas: el("graph-canvas"),
   runsList: el("runs-list"),
+  runsFilter: el("runs-filter"),
+  runsFilterSkill: el("runs-filter-skill"),
+  runsFilterStatus: el("runs-filter-status"),
+  runsFilterTime: el("runs-filter-time"),
+  runsFilterResult: el("runs-filter-result"),
   zoomIn: el("zoom-in"),
   zoomOut: el("zoom-out"),
   zoomFit: el("zoom-fit"),
@@ -164,6 +170,10 @@ async function loadRun(runId) {
     }
     state.run = payload.run;
     state.view = "run";
+    const url = new URL(location.href);
+    url.searchParams.set("runId", payload.run.runId);
+    url.searchParams.delete("bootstrap");
+    history.replaceState(null, "", url);
     if (!state.selection) state.selection = { kind: "controller", nodeId: null, attemptId: null };
     render();
   } catch (error) {
@@ -175,6 +185,12 @@ async function loadRuns() {
   try {
     const payload = await api("runs");
     state.runs = payload.runs ?? [];
+    const skills = [...new Set(state.runs.map((run) => run.skill).filter(Boolean))].sort();
+    dom.runsFilterSkill.replaceChildren(
+      new Option("All skills", "all"),
+      ...skills.map((skill) => new Option(skill, skill)),
+    );
+    dom.runsFilterSkill.value = skills.includes(state.runFilters.skill) ? state.runFilters.skill : "all";
     state.view = "runs";
     render();
   } catch (error) {
@@ -286,6 +302,7 @@ function badge(label, tone = "neutral") {
 function render() {
   dom.back.hidden = state.view === "run";
   dom.runsList.hidden = state.view !== "runs";
+  dom.runsFilter.hidden = state.view !== "runs";
   dom.graph.hidden = state.view !== "run";
   dom.controller.hidden = state.view !== "run";
 
@@ -562,9 +579,25 @@ function renderStage(node, position) {
 function renderRunsList() {
   dom.title.textContent = "All runs";
   dom.facts.replaceChildren();
-  const runs = state.runs ?? [];
+  const cutoff = {
+    day: 24 * 60 * 60 * 1000,
+    week: 7 * 24 * 60 * 60 * 1000,
+    month: 30 * 24 * 60 * 60 * 1000,
+  }[state.runFilters.time] ?? null;
+  const runs = (state.runs ?? []).filter((summary) => {
+    if (state.runFilters.skill !== "all" && summary.skill !== state.runFilters.skill) return false;
+    if (state.runFilters.status === "active" && summary.outcome) return false;
+    if (["completed", "failed", "canceled"].includes(state.runFilters.status) &&
+        summary.outcome !== state.runFilters.status) return false;
+    if (cutoff !== null) {
+      const updated = Date.parse(summary.updatedAt ?? summary.createdAt ?? "");
+      if (!Number.isFinite(updated) || Date.now() - updated > cutoff) return false;
+    }
+    return true;
+  });
+  dom.runsFilterResult.value = `${runs.length} of ${(state.runs ?? []).length} runs`;
   if (runs.length === 0) {
-    dom.runsList.replaceChildren(make("li", "empty", "No runs have been recorded yet."));
+    dom.runsList.replaceChildren(make("li", "empty", "No runs match these filters."));
     return;
   }
   dom.runsList.replaceChildren(...runs.map((summary) => {
@@ -823,7 +856,12 @@ function renderTab(subject) {
           button.addEventListener("click", async () => {
             button.disabled = true;
             try {
-              await api("acknowledgeIncident", { incidentId: incident.incidentId, state: next, reason: `${label} from the visualizer` });
+              const result = await api("acknowledgeIncident", {
+                incidentId: incident.incidentId,
+                state: next,
+                reason: `${label} from the visualizer`,
+              });
+              if (!result.ok) throw new Error(result.reason ?? `${label} was refused`);
               await loadRun(run.runId);
             } catch (error) {
               setStatus(error.message, "bad");
@@ -992,6 +1030,16 @@ dom.toggleAttempts.addEventListener("change", () => {
   render();
 });
 dom.allRuns.addEventListener("click", () => void loadRuns());
+for (const [control, key] of [
+  [dom.runsFilterSkill, "skill"],
+  [dom.runsFilterStatus, "status"],
+  [dom.runsFilterTime, "time"],
+]) {
+  control.addEventListener("change", () => {
+    state.runFilters[key] = control.value;
+    renderRunsList();
+  });
+}
 dom.back.addEventListener("click", () => {
   state.view = "run";
   render();
