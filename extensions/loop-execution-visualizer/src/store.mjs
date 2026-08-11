@@ -59,9 +59,29 @@ export function encodePathSegment(segment) {
   return `id-${sha256(String(segment)).slice("sha256:".length)}`;
 }
 
-/** Path encoding used before collision-resistant hashes were introduced. */
+/** Reversible path encoding used by the last pre-hash release (e50b7d8). */
 export function legacyPathSegment(segment) {
+  const value = String(segment);
+  if (value.length === 0) return "%EMPTY";
+  let encoded = encodeURIComponent(value).replace(/\./g, "%2E");
+  if (/^(con|prn|aux|nul|com[1-9]|lpt[1-9])$/i.test(encoded)) {
+    encoded = `%${encoded.charCodeAt(0).toString(16).toUpperCase()}${encoded.slice(1)}`;
+  }
+  return encoded;
+}
+
+/** Non-reversible encoding used by an older recovery build. */
+function fsSafePathSegment(segment) {
   return String(segment).replace(/[^A-Za-z0-9._-]+/g, "_").slice(0, 96) || "unknown";
+}
+
+function decodeLegacyPathSegment(segment) {
+  if (segment === "%EMPTY") return "";
+  try {
+    return decodeURIComponent(segment);
+  } catch {
+    return null;
+  }
 }
 
 function ensureDir(path) {
@@ -109,7 +129,8 @@ function durableExclusiveWrite(path, body) {
   const flags = FS_CONSTANTS.O_CREAT | FS_CONSTANTS.O_EXCL | FS_CONSTANTS.O_WRONLY | FS_CONSTANTS.O_SYNC;
   const descriptor = openSync(path, flags, 0o600);
   try {
-    writeSync(descriptor, body, null, "utf8");
+    const bytes = Buffer.isBuffer(body) ? body : Buffer.from(body, "utf8");
+    writeSync(descriptor, bytes, 0, bytes.length);
     fsyncSync(descriptor);
   } finally {
     closeSync(descriptor);
@@ -132,10 +153,6 @@ function durableReplace(path, body) {
   }
   renameSync(tmp, path);
   syncDirectory(dirname(path));
-}
-
-function sleepSync(ms) {
-  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 }
 
 function readTextSafe(path) {
@@ -245,53 +262,25 @@ export function openStore({ storeDir, sourceId, limits: configuredLimits = DEFAU
   const clockScannedAt = new Map();
 
   const runsRoot = () => join(storeDir, "runs");
-  const storeLocksDir = () => join(storeDir, ".locks");
-  const runPathCache = new Map();
+  const declarationsDir = () => join(storeDir, "declarations");
+  const compatibilityDir = () => join(storeDir, "compatibility");
+  const retiredDir = () => join(compatibilityDir(), "retired");
   const hashedRunDir = (runId) => join(runsRoot(), encodePathSegment(runId));
-  let legacyScanCompleted = false;
-
-  function withStoreLockSync(key, fn, {
-    ttlMs = limits.lockTtlMs,
-    waitMs = limits.lockWaitMs,
-  } = {}) {
-    ensureDir(storeLocksDir());
-    const path = join(storeLocksDir(), `${encodePathSegment(key)}.lock`);
-    const deadline = Date.now() + waitMs;
-    const token = `${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-    for (;;) {
-      const body = JSON.stringify({ owner: safeSource, token, expiresAt: Date.now() + ttlMs });
-      try {
-        durableExclusiveWrite(path, body);
-        break;
-      } catch (error) {
-        if (!error || error.code !== "EEXIST") {
-          throw new LoopVizError("lock_failed", `could not lock ${key}: ${error.message}`);
-        }
-        let lock = null;
-        try {
-          lock = JSON.parse(readFileSync(path, "utf8"));
-        } catch { /* a torn lock is stale and may be recovered */ }
-        if (!lock || Date.now() >= (lock.expiresAt ?? 0)) {
-          const tombstone = `${path}.stale-${process.pid}-${Date.now()}`;
-          try {
-            renameSync(path, tombstone);
-            rmSync(tombstone, { force: true });
-          } catch { /* another contender recovered it first */ }
-          continue;
-        }
-        if (Date.now() >= deadline) throw new LoopVizError("lock_timeout", `lock ${key} is held`);
-        sleepSync(15);
-      }
-    }
-    try {
-      return fn();
-    } finally {
-      try {
-        const held = JSON.parse(readFileSync(path, "utf8"));
-        if (held.token === token) rmSync(path, { force: true });
-      } catch { /* a recovered or already-removed lock is not ours to delete */ }
-    }
-  }
+  const compatibilityRunDirs = (runId) => {
+    const paths = [
+      join(runsRoot(), legacyPathSegment(runId)),
+      join(runsRoot(), fsSafePathSegment(runId)),
+    ];
+    const seen = new Set();
+    return paths.filter((path) => {
+      const key = path.toLowerCase();
+      if (key === hashedRunDir(runId).toLowerCase() || seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+  };
+  const retiredPath = (runId) => join(retiredDir(), `${encodePathSegment(runId)}.json`);
+  const isRetired = (runId) => existsSync(retiredPath(runId));
 
   function copyExact(path, body) {
     ensureDir(dirname(path));
@@ -309,224 +298,189 @@ export function openStore({ storeDir, sourceId, limits: configuredLimits = DEFAU
     }
   }
 
-  function declaredRunIdsAt(path) {
-    const runIds = new Set();
-    const root = join(path, "events");
-    for (const sourceEntry of readDirSafe(root)) {
-      if (!sourceEntry.isDirectory()) continue;
-      for (const entry of readDirSafe(join(root, sourceEntry.name))) {
-        if (!entry.isFile() || !entry.name.endsWith(".json")) continue;
-        try {
-          const parsed = parseRecord(readFileSync(join(root, sourceEntry.name, entry.name), "utf8"));
-          if (parsed.ok && parsed.event.type === "run.declared") runIds.add(parsed.event.runId);
-        } catch { /* an unreadable directory cannot establish a logical id */ }
+  function copyBytesExact(path, bytes) {
+    ensureDir(dirname(path));
+    try {
+      durableExclusiveWrite(path, bytes);
+    } catch (error) {
+      if (!error || error.code !== "EEXIST") throw error;
+      if (!readFileSync(path).equals(bytes)) {
+        throw new LoopVizError("migration_conflict", `existing compatibility artifact differs at ${path}`);
       }
     }
-    return runIds;
   }
 
-  function legacySnapshot(path) {
-    return ["events", "claims", "quarantine"]
-      .flatMap((name) => listFilesRecursive(join(path, name)))
-      .map((file) => {
-        const body = readTextSafe(file);
-        return `${relative(path, file)}:${body === null ? "unreadable" : sha256(body)}`;
-      })
-      .sort()
-      .join("\n");
+  function preserveCompatibilityArtifact(kind, sourcePath, bytes, metadata) {
+    const digest = sha256(bytes);
+    const artifactDir = join(
+      compatibilityDir(),
+      kind,
+      `${encodePathSegment(relative(storeDir, sourcePath))}-${digest.slice("sha256:".length, "sha256:".length + 16)}`,
+    );
+    copyBytesExact(join(artifactDir, "original.bin"), bytes);
+    copyExact(join(artifactDir, "metadata.json"), JSON.stringify({
+      kind,
+      sourcePath: relative(storeDir, sourcePath),
+      sha256: digest,
+      ...metadata,
+    }, null, 2));
+    return artifactDir;
   }
 
-  function assertNoActiveLegacyLocks(path) {
-    for (const file of listFilesRecursive(join(path, "locks"))) {
-      let lock = null;
+  function scanRunDirectory(path) {
+    const records = [];
+    const invalid = [];
+    let files;
+    try {
+      files = listFilesRecursive(join(path, "events"));
+    } catch (error) {
+      return { records, invalid: [{ path: join(path, "events"), reason: error.message, artifactDir: null }] };
+    }
+    for (const file of files) {
+      if (!file.endsWith(".json")) continue;
+      let bytes;
       try {
-        lock = JSON.parse(readFileSync(file, "utf8"));
-      } catch { /* a torn legacy lock is stale */ }
-      if (lock && Date.now() < (lock.expiresAt ?? 0)) {
-        throw new LoopVizError("migration_busy", `legacy run directory has an active lock: ${file}`);
+        bytes = readFileSync(file);
+      } catch (error) {
+        invalid.push({ path: file, reason: `unreadable file: ${error.message}`, artifactDir: null });
+        continue;
       }
+      const text = bytes.toString("utf8");
+      const parsed = parseRecord(text);
+      if (!parsed.ok) {
+        const artifactDir = preserveCompatibilityArtifact("quarantine", file, bytes, { reason: parsed.reason });
+        invalid.push({ path: file, reason: parsed.reason, artifactDir });
+        continue;
+      }
+      records.push({
+        body: text,
+        event: parsed.event,
+        sourcePath: file,
+        relativePath: relative(join(path, "events"), file),
+      });
+    }
+    return { records, invalid };
+  }
+
+  function exactClaimNames(records) {
+    const names = new Map();
+    const add = (runId, name) => {
+      if (!name) return;
+      if (!names.has(runId)) names.set(runId, new Set());
+      names.get(runId).add(name);
+    };
+    for (const record of records) {
+      const { event } = record;
+      if (event.type === "attempt.started" && event.authority?.grantId) {
+        add(event.runId, `enroll-${event.authority.grantId}`);
+        add(event.runId, `redeem-${event.authority.grantId}`);
+      } else if (event.type === "incident.opened") {
+        add(event.runId, `incident-${event.data.incidentId}`);
+      } else if (event.type === "outbox.queued") {
+        add(event.runId, `outbox-${event.data.messageId}`);
+      }
+    }
+    return names;
+  }
+
+  function claimCandidates(records) {
+    const candidates = new Map();
+    for (const [runId, names] of exactClaimNames(records)) {
+      for (const name of names) {
+        for (const encoded of [legacyPathSegment(name), fsSafePathSegment(name), encodePathSegment(name)]) {
+          const key = encoded.toLowerCase();
+          if (!candidates.has(key)) candidates.set(key, []);
+          candidates.get(key).push({ runId, name });
+        }
+      }
+    }
+    return candidates;
+  }
+
+  function bridgeLegacyClaims(path, records) {
+    const claimsPath = join(path, "claims");
+    if (!records.some((record) => record.event.type === "run.declared")) return;
+    const candidates = claimCandidates(records);
+    for (const file of listFilesRecursive(claimsPath)) {
+      if (!file.endsWith(".json")) continue;
+      const bytes = readFileSync(file);
+      const matches = candidates.get(basename(file, ".json").toLowerCase()) ?? [];
+      const unique = new Map(matches.map((match) => [`${match.runId}\0${match.name}`, match]));
+      if (unique.size !== 1) {
+        preserveCompatibilityArtifact("ambiguous-claims", file, bytes, {
+          reason: unique.size === 0 ? "claim attribution is unknown" : "claim attribution matches multiple logical runs",
+          candidates: [...unique.values()],
+        });
+        continue;
+      }
+      const [{ runId, name }] = unique.values();
+      if (isRetired(runId)) continue;
+      copyExact(join(hashedRunDir(runId), "claims", `${encodePathSegment(name)}.json`), bytes.toString("utf8"));
     }
   }
 
-  function migrateLegacyDirectory(name, path) {
-    return withStoreLockSync(`legacy-run:${name}`, () => {
-      if (!existsSync(path)) return;
-      const runIds = [...declaredRunIdsAt(path)];
-      if (runIds.length === 0) return;
-      if (runIds.some((runId) => name === encodePathSegment(runId))) return;
-      assertNoActiveLegacyLocks(path);
-
-      const snapshot = legacySnapshot(path);
-      const records = [];
-      for (const file of listFilesRecursive(join(path, "events"))) {
-        if (!file.endsWith(".json")) continue;
-        const body = readTextSafe(file);
-        if (body === null) {
-          throw new LoopVizError("legacy_migration_unreadable", `cannot read legacy event ${file}`);
-        }
-        const parsed = parseRecord(body);
-        if (!parsed.ok) {
-          throw new LoopVizError("legacy_migration_invalid", `cannot safely assign legacy event ${file}: ${parsed.reason}`);
-        }
-        if (!runIds.includes(parsed.event.runId)) {
-          throw new LoopVizError(
-            "legacy_migration_unassigned",
-            `legacy event ${file} belongs to undeclared run ${parsed.event.runId}`,
-          );
-        }
-        records.push({
-          body,
-          event: parsed.event,
-          relativePath: relative(join(path, "events"), file),
+  function bridgeRunDirectory(path, records) {
+    for (const record of records) {
+      if (isRetired(record.event.runId)) continue;
+      const target = join(hashedRunDir(record.event.runId), "events", record.relativePath);
+      if (target.toLowerCase() === record.sourcePath.toLowerCase()) continue;
+      try {
+        copyExact(target, record.body);
+      } catch (error) {
+        preserveCompatibilityArtifact("quarantine", record.sourcePath, Buffer.from(record.body, "utf8"), {
+          reason: `event mirror conflict: ${error.message}`,
+          runId: record.event.runId,
         });
       }
-
-      for (const runId of runIds) {
-        const target = hashedRunDir(runId);
-        if (target.toLowerCase() === path.toLowerCase()) {
-          throw new LoopVizError("legacy_migration_path_conflict", `legacy directory already aliases ${runId}`);
-        }
-        for (const record of records.filter((candidate) => candidate.event.runId === runId)) {
-          copyExact(join(target, "events", record.relativePath), record.body);
-        }
-      }
-
-      const grantRuns = new Map();
-      const incidentRuns = new Map();
-      const outboxRuns = new Map();
-      for (const record of records) {
-        if (record.event.type === "attempt.started" && record.event.authority?.grantId) {
-          grantRuns.set(record.event.authority.grantId, record.event.runId);
-        } else if (record.event.type === "incident.opened") {
-          incidentRuns.set(record.event.data.incidentId, record.event.runId);
-        } else if (record.event.type === "outbox.queued") {
-          outboxRuns.set(record.event.data.messageId, record.event.runId);
-        }
-      }
-
-      for (const file of listFilesRecursive(join(path, "claims"))) {
-        if (!file.endsWith(".json")) continue;
-        const body = readTextSafe(file);
-        if (body === null) {
-          throw new LoopVizError("legacy_migration_unreadable", `cannot read legacy claim ${file}`);
-        }
-        let parsed = null;
-        try {
-          parsed = JSON.parse(body);
-        } catch {
-          throw new LoopVizError("legacy_migration_invalid", `cannot safely migrate legacy claim ${file}`);
-        }
-        const base = basename(file, ".json");
-        let exactName = null;
-        let targetRunId = null;
-        if (parsed?.payload?.grantId && grantRuns.has(parsed.payload.grantId)) {
-          exactName = `enroll-${parsed.payload.grantId}`;
-          targetRunId = grantRuns.get(parsed.payload.grantId);
-        } else if (base.startsWith("redeem-") && grantRuns.has(base.slice("redeem-".length))) {
-          exactName = base;
-          targetRunId = grantRuns.get(base.slice("redeem-".length));
-        } else if (base.startsWith("incident-") && incidentRuns.has(base.slice("incident-".length))) {
-          exactName = base;
-          targetRunId = incidentRuns.get(base.slice("incident-".length));
-        } else if (base.startsWith("outbox-") && outboxRuns.has(base.slice("outbox-".length))) {
-          exactName = base;
-          targetRunId = outboxRuns.get(base.slice("outbox-".length));
-        }
-        const targets = targetRunId ? [targetRunId] : runIds;
-        for (const runId of targets) {
-          const fileName = exactName ? `${encodePathSegment(exactName)}.json` : basename(file);
-          copyExact(join(hashedRunDir(runId), "claims", fileName), body);
-        }
-      }
-
-      for (const file of listFilesRecursive(join(path, "quarantine"))) {
-        const body = readTextSafe(file);
-        if (body === null) continue;
-        for (const runId of runIds) {
-          copyExact(
-            join(hashedRunDir(runId), "quarantine", `legacy-${encodePathSegment(name)}`, relative(join(path, "quarantine"), file)),
-            body,
-          );
-        }
-      }
-
-      if (legacySnapshot(path) !== snapshot) {
-        throw new LoopVizError("migration_busy", `legacy run directory ${name} changed during migration`);
-      }
-
-      const tombstone = join(runsRoot(), `.migrated-${encodePathSegment(name)}-${process.pid}-${Date.now()}`);
-      renameSync(path, tombstone);
-      syncDirectory(runsRoot());
-      if (legacySnapshot(tombstone) !== snapshot) {
-        throw new LoopVizError(
-          "migration_busy",
-          `legacy run directory ${name} changed during its atomic rename; preserved for restart recovery`,
-        );
-      }
-      for (const record of records) {
-        const target = join(hashedRunDir(record.event.runId), "events", record.relativePath);
-        if (readTextSafe(target) !== record.body) {
-          throw new LoopVizError("migration_verify_failed", `migrated event did not verify at ${target}`);
-        }
-      }
-      rmSync(tombstone, { recursive: true, force: true });
-      for (const runId of runIds) {
-        const legacyIndex = join(storeDir, "index", `${legacyPathSegment(runId)}.json`);
-        const hashedIndex = join(storeDir, "index", `${encodePathSegment(runId)}.json`);
-        if (legacyIndex.toLowerCase() !== hashedIndex.toLowerCase()) rmSync(legacyIndex, { force: true });
-        runPathCache.set(runId, hashedRunDir(runId));
-      }
-    }, { ttlMs: Math.max(limits.lockTtlMs, 60000), waitMs: limits.lockWaitMs });
+    }
+    try {
+      bridgeLegacyClaims(path, records);
+    } catch (error) {
+      preserveCompatibilityArtifact(
+        "quarantine",
+        path,
+        Buffer.from(error.message, "utf8"),
+        { reason: `claim bridge failed: ${error.message}` },
+      );
+    }
   }
 
   function discoverRunPaths() {
     ensureDir(runsRoot());
-    for (const entry of readDirSafe(runsRoot())) {
-      if (entry.isDirectory() && entry.name.startsWith(".migrated-")) {
-        migrateLegacyDirectory(entry.name, join(runsRoot(), entry.name));
-      }
-    }
-    for (let pass = 0; pass < 4; pass += 1) {
-      let migrated = false;
-      for (const entry of readDirSafe(runsRoot())) {
-        if (!entry.isDirectory() || entry.name.startsWith(".migrated-")) continue;
-        const path = join(runsRoot(), entry.name);
-        const runIds = [...declaredRunIdsAt(path)];
-        if (runIds.length === 0) continue;
-        if (runIds.some((runId) => entry.name === encodePathSegment(runId))) continue;
-        migrateLegacyDirectory(entry.name, path);
-        migrated = true;
-      }
-      if (!migrated) break;
-      if (pass === 3) {
-        throw new LoopVizError("migration_busy", "legacy run directories kept changing during migration");
-      }
-    }
     const found = new Map();
     for (const entry of readDirSafe(runsRoot())) {
-      if (!entry.isDirectory() || entry.name.startsWith(".migrated-")) continue;
+      if (!entry.isDirectory()) continue;
       const path = join(runsRoot(), entry.name);
-      const runIds = [...declaredRunIdsAt(path)];
-      const canonical = runIds.filter((runId) => entry.name === encodePathSegment(runId));
-      for (const runId of canonical.length > 0 ? canonical : runIds) {
-        if (!found.has(runId)) found.set(runId, path);
+      const { records } = scanRunDirectory(path);
+      const runIds = new Set(
+        records.filter((record) => record.event.type === "run.declared").map((record) => record.event.runId),
+      );
+      const decoded = decodeLegacyPathSegment(entry.name);
+      if (decoded !== null && records.some((record) => record.event.runId === decoded)) runIds.add(decoded);
+      const canonicalRunIds = [...runIds].filter(
+        (runId) => path.toLowerCase() === hashedRunDir(runId).toLowerCase(),
+      );
+      for (const runId of canonicalRunIds.length > 0 ? canonicalRunIds : runIds) {
+        if (isRetired(runId)) continue;
+        if (!found.has(runId)) found.set(runId, new Set());
+        found.get(runId).add(path);
       }
+      if (canonicalRunIds.length === 0) bridgeRunDirectory(path, records);
     }
-    for (const [runId, path] of found) runPathCache.set(runId, path);
-    legacyScanCompleted = true;
     return found;
   }
 
-  const runDir = (runId) => {
-    if (!legacyScanCompleted) discoverRunPaths();
-    const expected = hashedRunDir(runId);
-    if (existsSync(expected)) {
-      runPathCache.set(runId, expected);
-      return expected;
-    }
-    const cached = runPathCache.get(runId);
-    if (cached && existsSync(cached)) return cached;
-    return discoverRunPaths().get(runId) ?? expected;
+  const runDir = (runId) => hashedRunDir(runId);
+  const eventRoots = (runId) => {
+    const roots = [hashedRunDir(runId), ...compatibilityRunDirs(runId)];
+    for (const path of discoverRunPaths().get(runId) ?? []) roots.push(path);
+    const seen = new Set();
+    return roots.filter((path) => {
+      const key = path.toLowerCase();
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return existsSync(path);
+    });
   };
   const eventsDir = (runId) => join(runDir(runId), "events");
   const sourceDir = (runId) => join(eventsDir(runId), safeSource);
@@ -535,19 +489,44 @@ export function openStore({ storeDir, sourceId, limits: configuredLimits = DEFAU
   const locksDir = (runId) => join(runDir(runId), "locks");
   const indexDir = () => join(storeDir, "index");
 
-  function terminalInfo(runId) {
-    const events = [];
-    for (const sourceEntry of readDirSafe(eventsDir(runId))) {
-      if (!sourceEntry.isDirectory()) continue;
-      for (const entry of readDirSafe(join(eventsDir(runId), sourceEntry.name))) {
-        if (!entry.isFile() || !entry.name.endsWith(".json")) continue;
-        try {
-          const parsed = parseRecord(readFileSync(join(eventsDir(runId), sourceEntry.name, entry.name), "utf8"));
-          if (parsed.ok && parsed.event.runId === runId) events.push(parsed.event);
-        } catch { /* malformed records never prove terminal state */ }
+  function collectRunRecords(runId) {
+    if (isRetired(runId)) return { events: [], quarantined: [] };
+    const events = new Map();
+    const quarantined = [];
+    for (const root of eventRoots(runId)) {
+      const hashed = root.toLowerCase() === hashedRunDir(runId).toLowerCase();
+      const scanned = scanRunDirectory(root);
+      quarantined.push(...scanned.invalid);
+      for (const record of scanned.records) {
+        if (record.event.runId !== runId) {
+          if (hashed) {
+            quarantined.push({
+              path: record.sourcePath,
+              reason: `event runId ${record.event.runId} does not match ${runId}`,
+            });
+          }
+          continue;
+        }
+        const existing = events.get(record.event.eventId);
+        if (existing && existing.body !== record.body) {
+          const reason = `event ${record.event.eventId} has conflicting immutable bytes`;
+          preserveCompatibilityArtifact("quarantine", record.sourcePath, Buffer.from(record.body, "utf8"), {
+            reason,
+            runId,
+          });
+          quarantined.push({ path: record.sourcePath, reason });
+          events.delete(record.event.eventId);
+          continue;
+        }
+        if (!existing) events.set(record.event.eventId, record);
+        observe(runId, record.event.seq);
       }
     }
-    const sorted = sortEvents(events);
+    return { events: [...events.values()].map((record) => record.event), quarantined };
+  }
+
+  function terminalInfo(runId) {
+    const sorted = sortEvents(collectRunRecords(runId).events);
     const ledger = buildLedger(sorted);
     let outcomeAt = null;
     for (const event of sorted) {
@@ -558,7 +537,13 @@ export function openStore({ storeDir, sourceId, limits: configuredLimits = DEFAU
   }
 
   function removeRun(runId) {
-    rmSync(runDir(runId), { recursive: true, force: true });
+    ensureDir(retiredDir());
+    try {
+      durableExclusiveWrite(retiredPath(runId), JSON.stringify({ runId, retiredAt: new Date(now()).toISOString() }));
+    } catch (error) {
+      if (!error || error.code !== "EEXIST") throw error;
+    }
+    rmSync(hashedRunDir(runId), { recursive: true, force: true });
     rmSync(join(indexDir(), `${encodePathSegment(runId)}.json`), { force: true });
   }
 
@@ -593,12 +578,14 @@ export function openStore({ storeDir, sourceId, limits: configuredLimits = DEFAU
   /** Recovers the clock from what every writer has already stored. */
   function scanClock(runId) {
     let max = 0;
-    for (const sourceEntry of readDirSafe(eventsDir(runId))) {
-      if (!sourceEntry.isDirectory()) continue;
-      for (const entry of readDirSafe(join(eventsDir(runId), sourceEntry.name))) {
-        if (!entry.isFile() || !entry.name.endsWith(".json")) continue;
-        const value = Number.parseInt(entry.name.slice(0, SEQ_WIDTH), 10);
-        if (Number.isFinite(value) && value > max) max = value;
+    for (const root of eventRoots(runId)) {
+      for (const sourceEntry of readDirSafe(join(root, "events"))) {
+        if (!sourceEntry.isDirectory()) continue;
+        for (const entry of readDirSafe(join(root, "events", sourceEntry.name))) {
+          if (!entry.isFile() || !entry.name.endsWith(".json")) continue;
+          const value = Number.parseInt(entry.name.slice(0, SEQ_WIDTH), 10);
+          if (Number.isFinite(value) && value > max) max = value;
+        }
       }
     }
     clockScannedAt.set(runId, now());
@@ -621,6 +608,132 @@ export function openStore({ storeDir, sourceId, limits: configuredLimits = DEFAU
     return next;
   }
 
+  function claimPaths(runId, name) {
+    const hashed = hashedRunDir(runId);
+    const compatibility = join(runsRoot(), legacyPathSegment(runId));
+    const oldRecovery = join(runsRoot(), fsSafePathSegment(runId));
+    const paths = [
+      join(compatibility, "claims", `${legacyPathSegment(name)}.json`),
+      join(hashed, "claims", `${encodePathSegment(name)}.json`),
+      join(hashed, "claims", `${legacyPathSegment(name)}.json`),
+      join(hashed, "claims", `${fsSafePathSegment(name)}.json`),
+      join(oldRecovery, "claims", `${fsSafePathSegment(name)}.json`),
+    ];
+    const seen = new Set();
+    return paths.filter((path) => {
+      const key = path.toLowerCase();
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+  }
+
+  function assertClaimUnambiguous(runId, name) {
+    for (const file of listFilesRecursive(join(compatibilityDir(), "ambiguous-claims"))) {
+      if (basename(file) !== "metadata.json") continue;
+      let metadata;
+      try {
+        metadata = JSON.parse(readFileSync(file, "utf8"));
+      } catch {
+        continue;
+      }
+      const candidates = Array.isArray(metadata.candidates) ? metadata.candidates : [];
+      const candidateMatch = candidates.some(
+        (candidate) => candidate.runId === runId && candidate.name === name,
+      );
+      const sourceDirectory = dirname(dirname(join(storeDir, metadata.sourcePath ?? ""))).toLowerCase();
+      const compatibilityPaths = new Set(
+        compatibilityRunDirs(runId).map((path) => path.toLowerCase()),
+      );
+      const encoded = new Set(
+        [legacyPathSegment(name), fsSafePathSegment(name), encodePathSegment(name)].map((value) => value.toLowerCase()),
+      );
+      const unknownMatch =
+        candidates.length === 0
+        && compatibilityPaths.has(sourceDirectory)
+        && encoded.has(basename(metadata.sourcePath ?? "", ".json").toLowerCase());
+      if (candidateMatch || unknownMatch) {
+        throw new LoopVizError(
+          "claim_ambiguous",
+          `claim ${name} is quarantined because its legacy owner cannot be established`,
+        );
+      }
+    }
+    const compatibility = join(runsRoot(), legacyPathSegment(runId));
+    const compatibilityKey = compatibility.toLowerCase();
+    const discovered = discoverRunPaths();
+    const sharedRunIds = [...discovered.keys()].filter(
+      (candidateRunId) =>
+        join(runsRoot(), legacyPathSegment(candidateRunId)).toLowerCase() === compatibilityKey,
+    );
+    if (sharedRunIds.length < 2 && !existsSync(compatibility)) return;
+    const records = [];
+    for (const candidateRunId of sharedRunIds) {
+      const paths = [hashedRunDir(candidateRunId), ...(discovered.get(candidateRunId) ?? [])];
+      const seen = new Set();
+      for (const path of paths) {
+        const key = path.toLowerCase();
+        if (seen.has(key) || !existsSync(path)) continue;
+        seen.add(key);
+        records.push(...scanRunDirectory(path).records);
+      }
+    }
+    if (existsSync(compatibility)) records.push(...scanRunDirectory(compatibility).records);
+    const names = exactClaimNames(records);
+    const matchingRuns = [...names]
+      .filter(([, values]) => values.has(name))
+      .map(([candidateRunId]) => candidateRunId);
+    const ambiguous =
+      matchingRuns.length > 1
+      || (
+        sharedRunIds.length > 1
+        && (matchingRuns.length !== 1 || matchingRuns[0] !== runId)
+        && (name.startsWith("incident-") || name.startsWith("outbox-") || matchingRuns.length > 0)
+      );
+    if (!ambiguous) return;
+    const source = claimPaths(runId, name).find((path) => existsSync(path));
+    if (source) {
+      preserveCompatibilityArtifact("ambiguous-claims", source, readFileSync(source), {
+        reason: "claim name is shared by multiple logical runs in one compatibility directory",
+        candidates: matchingRuns.map((candidateRunId) => ({ runId: candidateRunId, name })),
+      });
+    }
+    throw new LoopVizError(
+      "claim_ambiguous",
+      `claim ${name} cannot be attributed uniquely inside the shared legacy directory for ${runId}`,
+    );
+  }
+
+  function existingClaim(runId, name) {
+    assertClaimUnambiguous(runId, name);
+    const paths = claimPaths(runId, name);
+    const found = paths
+      .map((path) => ({ path, body: readTextSafe(path) }))
+      .filter((entry) => entry.body !== null);
+    const bodies = new Set(found.map((entry) => entry.body));
+    if (bodies.size > 1) {
+      for (const entry of found) {
+        preserveCompatibilityArtifact("ambiguous-claims", entry.path, Buffer.from(entry.body, "utf8"), {
+          reason: "legacy and hashed claims disagree",
+          runId,
+          name,
+        });
+      }
+      throw new LoopVizError("claim_conflict", `legacy and current claims disagree for ${name}`);
+    }
+    if (found.length === 0) return { paths, body: null };
+    const body = found[0].body;
+    const compatibilityKey = dirname(dirname(paths[0])).toLowerCase();
+    const sharedCompatibilityPath = [...discoverRunPaths().keys()].some(
+      (candidateRunId) =>
+        candidateRunId !== runId
+        && join(runsRoot(), legacyPathSegment(candidateRunId)).toLowerCase() === compatibilityKey,
+    );
+    if (existsSync(paths[0]) || !sharedCompatibilityPath) copyExact(paths[0], body);
+    copyExact(paths[1], body);
+    return { paths, body };
+  }
+
   return {
     storeDir,
     sourceId: safeSource,
@@ -629,13 +742,34 @@ export function openStore({ storeDir, sourceId, limits: configuredLimits = DEFAU
     runDir,
     eventsDir,
 
-    /** Serializes first declaration admission for one logical run id across processes. */
-    withRunAdmission(runId, fn) {
-      return withStoreLockSync(
-        `run-admission:${runId}`,
-        fn,
-        { ttlMs: Math.max(limits.lockTtlMs, 30000), waitMs: limits.lockWaitMs },
-      );
+    /**
+     * Permanently admits exactly one first declarer for a logical run id.
+     *
+     * The sentinel is never expired or stolen. If its winner crashes before
+     * writing run.declared, this id fails closed and the coordinator must use a
+     * fresh timestamped id rather than overlap an unfenced stale callback.
+     */
+    withRunAdmission(runId, owner, fn) {
+      ensureDir(declarationsDir());
+      const path = join(declarationsDir(), `${encodePathSegment(runId)}.json`);
+      const body = JSON.stringify({
+        runId,
+        owner,
+        claimedAt: new Date(now()).toISOString(),
+      }, null, 2);
+      try {
+        durableExclusiveWrite(path, body);
+      } catch (error) {
+        if (!error || error.code !== "EEXIST") {
+          throw new LoopVizError("declaration_admission_failed", `could not claim ${runId}: ${error.message}`);
+        }
+        let existing = null;
+        try {
+          existing = JSON.parse(readFileSync(path, "utf8"));
+        } catch { /* a torn permanent sentinel still fails closed */ }
+        return { acquired: false, existing };
+      }
+      return { acquired: true, value: fn() };
     },
 
     /** Writes one event immutably. Returns the event as persisted. */
@@ -677,35 +811,7 @@ export function openStore({ storeDir, sourceId, limits: configuredLimits = DEFAU
 
     /** Replays a run. Bad records are quarantined, never applied. */
     read(runId) {
-      const events = [];
-      const quarantined = [];
-      const dir = eventsDir(runId);
-      for (const sourceEntry of readDirSafe(dir)) {
-        if (!sourceEntry.isDirectory()) continue;
-        const sourcePath = join(dir, sourceEntry.name);
-        for (const fileEntry of readDirSafe(sourcePath)) {
-          if (!fileEntry.isFile() || !fileEntry.name.endsWith(".json")) continue;
-          const filePath = join(sourcePath, fileEntry.name);
-          let text;
-          try {
-            text = readFileSync(filePath, "utf8");
-          } catch (error) {
-            quarantined.push({ path: filePath, reason: `unreadable file: ${error.message}` });
-            continue;
-          }
-          const parsed = parseRecord(text);
-          if (!parsed.ok) {
-            quarantined.push({ path: filePath, reason: parsed.reason });
-            continue;
-          }
-          if (parsed.event.runId !== runId) {
-            quarantined.push({ path: filePath, reason: `event runId ${parsed.event.runId} does not match ${runId}` });
-            continue;
-          }
-          events.push(parsed.event);
-          observe(runId, parsed.event.seq);
-        }
-      }
+      const { events, quarantined } = collectRunRecords(runId);
       if (quarantined.length > 0) {
         ensureDir(quarantineDir(runId));
         const notePath = join(quarantineDir(runId), `quarantine-${now()}.json`);
@@ -742,63 +848,48 @@ export function openStore({ storeDir, sourceId, limits: configuredLimits = DEFAU
       };
     },
 
-    /** One-use claim, including claims written under the pre-hash filename. */
+    /**
+     * One-use claim with a mixed-version physical winner.
+     *
+     * The reversible pre-hash path is authoritative because e50b7d8 writers
+     * still contend there. The hashed file is only a verified mirror.
+     */
     claim(runId, name, payload) {
-      return withStoreLockSync(`claim:${runId}:${name}`, () => {
-        ensureDir(claimsDir(runId));
-        const path = join(claimsDir(runId), `${encodePathSegment(name)}.json`);
-        const legacyPath = join(claimsDir(runId), `${legacyPathSegment(name)}.json`);
-        const currentBody = readTextSafe(path);
-        const legacyBody = legacyPath.toLowerCase() === path.toLowerCase() ? null : readTextSafe(legacyPath);
-        if (currentBody !== null && legacyBody !== null && currentBody !== legacyBody) {
-          throw new LoopVizError("claim_conflict", `legacy and current claims disagree for ${name}`);
+      const existing = existingClaim(runId, name);
+      if (existing.body !== null) {
+        try {
+          return { claimed: false, existing: JSON.parse(existing.body) };
+        } catch {
+          return { claimed: false, existing: null };
         }
-        const existingBody = currentBody ?? legacyBody;
-        if (existingBody !== null) {
-          if (currentBody === null) copyExact(path, existingBody);
+      }
+      const body = JSON.stringify({ at: new Date(now()).toISOString(), payload }, null, 2);
+      ensureDir(dirname(existing.paths[0]));
+      try {
+        durableExclusiveWrite(existing.paths[0], body);
+      } catch (error) {
+        if (error && error.code === "EEXIST") {
+          const raced = existingClaim(runId, name).body;
           try {
-            return { claimed: false, existing: JSON.parse(existingBody) };
+            return { claimed: false, existing: raced === null ? null : JSON.parse(raced) };
           } catch {
             return { claimed: false, existing: null };
           }
         }
-        const body = JSON.stringify({ at: new Date(now()).toISOString(), payload }, null, 2);
-        try {
-          durableExclusiveWrite(path, body);
-          return { claimed: true, existing: null };
-        } catch (error) {
-          if (error && error.code === "EEXIST") {
-            const raced = readTextSafe(path);
-            try {
-              return { claimed: false, existing: raced === null ? null : JSON.parse(raced) };
-            } catch {
-              return { claimed: false, existing: null };
-            }
-          }
-          throw new LoopVizError("claim_failed", `could not claim ${name}: ${error.message}`);
-        }
-      });
+        throw new LoopVizError("claim_failed", `could not claim ${name}: ${error.message}`);
+      }
+      copyExact(existing.paths[1], body);
+      return { claimed: true, existing: null };
     },
 
     readClaim(runId, name) {
-      return withStoreLockSync(`claim:${runId}:${name}`, () => {
-        ensureDir(claimsDir(runId));
-        const path = join(claimsDir(runId), `${encodePathSegment(name)}.json`);
-        const legacyPath = join(claimsDir(runId), `${legacyPathSegment(name)}.json`);
-        const currentBody = readTextSafe(path);
-        const legacyBody = legacyPath.toLowerCase() === path.toLowerCase() ? null : readTextSafe(legacyPath);
-        if (currentBody !== null && legacyBody !== null && currentBody !== legacyBody) {
-          throw new LoopVizError("claim_conflict", `legacy and current claims disagree for ${name}`);
-        }
-        const body = currentBody ?? legacyBody;
-        if (body === null) return null;
-        if (currentBody === null) copyExact(path, body);
-        try {
-          return JSON.parse(body);
-        } catch {
-          return null;
-        }
-      });
+      const { body } = existingClaim(runId, name);
+      if (body === null) return null;
+      try {
+        return JSON.parse(body);
+      } catch {
+        return null;
+      }
     },
 
     /** Bounded expiring lock used only for mutable revisions. */
@@ -843,7 +934,7 @@ export function openStore({ storeDir, sourceId, limits: configuredLimits = DEFAU
     },
 
     runExists(runId) {
-      return existsSync(runDir(runId));
+      return discoverRunPaths().has(runId);
     },
 
     /** Index entries are a rebuildable cache; a missing or stale one is not an error. */

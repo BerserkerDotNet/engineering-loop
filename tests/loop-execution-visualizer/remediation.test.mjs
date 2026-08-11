@@ -361,6 +361,20 @@ test("browser contract: attempt expander focus is captured and restored distinct
   assert.match(source, /restoreFocus\.kind === "expander"[\s\S]*querySelector\("\.stage__expander"\)/);
 });
 
+test("browser contract: composer standing state is run-scoped across navigation and SSE renders", () => {
+  const source = readFileSync(
+    new URL("../../extensions/loop-execution-visualizer/src/ui/app.js", import.meta.url),
+    "utf8",
+  );
+  assert.match(source, /composerFeedback: new Map\(\)/);
+  assert.match(source, /setComposerNote\("historical", "Historical runs are read-only/);
+  assert.match(source, /setComposerNote\("terminal", "The run reached an authoritative outcome/);
+  assert.match(source, /state\.composerFeedback\.get\(run\.runId\)/);
+  assert.match(source, /setComposerNote\("default", DEFAULT_COMPOSER_NOTE\)/);
+  assert.match(source, /state\.composerFeedback\.set\(submittedRunId/);
+  assert.match(source, /source\.addEventListener\("run"[\s\S]*render\(\)/);
+});
+
 test("initial graph admission rejects every invalid shape before persisting a declaration", () => {
   const cases = [
     [{ nodeId: "a", label: "A", dependsOn: [] }, { nodeId: "a", label: "Again", dependsOn: [] }],

@@ -42,6 +42,7 @@ const state = {
   stream: null,
   renewTimer: null,
   runFilters: { skill: "all", status: "all", time: "all" },
+  composerFeedback: new Map(),
 };
 
 const el = (id) => document.getElementById(id);
@@ -1004,6 +1005,14 @@ function timeline(entries) {
 // composer
 // ---------------------------------------------------------------------------
 
+const DEFAULT_COMPOSER_NOTE = "Messages carry no approval or delivery authority.";
+
+function setComposerNote(kind, text, tone = "") {
+  dom.composerNote.textContent = text;
+  dom.composerNote.dataset.kind = kind;
+  dom.composerNote.dataset.tone = tone;
+}
+
 function renderComposerTargets() {
   const run = state.run;
   const options = [];
@@ -1030,14 +1039,16 @@ function renderComposerTargets() {
   if (options.some((option) => option.value === previous)) dom.composerTarget.value = previous;
   dom.composerSend.disabled = !state.current || options.length === 0 || Boolean(run.outcome);
   if (!state.current) {
-    dom.composerNote.textContent = "Historical runs are read-only. Return to the attached run to send a message.";
-    dom.composerNote.dataset.tone = "";
+    setComposerNote("historical", "Historical runs are read-only. Return to the attached run to send a message.");
     return;
   }
   if (run.outcome) {
-    dom.composerNote.textContent = "The run reached an authoritative outcome; new messages are denied.";
-    dom.composerNote.dataset.tone = "";
+    setComposerNote("terminal", "The run reached an authoritative outcome; new messages are denied.");
+    return;
   }
+  const feedback = state.composerFeedback.get(run.runId);
+  if (feedback) setComposerNote("feedback", feedback.text, feedback.tone);
+  else setComposerNote("default", DEFAULT_COMPOSER_NOTE);
 }
 
 dom.composer.addEventListener("submit", async (event) => {
@@ -1046,30 +1057,31 @@ dom.composer.addEventListener("submit", async (event) => {
   const body = dom.composerBody.value;
   if (!target || body.trim().length === 0) return;
   dom.composerSend.disabled = true;
-  dom.composerNote.textContent = "Sending…";
-  dom.composerNote.dataset.tone = "";
+  setComposerNote("transient", "Sending…");
+  const submittedRunId = state.run.runId;
   try {
     const selected = dom.composerTarget.selectedOptions[0];
     const result = await api("sendMessage", {
-      runId: state.run.runId,
+      runId: submittedRunId,
       targetAppSessionId: target,
       targetNodeId: selected?.dataset.nodeId || null,
       body,
     });
     if (result.ok) {
-      dom.composerNote.textContent = `Queued (${result.state}). The exact text is delivered unchanged.`;
-      dom.composerNote.dataset.tone = "ok";
+      state.composerFeedback.set(submittedRunId, {
+        text: `Queued (${result.state}). The exact text is delivered unchanged.`,
+        tone: "ok",
+      });
       dom.composerBody.value = "";
     } else {
-      dom.composerNote.textContent = result.reason;
-      dom.composerNote.dataset.tone = "bad";
+      state.composerFeedback.set(submittedRunId, { text: result.reason, tone: "bad" });
     }
-    await loadRun(state.run.runId);
+    await loadRun(submittedRunId);
   } catch (error) {
-    dom.composerNote.textContent = error.message;
-    dom.composerNote.dataset.tone = "bad";
+    state.composerFeedback.set(submittedRunId, { text: error.message, tone: "bad" });
+    renderComposerTargets();
   } finally {
-    dom.composerSend.disabled = false;
+    if (state.run) renderComposerTargets();
   }
 });
 

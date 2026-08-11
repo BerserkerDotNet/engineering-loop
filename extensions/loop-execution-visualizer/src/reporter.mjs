@@ -548,46 +548,54 @@ export function createReporter({
       if (state.runId && state.runId !== spec.runId) {
         throw new LoopVizError("run_conflict", `this session already orchestrates run "${state.runId}" and may not declare "${spec.runId}"`);
       }
-      return store.withRunAdmission(spec.runId, () => {
+      validateInitialGraph(spec.nodes, spec.orchestratorNodeId);
+      const inspectExisting = () => {
         const existing = store.read(spec.runId);
-        if (existing.events.some((e) => e.type === "run.declared")) {
-          const current = readProjection(spec.runId);
-          if (!mayAccess(current)) {
-            throw new LoopVizError("project_forbidden", `run ${spec.runId} is outside this host project`);
-          }
-          const declaration = existing.events.find((event) => event.type === "run.declared");
-          const sameOwner =
-            state.runId === spec.runId &&
-            state.role === "orchestrator" &&
-            declaration?.source?.hostSessionId === hostSessionId;
-          if (!sameOwner) {
-            throw new LoopVizError(
-              "run_exists",
-              `run "${spec.runId}" already exists; generate a fresh timestamped run id or use trusted restart resume`,
-            );
-          }
-          const requestedShape = {
-            skill: spec.skill,
-            skillVersion: spec.skillVersion ?? null,
-            title: spec.title,
-            orchestratorNodeId: spec.orchestratorNodeId,
-            orchestratorLabel: spec.orchestratorLabel ?? "Orchestrator",
-            nodes: spec.nodes,
-          };
-          const storedShape = {
-            skill: declaration.data.skill,
-            skillVersion: declaration.data.skillVersion ?? null,
-            title: declaration.data.title,
-            orchestratorNodeId: declaration.data.orchestratorNodeId,
-            orchestratorLabel: declaration.data.orchestratorLabel,
-            nodes: declaration.data.nodes,
-          };
-          if (canonicalJson(requestedShape) !== canonicalJson(storedShape)) {
-            throw new LoopVizError("run_declaration_mismatch", `run "${spec.runId}" was already declared with different semantics`);
-          }
-          return { created: false, projection: current };
+        const declaration = existing.events.find((event) => event.type === "run.declared");
+        if (!declaration) return null;
+        const current = readProjection(spec.runId);
+        if (!mayAccess(current)) {
+          throw new LoopVizError("project_forbidden", `run ${spec.runId} is outside this host project`);
         }
-        validateInitialGraph(spec.nodes, spec.orchestratorNodeId);
+        const sameOwner =
+          state.runId === spec.runId &&
+          state.role === "orchestrator" &&
+          declaration.source?.hostSessionId === hostSessionId;
+        if (!sameOwner) {
+          throw new LoopVizError(
+            "run_exists",
+            `run "${spec.runId}" already exists; generate a fresh timestamped run id or use trusted restart resume`,
+          );
+        }
+        const requestedShape = {
+          skill: spec.skill,
+          skillVersion: spec.skillVersion ?? null,
+          title: spec.title,
+          orchestratorNodeId: spec.orchestratorNodeId,
+          orchestratorLabel: spec.orchestratorLabel ?? "Orchestrator",
+          nodes: spec.nodes,
+        };
+        const storedShape = {
+          skill: declaration.data.skill,
+          skillVersion: declaration.data.skillVersion ?? null,
+          title: declaration.data.title,
+          orchestratorNodeId: declaration.data.orchestratorNodeId,
+          orchestratorLabel: declaration.data.orchestratorLabel,
+          nodes: declaration.data.nodes,
+        };
+        if (canonicalJson(requestedShape) !== canonicalJson(storedShape)) {
+          throw new LoopVizError("run_declaration_mismatch", `run "${spec.runId}" was already declared with different semantics`);
+        }
+        return { created: false, projection: current };
+      };
+
+      const admission = store.withRunAdmission(spec.runId, {
+        hostSessionId,
+        appSessionId: state.appSessionId,
+        projectId: state.projectId,
+      }, () => {
+        const existing = inspectExisting();
+        if (existing) return existing;
         state.role = "orchestrator";
         state.runId = spec.runId;
         emit("run.declared", {
@@ -604,6 +612,18 @@ export function createReporter({
         });
         return { created: true, projection: projection({ force: true }) };
       });
+      if (admission.acquired) return admission.value;
+      const deadline = Date.now() + store.limits.lockWaitMs;
+      do {
+        const existing = inspectExisting();
+        if (existing) return existing;
+        if (Date.now() >= deadline) break;
+        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 15);
+      } while (true);
+      throw new LoopVizError(
+        "run_declaration_incomplete",
+        `run "${spec.runId}" has a permanent declaration claim but no declaration; use a fresh timestamped run id`,
+      );
     },
 
     attachRun(runId) {

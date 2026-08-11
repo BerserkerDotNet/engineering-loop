@@ -66,6 +66,19 @@ function runNode(script, args) {
   });
 }
 
+function extractRevisionExtension(root, revision) {
+  const archive = join(root, `${revision}.tar`);
+  const archived = spawnSync(
+    "git",
+    ["archive", "--format=tar", `--output=${archive}`, revision, "extensions/loop-execution-visualizer"],
+    { cwd: REPO, encoding: "utf8" },
+  );
+  assert.equal(archived.status, 0, archived.stderr);
+  const extracted = spawnSync("tar", ["-xf", archive, "-C", root], { encoding: "utf8" });
+  assert.equal(extracted.status, 0, extracted.stderr);
+  return join(root, "extensions", "loop-execution-visualizer");
+}
+
 function listFilesRecursiveForTest(root) {
   const files = [];
   const visit = (path) => {
@@ -142,7 +155,7 @@ test("store: valid run ids that previously collided retain distinct collision-re
   }
 });
 
-test("store: one cross-process declaration admission wins and a crashed admission lock recovers", async () => {
+test("store: permanent declaration admission has one winner under stale contention", async () => {
   const store = tempStore("loopviz-declare-race-");
   try {
     const writer = join(store.dir, "declare-writer.mjs");
@@ -172,12 +185,12 @@ try {
 `, "utf8");
 
     const results = await Promise.all(
-      Array.from({ length: 16 }, (_, index) => runNode(writer, [store.storeDir, String(index)])),
+      Array.from({ length: 64 }, (_, index) => runNode(writer, [store.storeDir, String(index)])),
     );
     for (const result of results) assert.equal(result.status, 0, result.stderr);
     const reports = results.map((result) => JSON.parse(result.stdout));
     assert.equal(reports.filter((report) => report.created === true).length, 1);
-    assert.equal(reports.filter((report) => report.code === "run_exists").length, 15);
+    assert.equal(reports.filter((report) => report.code === "run_exists").length, 63);
 
     const reader = openStore({ storeDir: store.storeDir, sourceId: "declaration-reader" });
     assert.equal(
@@ -196,6 +209,36 @@ try {
     );
     const recovered = reporterFor(store.storeDir, fakeClock(), { host: "host-recovered", app: "app-recovered" });
     assert.equal(recovered.declareRun(sampleRunSpec(staleRunId)).created, true);
+
+    const slowWriter = join(store.dir, "slow-admission-writer.mjs");
+    const storeUrl = pathToFileURL(join(REPO, "extensions", "loop-execution-visualizer", "src", "store.mjs")).href;
+    writeFileSync(slowWriter, `
+import { writeFileSync } from "node:fs";
+import { openStore } from ${JSON.stringify(storeUrl)};
+const [storeDir, gate, marker] = process.argv.slice(2);
+const store = openStore({ storeDir, sourceId: "slow-owner" });
+const result = store.withRunAdmission("over-lease-run", { hostSessionId: "slow-owner" }, () => {
+  writeFileSync(gate, "entered", "utf8");
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 30500);
+  writeFileSync(marker, "slow", { flag: "a" });
+  return "done";
+});
+process.stdout.write(JSON.stringify(result));
+`, "utf8");
+    const gate = join(store.dir, "slow-entered");
+    const marker = join(store.dir, "critical-writers");
+    const slow = runNode(slowWriter, [store.storeDir, gate, marker]);
+    while (!existsSync(gate)) await new Promise((resolve) => setTimeout(resolve, 15));
+    await new Promise((resolve) => setTimeout(resolve, 30100));
+    const contenderStore = openStore({ storeDir: store.storeDir, sourceId: "slow-contender" });
+    const contender = contenderStore.withRunAdmission("over-lease-run", { hostSessionId: "contender" }, () => {
+      writeFileSync(marker, "contender", { flag: "a" });
+      return "wrong";
+    });
+    assert.equal(contender.acquired, false, "an over-lease callback cannot be overlapped or stolen");
+    const slowResult = await slow;
+    assert.equal(slowResult.status, 0, slowResult.stderr);
+    assert.equal(readFileSync(marker, "utf8"), "slow");
   } finally {
     store.cleanup();
   }
@@ -298,6 +341,105 @@ test("store: legacy one-use claims migrate without allowing duplicate enrollment
   }
 });
 
+test("store: actual e50 and current processes share one claim winner and live event bridge", async () => {
+  const store = tempStore("loopviz-mixed-version-");
+  try {
+    const oldRoot = extractRevisionExtension(store.dir, "e50b7d88e0224d723d25391be43249e828aad5ca");
+    const oldReporterUrl = pathToFileURL(join(oldRoot, "src", "reporter.mjs")).href;
+    const oldStoreUrl = pathToFileURL(join(oldRoot, "src", "store.mjs")).href;
+    const currentStoreUrl = pathToFileURL(join(REPO, "extensions", "loop-execution-visualizer", "src", "store.mjs")).href;
+    const helpersUrl = pathToFileURL(join(REPO, "tests", "loop-execution-visualizer", "helpers.mjs")).href;
+    const initialize = join(store.dir, "initialize-old-run.mjs");
+    writeFileSync(initialize, `
+import { createReporter } from ${JSON.stringify(oldReporterUrl)};
+import { sampleRunSpec } from ${JSON.stringify(helpersUrl)};
+const reporter = createReporter({
+  storeDir: process.argv[2],
+  role: "orchestrator",
+  hostSessionId: "old-host",
+  appSessionId: "old-app",
+  repository: "BerserkerDotNet/engineering-loop",
+  send: async () => {},
+});
+reporter.declareRun(sampleRunSpec("mixed-version-run"));
+reporter.close();
+`, "utf8");
+    const initialized = await runNode(initialize, [store.storeDir]);
+    assert.equal(initialized.status, 0, initialized.stderr);
+
+    const race = join(store.dir, "claim-racer.mjs");
+    writeFileSync(race, `
+import { existsSync, writeFileSync } from "node:fs";
+const [moduleUrl, storeDir, tag, ready, gate] = process.argv.slice(2);
+const { openStore } = await import(moduleUrl);
+const store = openStore({ storeDir, sourceId: tag });
+writeFileSync(ready, "ready", "utf8");
+while (!existsSync(gate)) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10);
+const result = store.claim("mixed-version-run", "redeem-shared-grant", { tag });
+process.stdout.write(JSON.stringify(result));
+`, "utf8");
+    const gate = join(store.dir, "claim-gate");
+    const oldReady = join(store.dir, "old-ready");
+    const currentReady = join(store.dir, "current-ready");
+    const racers = [
+      runNode(race, [oldStoreUrl, store.storeDir, "old", oldReady, gate]),
+      runNode(race, [currentStoreUrl, store.storeDir, "current", currentReady, gate]),
+    ];
+    while (!existsSync(oldReady) || !existsSync(currentReady)) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    writeFileSync(gate, "go", "utf8");
+    const raceResults = await Promise.all(racers);
+    for (const result of raceResults) assert.equal(result.status, 0, result.stderr);
+    const claims = raceResults.map((result) => JSON.parse(result.stdout));
+    assert.equal(claims.filter((result) => result.claimed).length, 1);
+    assert.equal(claims.filter((result) => !result.claimed).length, 1);
+
+    const current = openStore({ storeDir: store.storeDir, sourceId: "bridge-before" });
+    assert.deepEqual(current.listRunIds(), ["mixed-version-run"]);
+    const legacyDir = join(store.storeDir, "runs", legacyPathSegment("mixed-version-run"));
+    assert.ok(existsSync(legacyDir), "the active compatibility path is never destructively retired");
+
+    const eventWriter = join(store.dir, "old-event-writer.mjs");
+    const eventReady = join(store.dir, "event-ready");
+    const eventGate = join(store.dir, "event-gate");
+    writeFileSync(eventWriter, `
+import { existsSync, writeFileSync } from "node:fs";
+import { createReporter } from ${JSON.stringify(oldReporterUrl)};
+const [storeDir, ready, gate] = process.argv.slice(2);
+const reporter = createReporter({
+  storeDir,
+  role: "orchestrator",
+  hostSessionId: "old-host",
+  appSessionId: "old-app",
+  repository: "BerserkerDotNet/engineering-loop",
+  send: async () => {},
+});
+reporter.attachRun("mixed-version-run");
+writeFileSync(ready, "ready", "utf8");
+while (!existsSync(gate)) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10);
+reporter.heartbeat("post-migration-old-write");
+reporter.close();
+`, "utf8");
+    const writing = runNode(eventWriter, [store.storeDir, eventReady, eventGate]);
+    while (!existsSync(eventReady)) await new Promise((resolve) => setTimeout(resolve, 10));
+    current.listRunIds();
+    writeFileSync(eventGate, "go", "utf8");
+    const written = await writing;
+    assert.equal(written.status, 0, written.stderr);
+
+    const restarted = openStore({ storeDir: store.storeDir, sourceId: "bridge-after" });
+    const replay = restarted.read("mixed-version-run");
+    assert.ok(
+      replay.events.some((event) => event.type === "health.heartbeat" && event.data.activity === "post-migration-old-write"),
+      "a post-bridge old writer remains visible after restart",
+    );
+    assert.ok(existsSync(legacyDir), "reading and restart preserve the live compatibility bridge");
+  } finally {
+    store.cleanup();
+  }
+});
+
 test("store: a shared legacy Windows directory splits exact Run and run histories safely under contention", async () => {
   const store = tempStore("loopviz-legacy-case-");
   try {
@@ -386,11 +528,17 @@ try {
       );
       assert.ok(existsSync(join(store.storeDir, "runs", encodePathSegment(runId))));
     }
-    assert.equal(existsSync(interruptedTombstone), false, "the interrupted tombstone is removed only after verification");
+    assert.equal(existsSync(interruptedTombstone), true, "legacy compatibility bytes remain available to active old writers");
     assert.ok(migrated.readClaim("Run", `enroll-${upperGrant.grantId}`));
-    assert.equal(migrated.readClaim("Run", `enroll-${lowerGrant.grantId}`), null);
+    assert.throws(
+      () => migrated.readClaim("Run", `enroll-${lowerGrant.grantId}`),
+      (error) => error.code === "claim_ambiguous",
+    );
     assert.ok(migrated.readClaim("run", `enroll-${lowerGrant.grantId}`));
-    assert.equal(migrated.readClaim("run", `enroll-${upperGrant.grantId}`), null);
+    assert.throws(
+      () => migrated.readClaim("run", `enroll-${upperGrant.grantId}`),
+      (error) => error.code === "claim_ambiguous",
+    );
 
     const indexer = reporterFor(store.storeDir, fakeClock(), { role: "unknown", host: "host-indexer", app: "app-indexer", pid: 912 });
     assert.deepEqual(indexer.listRuns().map((summary) => summary.runId).sort(), ["Run", "run"]);
@@ -404,6 +552,120 @@ try {
     assert.deepEqual(migrated.pruneRuns(0, (runId) => runId === "run"), ["Run"]);
     assert.deepEqual(migrated.listRunIds(), ["run"]);
     assert.equal(migrated.read("run").events.length, expected.get("run").length);
+  } finally {
+    store.cleanup();
+  }
+});
+
+test("store: ambiguous hashed claims in a case-colliding legacy directory fail closed per run", () => {
+  const store = tempStore("loopviz-ambiguous-claims-");
+  try {
+    const createHistory = (runId, host, app, pid) => {
+      const reporter = reporterFor(store.storeDir, fakeClock(), { host, app, pid });
+      reporter.declareRun(sampleRunSpec(runId));
+      reporter.emit("incident.opened", {
+        incidentId: "shared-incident",
+        kind: "child_failed",
+        subjectNodeId: "design",
+        subjectAttemptId: null,
+        summary: "same deterministic incident",
+        envelope: "STATUS: BLOCKED",
+      }, { kind: "system", basis: "system", immediate: true });
+      reporter.emit("outbox.queued", {
+        messageId: "shared-message",
+        targetAppSessionId: "shared-target",
+        targetNodeId: "design",
+        body: "same deterministic body",
+        expiresAt: "2027-01-01T00:00:00.000Z",
+      }, { immediate: true });
+      reporter.close();
+      return openStore({ storeDir: store.storeDir, sourceId: `source-${runId}` }).runDir(runId);
+    };
+    const upperDir = createHistory("Run", "upper-host", "upper-app", 920);
+    const lowerDir = createHistory("run", "lower-host", "lower-app", 921);
+    const shared = join(store.storeDir, "runs", legacyPathSegment("Run"));
+    mkdirSync(join(shared, "events"), { recursive: true });
+    for (const sourceDir of [upperDir, lowerDir]) {
+      for (const source of readdirSync(join(sourceDir, "events"), { withFileTypes: true })) {
+        if (source.isDirectory()) {
+          cpSync(join(sourceDir, "events", source.name), join(shared, "events", source.name), { recursive: true });
+        }
+      }
+      rmSync(sourceDir, { recursive: true, force: true });
+    }
+
+    const claimBody = JSON.stringify({ at: "2026-08-10T00:00:00.000Z", payload: { legacy: true } }, null, 2);
+    const incidentName = "incident-shared-incident";
+    const outboxName = "outbox-shared-message";
+    mkdirSync(join(shared, "claims"), { recursive: true });
+    writeFileSync(join(shared, "claims", `${encodePathSegment(incidentName)}.json`), claimBody, "utf8");
+    writeFileSync(join(shared, "claims", `${encodePathSegment(outboxName)}.json`), claimBody, "utf8");
+
+    const reader = openStore({ storeDir: store.storeDir, sourceId: "ambiguous-reader" });
+    assert.deepEqual(reader.listRunIds().sort(), ["Run", "run"]);
+    for (const runId of ["Run", "run"]) {
+      assert.throws(() => reader.readClaim(runId, incidentName), (error) => error.code === "claim_ambiguous");
+      assert.throws(() => reader.readClaim(runId, outboxName), (error) => error.code === "claim_ambiguous");
+      assert.equal(
+        existsSync(join(reader.runDir(runId), "claims", `${encodePathSegment(incidentName)}.json`)),
+        false,
+        "an ambiguous claim is never broadcast into a logical run",
+      );
+    }
+    const registry = join(store.storeDir, "compatibility", "ambiguous-claims");
+    assert.ok(listFilesRecursiveForTest(registry).some((file) => file.endsWith("original.bin")));
+  } finally {
+    store.cleanup();
+  }
+});
+
+test("store: corrupt legacy records are quarantined without blocking healthy discovery or restart", async () => {
+  const store = tempStore("loopviz-corrupt-compat-");
+  try {
+    const healthy = reporterFor(store.storeDir, fakeClock(), { host: "healthy-host", app: "healthy-app", pid: 930 });
+    healthy.declareRun(sampleRunSpec("healthy-run"));
+    healthy.close();
+    const affected = reporterFor(store.storeDir, fakeClock(), { host: "affected-host", app: "affected-app", pid: 931 });
+    affected.declareRun(sampleRunSpec("affected-run"));
+    affected.close();
+
+    const affectedHashed = openStore({ storeDir: store.storeDir, sourceId: "fixture" }).runDir("affected-run");
+    const affectedLegacy = join(store.storeDir, "runs", legacyPathSegment("affected-run"));
+    cpSync(affectedHashed, affectedLegacy, { recursive: true });
+    rmSync(affectedHashed, { recursive: true, force: true });
+    const corrupt = join(affectedLegacy, "events", "torn-source", "000000000999.json");
+    mkdirSync(dirname(corrupt), { recursive: true });
+    const corruptBytes = Buffer.from([0x7b, 0x22, 0x74, 0x6f, 0x72, 0x6e, 0xff, 0x00]);
+    writeFileSync(corrupt, corruptBytes);
+
+    const readerScript = join(store.dir, "corrupt-reader.mjs");
+    const storeUrl = pathToFileURL(join(REPO, "extensions", "loop-execution-visualizer", "src", "store.mjs")).href;
+    writeFileSync(readerScript, `
+import { openStore } from ${JSON.stringify(storeUrl)};
+const store = openStore({ storeDir: process.argv[2], sourceId: process.argv[3] });
+const ids = store.listRunIds().sort();
+const affected = store.read("affected-run");
+process.stdout.write(JSON.stringify({ ids, quarantined: affected.quarantined.length }));
+`, "utf8");
+    const readers = await Promise.all(
+      Array.from({ length: 8 }, (_, index) => runNode(readerScript, [store.storeDir, `reader-${index}`])),
+    );
+    for (const result of readers) {
+      assert.equal(result.status, 0, result.stderr);
+      assert.deepEqual(JSON.parse(result.stdout), {
+        ids: ["affected-run", "healthy-run"],
+        quarantined: 1,
+      });
+    }
+
+    const restarted = openStore({ storeDir: store.storeDir, sourceId: "corrupt-restart" });
+    assert.deepEqual(restarted.listRunIds().sort(), ["affected-run", "healthy-run"]);
+    assert.equal(restarted.read("healthy-run").quarantined.length, 0);
+    assert.equal(restarted.read("affected-run").quarantined.length, 1);
+    const quarantinedBytes = listFilesRecursiveForTest(
+      join(store.storeDir, "compatibility", "quarantine"),
+    ).find((file) => file.endsWith("original.bin") && readFileSync(file).equals(corruptBytes));
+    assert.ok(quarantinedBytes, "the exact invalid bytes survive in migration quarantine");
   } finally {
     store.cleanup();
   }
