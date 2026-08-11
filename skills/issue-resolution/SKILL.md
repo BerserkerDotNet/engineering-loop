@@ -293,6 +293,14 @@ resolve that critic's accepted findings close through the resolution map and nee
 critic. Inspect the updated artifact and the map before requesting approval; return any
 silently skipped finding to the writer.
 
+Immediately before each RCA or fix-plan reconciliation message, call
+`loopviz_attempt_start` on that artifact's writer node with kind `retry`, a fresh
+reconciliation attempt ID, and expected envelope `CRITIQUE_ADDRESSED` plus the message
+sequence. Include the enrollment line in the message. On the exact terminal envelope,
+call `loopviz_node_state` with that attempt ID, status, sequence, and the shared mapped
+terminal state. This applies to both artifact writers; no reconciliation attempt may be
+left running after its result is accepted.
+
 ## Phases 4 and 6: approval gates
 
 Phase 4 is RCA approval and Phase 6 is fix-plan approval. They share one procedure, described
@@ -450,6 +458,12 @@ debt, backlog, and tooling opportunities, propose the most specific durable dest
 each instruction improvement, report exact failed and corrected tool invocations, and present
 the proposals in a concise table.
 
+For each child, add one unplanned retro node, start one `initial` attempt with expected
+envelope `RETRO_COMPLETE` and the message sequence, and include the enrollment line in the
+retro prompt. Settle each exact report with `loopviz_node_state`. After aggregation, settle
+the initially planned aggregate `retro` node as `succeeded`, or as `skipped` when no
+aggregate work was declared. No completed run may retain pending retro nodes or attempts.
+
 This phase reports proposals only; do not edit any destination. List all child sessions and
 identify superseded or read-only sessions that are safe for the user to delete. This
 coordinator session and the implementation session are never cleanup candidates before
@@ -497,6 +511,8 @@ Make each call at the site below. If `loopviz_run_declare` is unavailable, recor
 | `LOOPVIZ:ir.p3.dispatch` | Before creating each artifact critique session, once per critique node. | `loopviz_attempt_start` |
 | `LOOPVIZ:ir.p3.result` | On each critique terminal envelope. | `loopviz_node_state` |
 | `LOOPVIZ:ir.p3.recovery` | On critique retry, session replacement, or contamination recovery. Reuse the same critique node id so attempts stay on one stage. | `loopviz_attempt_start` |
+| `LOOPVIZ:ir.p3.reconcile.dispatch` | Before findings go back to either artifact writer, start a reconciliation attempt with its exact expected envelope. | `loopviz_attempt_start` |
+| `LOOPVIZ:ir.p3.reconcile.result` | On either artifact reconciliation terminal envelope, settle the exact attempt and writer node. | `loopviz_node_state` |
 | `LOOPVIZ:ir.p4.gate` | RCA approval gate: once when the question is asked, once when the user answers. Report the gate state only. | `loopviz_controller_state` |
 | `LOOPVIZ:ir.p5.dispatch` | Before `create_session` for the fix plan. Enrollment line into the kickoff prompt. | `loopviz_attempt_start` |
 | `LOOPVIZ:ir.p5.result` | On the fix-plan terminal envelope. | `loopviz_node_state` |
@@ -505,7 +521,10 @@ Make each call at the site below. If `loopviz_run_declare` is unavailable, recor
 | `LOOPVIZ:ir.p7.result` | On the implementation terminal envelope. | `loopviz_node_state` |
 | `LOOPVIZ:ir.p8.handshake` | The delivery authority handshake outcome, granted or refused. | `loopviz_controller_state` |
 | `LOOPVIZ:ir.p8.delivery` | Each of the `push_attempted`, `push_confirmed` and `pr_confirmed` ledger transitions. | `loopviz_node_state` |
-| `LOOPVIZ:ir.p9.retro` | Retro fan-out, adding one node per child session being asked for a retro report. | `loopviz_node_add` |
+| `LOOPVIZ:ir.p9.retro.add` | Retro fan-out, adding one node per child session being asked for a retro report. | `loopviz_node_add` |
+| `LOOPVIZ:ir.p9.retro.dispatch` | Before sending each retro prompt, start one attempt on that child's retro node and include its enrollment line. | `loopviz_attempt_start` |
+| `LOOPVIZ:ir.p9.retro.result` | On each `RETRO_COMPLETE` envelope, settle the matching attempt and node with the exact sequence. | `loopviz_node_state` |
+| `LOOPVIZ:ir.p9.retro.aggregate` | After aggregating every report, settle or skip the planned aggregate retro node. | `loopviz_node_state` |
 | `LOOPVIZ:ir.invalidation` | When an invalidation supersedes a session, adding the replacement stage before dispatching it. The superseded stage keeps its history. | `loopviz_node_add` |
 | `LOOPVIZ:ir.recovery` | Whenever this session resumes, is woken by a message it did not expect, or handles an interruption. Respond using the Recovery section above. | `loopviz_incidents` |
 | `LOOPVIZ:ir.outcome` | Completion or terminal blocker, exactly once. | `loopviz_run_outcome` |

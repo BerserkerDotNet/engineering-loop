@@ -44,6 +44,7 @@ const reporter = createReporter({
   appSessionId,
   extensionId: "plugin:engineering-loop:loop-execution-visualizer",
   pid: process.pid,
+  repository: "BerserkerDotNet/engineering-loop",
   send: async () => { throw new Error("the evidence harness never sends"); },
   log: (line) => process.stdout.write(`[reporter] ${line}\n`),
 });

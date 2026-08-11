@@ -12,8 +12,16 @@ import { tempStore, fakeClock, sampleRunSpec, collectSends, failingSend } from "
  * nothing about it can move approval, delivery or push authority.
  */
 
-const LEAD = { hostSessionId: "host-lead", appSessionId: "app-lead" };
-const CHILD = { hostSessionId: "host-child-design", appSessionId: "app-child-design" };
+const LEAD = {
+  hostSessionId: "host-lead",
+  appSessionId: "app-lead",
+  repository: "BerserkerDotNet/engineering-loop",
+};
+const CHILD = {
+  hostSessionId: "host-child-design",
+  appSessionId: "app-child-design",
+  repository: "BerserkerDotNet/engineering-loop",
+};
 
 const EXACT_BODY = [
   "Please re-check the contract layer.",

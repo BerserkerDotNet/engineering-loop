@@ -21,12 +21,13 @@ const REPO = join(HERE, "..", "..");
 
 function reporterFor(storeDir, clock, { role = "orchestrator", host = "host-lead", app = "app-lead", pid = 900 } = {}) {
   return createReporter({
-    storeDir, role, hostSessionId: host, appSessionId: app, pid, now: clock, send: collectSends([]),
+    storeDir, role, hostSessionId: host, appSessionId: app, pid, now: clock,
+    repository: "BerserkerDotNet/engineering-loop", send: collectSends([]),
   });
 }
 
 function eventFiles(storeDir, runId) {
-  const dir = join(storeDir, "runs", runId, "events");
+  const dir = openStore({ storeDir, sourceId: "event-reader" }).eventsDir(runId);
   const out = [];
   for (const source of readdirSync(dir, { withFileTypes: true })) {
     if (!source.isDirectory()) continue;
@@ -68,11 +69,13 @@ test("store: an event file is written exactly once and never rewritten", async (
   }
 });
 
-test("store: valid run ids that previously collided retain distinct reversible directories", () => {
+test("store: valid run ids that previously collided retain distinct collision-resistant directories", () => {
   const store = tempStore();
   const clock = fakeClock();
   try {
     const ids = [
+      "Run",
+      "run",
       "foo:bar",
       "foo_bar",
       "foo",
@@ -90,8 +93,38 @@ test("store: valid run ids that previously collided retain distinct reversible d
     assert.deepEqual(reader.listRunIds().sort(), [...ids].sort());
     assert.notEqual(encodePathSegment("foo:bar"), encodePathSegment("foo_bar"));
     assert.notEqual(encodePathSegment("foo"), encodePathSegment("foo."));
+    assert.notEqual(encodePathSegment("Run").toLowerCase(), encodePathSegment("run").toLowerCase());
     assert.notEqual(encodePathSegment("CON").toLowerCase(), "con");
     for (const runId of ids) assert.equal(reader.read(runId).events[0].runId, runId);
+  } finally {
+    store.cleanup();
+  }
+});
+
+test("store: a rejected outcome never makes a live run eligible for retention", () => {
+  const store = tempStore();
+  const clock = fakeClock();
+  try {
+    const lead = reporterFor(store.storeDir, clock);
+    lead.declareRun(sampleRunSpec("forged-terminal"));
+    lead.emit("run.outcome", {
+      outcome: "completed",
+      reason: "forged system outcome",
+    }, {
+      kind: "system",
+      basis: "system",
+      immediate: true,
+    });
+    lead.flush();
+    assert.equal(lead.projection({ force: true }).outcome, null);
+
+    clock.advance(DEFAULT_LIMITS.terminalRetentionMs + 1);
+    assert.deepEqual(
+      lead.store.pruneRuns(0),
+      [],
+      "schema-valid but unauthorized outcomes do not establish retention eligibility",
+    );
+    assert.equal(lead.store.runExists("forged-terminal"), true);
   } finally {
     store.cleanup();
   }
@@ -112,6 +145,7 @@ test("store: approved byte budgets are enforced without deleting active runs", (
       hostSessionId: "host-budget",
       appSessionId: "app-budget",
       pid: 880,
+      repository: "BerserkerDotNet/engineering-loop",
       now: clock,
       send: collectSends([]),
       limits: { maxRunBytes: 8 * 1024, maxStoreBytes: 64 * 1024 },
@@ -148,7 +182,8 @@ test("store: a torn or tampered record is quarantined instead of applied", async
     assert.ok(healthy >= 2);
 
     // Three distinct kinds of damage, each written as its own record.
-    const dir = join(store.storeDir, "runs", "torn-run", "events", "handmade");
+    const raw = openStore({ storeDir: store.storeDir, sourceId: "reader" });
+    const dir = join(raw.eventsDir("torn-run"), "handmade");
     mkdirSync(dir, { recursive: true });
     writeFileSync(join(dir, "000000900001.json"), '{"checksum":"sha256:0","event":{"partial":', "utf8");
 
@@ -163,9 +198,9 @@ test("store: a torn or tampered record is quarantined instead of applied", async
     assert.equal(projection.integrity.quarantined, 3, "each damaged record is quarantined separately");
     assert.equal(projection.title, sampleRunSpec("torn-run").title, "the tampered value never reached the projection");
 
-    const notes = readdirSync(join(store.storeDir, "runs", "torn-run", "quarantine"));
+    const notes = readdirSync(join(raw.runDir("torn-run"), "quarantine"));
     assert.ok(notes.length >= 1, "quarantine leaves an inspectable note");
-    const note = JSON.parse(readFileSync(join(store.storeDir, "runs", "torn-run", "quarantine", notes[0]), "utf8"));
+    const note = JSON.parse(readFileSync(join(raw.runDir("torn-run"), "quarantine", notes[0]), "utf8"));
     const reasons = note.quarantined.map((q) => q.reason).join(" | ");
     assert.match(reasons, /unreadable record/);
     assert.match(reasons, /checksum mismatch/);
@@ -257,6 +292,7 @@ const reporter = createReporter({
   hostSessionId: "host-" + tag,
   appSessionId: "app-" + tag,
   pid: Number(process.pid),
+  repository: "BerserkerDotNet/engineering-loop",
   send: async () => {},
 });
 reporter.attachRun("concurrent-run");
@@ -313,7 +349,7 @@ test("store: a crashed writer leaves a replayable log and a fresh process resume
     const beforeCrash = eventFiles(store.storeDir, "crash-run").length;
 
     // The process dies mid-write: a half record lands on disk.
-    const dir = join(store.storeDir, "runs", "crash-run", "events", lead.sourceId);
+    const dir = join(lead.store.eventsDir("crash-run"), lead.store.sourceId);
     const highest = readdirSync(dir).sort().at(-1);
     const tornSeq = String(Number.parseInt(highest.slice(0, 12), 10) + 1).padStart(12, "0");
     writeFileSync(join(dir, `${tornSeq}.json`), '{"checksum":"sha256:aaa","event":{"runId":"crash-run"', "utf8");
@@ -351,7 +387,7 @@ test("store: the index is a rebuildable cache and a corrupt entry is not fatal",
     lead.flush();
     lead.projection({ force: true });
 
-    const indexPath = join(store.storeDir, "index", "index-run.json");
+    const indexPath = join(store.storeDir, "index", `${encodePathSegment("index-run")}.json`);
     const cached = JSON.parse(readFileSync(indexPath, "utf8"));
     assert.equal(cached.runId, "index-run");
 
@@ -438,6 +474,7 @@ test("store: exceeding the per-run event cap reports truncation instead of prete
       hostSessionId: "host-lead",
       appSessionId: "app-lead",
       pid: 400,
+      repository: "BerserkerDotNet/engineering-loop",
       now: clock,
       send: collectSends([]),
       limits: { maxEventsPerRun: 6, maxRuns: 50, maxRecordBytes: 262144, lockTtlMs: 5000, lockWaitMs: 4000 },
@@ -476,6 +513,7 @@ test("store: an oversized record is refused rather than written truncated", asyn
       hostSessionId: "host-lead",
       appSessionId: "app-lead",
       pid: 500,
+      repository: "BerserkerDotNet/engineering-loop",
       now: clock,
       send: collectSends([]),
       limits: { maxEventsPerRun: 20000, maxRuns: 50, maxRecordBytes: 2048, lockTtlMs: 5000, lockWaitMs: 4000 },

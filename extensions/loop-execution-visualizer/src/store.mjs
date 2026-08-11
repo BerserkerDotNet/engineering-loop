@@ -6,6 +6,7 @@ import {
 import { dirname, join } from "node:path";
 import { canonicalJson, sha256, LoopVizError, pad } from "./util.mjs";
 import { validateEvent } from "./contracts.mjs";
+import { authorize, buildLedger } from "./authority.mjs";
 
 /**
  * Immutable, cross-process, file-per-event store.
@@ -55,22 +56,7 @@ const STRUCTURAL_TYPES = new Set([
 const CLOCK_REFRESH_MS = 1000;
 
 export function encodePathSegment(segment) {
-  const value = String(segment);
-  if (value.length === 0) return "%EMPTY";
-  let encoded = encodeURIComponent(value).replace(/\./g, "%2E");
-  if (/^(con|prn|aux|nul|com[1-9]|lpt[1-9])$/i.test(encoded)) {
-    encoded = `%${encoded.charCodeAt(0).toString(16).toUpperCase()}${encoded.slice(1)}`;
-  }
-  return encoded;
-}
-
-export function decodePathSegment(segment) {
-  if (segment === "%EMPTY") return "";
-  try {
-    return decodeURIComponent(segment);
-  } catch {
-    return null;
-  }
+  return `id-${sha256(String(segment)).slice("sha256:".length)}`;
 }
 
 function ensureDir(path) {
@@ -221,7 +207,46 @@ export function openStore({ storeDir, sourceId, limits: configuredLimits = DEFAU
   const clockScannedAt = new Map();
 
   const runsRoot = () => join(storeDir, "runs");
-  const runDir = (runId) => join(runsRoot(), encodePathSegment(runId));
+  const runPathCache = new Map();
+  const hashedRunDir = (runId) => join(runsRoot(), encodePathSegment(runId));
+
+  function declaredRunIdAt(path) {
+    const root = join(path, "events");
+    for (const sourceEntry of readDirSafe(root)) {
+      if (!sourceEntry.isDirectory()) continue;
+      for (const entry of readDirSafe(join(root, sourceEntry.name))) {
+        if (!entry.isFile() || !entry.name.endsWith(".json")) continue;
+        try {
+          const parsed = parseRecord(readFileSync(join(root, sourceEntry.name, entry.name), "utf8"));
+          if (parsed.ok && parsed.event.type === "run.declared") return parsed.event.runId;
+        } catch { /* an unreadable directory cannot establish a logical id */ }
+      }
+    }
+    return null;
+  }
+
+  function discoverRunPaths() {
+    const found = new Map();
+    for (const entry of readDirSafe(runsRoot())) {
+      if (!entry.isDirectory()) continue;
+      const path = join(runsRoot(), entry.name);
+      const runId = declaredRunIdAt(path);
+      if (runId !== null && !found.has(runId)) found.set(runId, path);
+    }
+    for (const [runId, path] of found) runPathCache.set(runId, path);
+    return found;
+  }
+
+  const runDir = (runId) => {
+    const expected = hashedRunDir(runId);
+    if (existsSync(expected)) {
+      runPathCache.set(runId, expected);
+      return expected;
+    }
+    const cached = runPathCache.get(runId);
+    if (cached && existsSync(cached)) return cached;
+    return discoverRunPaths().get(runId) ?? expected;
+  };
   const eventsDir = (runId) => join(runDir(runId), "events");
   const sourceDir = (runId) => join(eventsDir(runId), safeSource);
   const quarantineDir = (runId) => join(runDir(runId), "quarantine");
@@ -230,18 +255,23 @@ export function openStore({ storeDir, sourceId, limits: configuredLimits = DEFAU
   const indexDir = () => join(storeDir, "index");
 
   function terminalInfo(runId) {
-    let outcomeAt = null;
+    const events = [];
     for (const sourceEntry of readDirSafe(eventsDir(runId))) {
       if (!sourceEntry.isDirectory()) continue;
       for (const entry of readDirSafe(join(eventsDir(runId), sourceEntry.name))) {
         if (!entry.isFile() || !entry.name.endsWith(".json")) continue;
         try {
           const parsed = parseRecord(readFileSync(join(eventsDir(runId), sourceEntry.name, entry.name), "utf8"));
-          if (parsed.ok && parsed.event.runId === runId && parsed.event.type === "run.outcome") {
-            outcomeAt = Math.max(outcomeAt ?? 0, Date.parse(parsed.event.recordedAt));
-          }
+          if (parsed.ok && parsed.event.runId === runId) events.push(parsed.event);
         } catch { /* malformed records never prove terminal state */ }
       }
+    }
+    const sorted = sortEvents(events);
+    const ledger = buildLedger(sorted);
+    let outcomeAt = null;
+    for (const event of sorted) {
+      if (event.type !== "run.outcome" || !authorize(ledger, event).allowed) continue;
+      outcomeAt = Math.max(outcomeAt ?? 0, Date.parse(event.recordedAt));
     }
     return { terminal: outcomeAt !== null, outcomeAt };
   }
@@ -252,9 +282,7 @@ export function openStore({ storeDir, sourceId, limits: configuredLimits = DEFAU
   }
 
   function reclaimTerminalRuns(requiredBytes = 0, protectedRunId = null) {
-    const candidates = readDirSafe(runsRoot())
-      .filter((entry) => entry.isDirectory())
-      .map((entry) => decodePathSegment(entry.name))
+    const candidates = [...discoverRunPaths().keys()]
       .filter((id) => id !== null && id !== protectedRunId)
       .map((id) => ({ id, ...terminalInfo(id) }))
       .filter((entry) => entry.terminal)
@@ -491,10 +519,7 @@ export function openStore({ storeDir, sourceId, limits: configuredLimits = DEFAU
     },
 
     listRunIds() {
-      return readDirSafe(runsRoot())
-        .filter((entry) => entry.isDirectory())
-        .map((entry) => decodePathSegment(entry.name))
-        .filter((id) => id !== null);
+      return [...discoverRunPaths().keys()];
     },
 
     runExists(runId) {

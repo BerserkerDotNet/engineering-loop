@@ -102,6 +102,9 @@ test("tools: the orchestrator drives a run from declaration to authoritative out
       runId: spec.runId,
       skill: spec.skill,
       title: spec.title,
+      skillVersion: spec.skillVersion,
+      branch: spec.branch,
+      orchestratorLabel: spec.orchestratorLabel,
       nodes: spec.nodes,
     });
     assert.equal(again.created, false);
@@ -502,6 +505,7 @@ test("tools: a session that has done nothing yet can declare a run and becomes i
       role: "unknown",
       hostSessionId: "host-fresh",
       pid: 1,
+      repository: "BerserkerDotNet/engineering-loop",
       now: fakeClock(),
     });
     const tools = toolMap(reporter);
@@ -574,6 +578,7 @@ test("tools: an enrolled child can never declare a run, however it asks", async 
       role: "orchestrator",
       hostSessionId: "host-lead",
       pid: 1,
+      repository: "BerserkerDotNet/engineering-loop",
       now: clock,
     });
     lead.declareRun(sampleRunSpec("hijack-run"));
@@ -584,6 +589,7 @@ test("tools: an enrolled child can never declare a run, however it asks", async 
       role: "unknown",
       hostSessionId: "host-child",
       pid: 2,
+      repository: "BerserkerDotNet/engineering-loop",
       now: clock,
     });
     const redeemed = child.redeemEnrollment(extractEnrollmentToken(grant.enrollmentLine));
@@ -621,6 +627,7 @@ test("tools: every tool refuses to act before a run is attached", async () => {
       role: "orchestrator",
       hostSessionId: "host-unattached",
       pid: 1,
+      repository: "BerserkerDotNet/engineering-loop",
       now: fakeClock(),
     });
     const tools = toolMap(reporter);

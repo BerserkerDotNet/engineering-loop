@@ -328,6 +328,14 @@ Send one consolidated list to the existing design session. Require it to:
 7. Report `PUSHED: no`, `PR_CREATED: no`, and `UPSTREAM: none`.
 8. Provide command evidence that the branch has no upstream and no matching remote branch.
 
+Immediately before sending the findings, call `loopviz_attempt_start` on the design node
+with kind `retry`, a fresh reconciliation attempt ID, and expected envelope
+`CRITIQUE_ADDRESSED` plus the message sequence. Include its enrollment line in the message.
+When that exact envelope arrives, call `loopviz_node_state` with the reconciliation
+attempt ID, `state: succeeded`, and the exact status and sequence. A `BLOCKED` envelope is
+settled as `failed`. Do not leave the reconciliation attempt running after accepting its
+terminal envelope.
+
 Inspect the updated design and resolution map before requesting approval. If a finding was
 silently skipped, return it to the design session.
 
@@ -491,6 +499,13 @@ After the PR exists, send the retro prompt to every child session:
 - All three critiques
 - Implementation
 
+For each child, add one unplanned retro node, start one `initial` attempt with expected
+envelope `COMPLETE` and that message's sequence, and include the returned enrollment line
+in the retro prompt. Settle each report with `loopviz_node_state`, using the exact attempt
+ID, status, and sequence. After every report is incorporated, settle the initially planned
+aggregate `retro` node as `succeeded`; if the declared graph has no aggregate retro work,
+settle that node as `skipped`. No completed run may retain pending retro nodes or attempts.
+
 Each child reviews its own complete conversation and returns evidence, not generic advice.
 Wait for all reports.
 
@@ -570,14 +585,18 @@ Make each call at the site below. If `loopviz_run_declare` is unavailable, recor
 | `LOOPVIZ:el.p3.dispatch` | Before creating each of the three critique sessions, once per critique node. | `loopviz_attempt_start` |
 | `LOOPVIZ:el.p3.result` | On each critique terminal envelope. | `loopviz_node_state` |
 | `LOOPVIZ:el.p3.replacement` | When a critique is retried or its session replaced. Reuse the same critique node id so the attempts stay on one stage. | `loopviz_attempt_start` |
-| `LOOPVIZ:el.p3.reconcile` | When consolidated findings go back to the design session, as a new attempt on the design node. | `loopviz_attempt_start` |
+| `LOOPVIZ:el.p3.reconcile.dispatch` | Before consolidated findings go back to the design session, start a reconciliation attempt with its exact expected envelope. | `loopviz_attempt_start` |
+| `LOOPVIZ:el.p3.reconcile.result` | On the design reconciliation terminal envelope, settle its attempt and design node with the exact status and sequence. | `loopviz_node_state` |
 | `LOOPVIZ:el.p4.gate` | Design approval loop: once when the question is asked, once when the user answers. Report the gate state only — the approval itself is the user's answer. | `loopviz_controller_state` |
 | `LOOPVIZ:el.p5.dispatch` | Before `create_session` for implementation. Enrollment line into the kickoff prompt. | `loopviz_attempt_start` |
 | `LOOPVIZ:el.p5.recovery` | When implementation reveals a design-invalidating gap that adds an unplanned stage, before dispatching it. | `loopviz_node_add` |
 | `LOOPVIZ:el.p5.result` | On the implementation terminal envelope. | `loopviz_node_state` |
 | `LOOPVIZ:el.p6.gate` | Implementation approval loop: once when asked, once when answered. | `loopviz_controller_state` |
 | `LOOPVIZ:el.p7.delivery` | When PR authorization is sent, and again when the PR URL is confirmed. | `loopviz_node_state` |
-| `LOOPVIZ:el.p8.retro` | Retro fan-out, adding one node per child session being asked for a retro report. | `loopviz_node_add` |
+| `LOOPVIZ:el.p8.retro.add` | Retro fan-out, adding one node per child session being asked for a retro report. | `loopviz_node_add` |
+| `LOOPVIZ:el.p8.retro.dispatch` | Before sending each retro prompt, start one attempt on that child's retro node and include its enrollment line. | `loopviz_attempt_start` |
+| `LOOPVIZ:el.p8.retro.result` | On each child retro terminal envelope, settle the matching attempt and node with the exact status and sequence. | `loopviz_node_state` |
+| `LOOPVIZ:el.p8.retro.aggregate` | After aggregating every report, settle or skip the planned aggregate retro node. | `loopviz_node_state` |
 | `LOOPVIZ:el.outcome` | Completion or terminal blocker, exactly once. | `loopviz_run_outcome` |
 | `LOOPVIZ:el.incidents` | Whenever the orchestration session resumes, is woken by a message it did not expect, or begins waiting on children. Respond using the failure and resume rules above. | `loopviz_incidents` |
 

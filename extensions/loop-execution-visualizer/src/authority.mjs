@@ -152,7 +152,13 @@ export function buildLedger(events) {
       continue;
     }
 
-    if (type === "run.outcome" && isOrchestrator) {
+    if (
+      type === "run.outcome" &&
+      isOrchestrator &&
+      source.kind === "orchestrator" &&
+      authority.basis === "runtime_identity" &&
+      authority.control === true
+    ) {
       ledger.runTerminal = true;
     }
   }

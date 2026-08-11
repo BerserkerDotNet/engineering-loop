@@ -21,13 +21,14 @@
 import { joinSession, createCanvas } from "@github/copilot-sdk/extension";
 
 import { resolveStorageLocation, assertPluginScoped, describeLocation } from "./src/paths.mjs";
-import { createReporter } from "./src/reporter.mjs";
+import { canonicalProjectIdentity, createReporter } from "./src/reporter.mjs";
 import { createTools, assertToolCoverage } from "./src/tools.mjs";
 import { createLoopbackServer } from "./src/server.mjs";
 import { createCanvasHandlers } from "./src/handlers.mjs";
 import { summarizeRun } from "./src/projection.mjs";
 import { extractEnrollmentToken } from "./src/authority.mjs";
 import { STATES } from "./src/contracts.mjs";
+import { createListeningGate } from "./src/readiness.mjs";
 
 const CANVAS_ID = "loop-execution-visualizer";
 const HEARTBEAT_MS = STATES.health.heartbeatIntervalMs;
@@ -58,13 +59,8 @@ const runtime = {
    * top-level start() has resolved, so `open` must wait instead of failing the
    * panel permanently.
    */
-  serverReady: null,
-  resolveServerReady: null,
+  serverGate: createListeningGate(),
 };
-
-runtime.serverReady = new Promise((resolve) => {
-  runtime.resolveServerReady = resolve;
-});
 
 function log(message) {
   try {
@@ -81,17 +77,12 @@ function log(message) {
  */
 async function waitForServer(timeoutMs = SERVER_READY_TIMEOUT_MS) {
   if (runtime.server) return runtime.server;
-  let timer = null;
-  const expiry = new Promise((resolve) => {
-    timer = setTimeout(resolve, timeoutMs);
-    if (typeof timer.unref === "function") timer.unref();
-  });
   try {
-    await Promise.race([runtime.serverReady, expiry]);
-  } finally {
-    if (timer) clearTimeout(timer);
+    return await runtime.serverGate.wait(timeoutMs);
+  } catch (error) {
+    if (!runtime.storageError) runtime.storageError = error.message;
+    return null;
   }
-  return runtime.server;
 }
 
 /**
@@ -450,6 +441,12 @@ if (!scope.ok) {
       ?? null;
     runtime.repository = workspace?.workspace?.repository ?? null;
     runtime.branch = workspace?.workspace?.branch ?? null;
+    if (!canonicalProjectIdentity({
+      repository: runtime.repository,
+      workingDirectory: runtime.workingDirectory,
+    })) {
+      throw new Error("trusted repository and working-directory facts are unavailable; loop visualization is disabled");
+    }
     let plugins = null;
     try {
       const listed = await session.rpc.plugins.list();
@@ -498,16 +495,17 @@ if (runtime.location) {
     log,
   });
 
-  runtime.server = createLoopbackServer({ handlers, log });
+  const candidateServer = createLoopbackServer({ handlers, log });
   try {
-    await runtime.server.start();
+    await candidateServer.start();
+    runtime.server = candidateServer;
+    runtime.serverGate.publish(candidateServer);
   } catch (error) {
     runtime.server = null;
     runtime.storageError = `loopback server failed: ${error.message}`;
-    runtime.resolveServerReady(null);
+    runtime.serverGate.fail(new Error(runtime.storageError));
     throw error;
   }
-  runtime.resolveServerReady(runtime.server);
   log(`loopback server listening on 127.0.0.1:${runtime.server.port}`);
 
   if (runtime.pendingInitialPrompt) {
@@ -603,7 +601,7 @@ if (runtime.location) {
   // Reporter absence is detected exactly once. Skills continue unchanged and
   // must not retry the missing tools.
   log("running in degraded mode: no run will be recorded");
-  runtime.resolveServerReady(null);
+  runtime.serverGate.fail(new Error(runtime.storageError ?? "loop visualizer reporter is unavailable"));
 }
 
 process.on("exit", () => {

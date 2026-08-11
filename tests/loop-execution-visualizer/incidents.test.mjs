@@ -20,6 +20,7 @@ function orchestrator(storeDir, clock, sink, { hostSessionId = "host-lead", appS
     appSessionId,
     extensionId: "plugin:engineering-loop:loop-execution-visualizer",
     pid: 4242,
+    repository: "BerserkerDotNet/engineering-loop",
     now: clock,
     send: collectSends(sink),
   });
@@ -113,6 +114,7 @@ test("incidents: a silently killed child becomes connection_lost, never failed",
       appSessionId: "app-child-design",
       extensionId: "plugin:engineering-loop:loop-execution-visualizer",
       pid: 7001,
+      repository: "BerserkerDotNet/engineering-loop",
       now: clock,
     });
     assert.equal(child.redeemEnrollment(grant.enrollmentLine).ok, true);
@@ -171,6 +173,7 @@ test("incidents: a clean host shutdown is 'ended', not a connection loss", async
       hostSessionId: "host-child-clean",
       appSessionId: "app-child-clean",
       pid: 7002,
+      repository: "BerserkerDotNet/engineering-loop",
       now: clock,
     });
     child.redeemEnrollment(grant.enrollmentLine);
@@ -205,6 +208,7 @@ test("incidents: an unavailable orchestrator retains recovery_pending and replay
       hostSessionId: "host-lead",
       appSessionId: "app-lead",
       pid: 4242,
+      repository: "BerserkerDotNet/engineering-loop",
       now: clock,
       send: failingSend("session is busy"),
     });
@@ -317,6 +321,7 @@ test("incidents: a child process may not deliver, resolve, or invent an incident
       hostSessionId: "host-child-design",
       appSessionId: "app-child-design",
       pid: 7003,
+      repository: "BerserkerDotNet/engineering-loop",
       now: clock,
       send: collectSends(childSink),
     });

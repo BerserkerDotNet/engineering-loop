@@ -21,6 +21,7 @@ function orchestrator(storeDir, clock, sink, overrides = {}) {
     appSessionId: "app-lead",
     extensionId: "plugin:engineering-loop:loop-execution-visualizer",
     pid: 4242,
+    repository: "BerserkerDotNet/engineering-loop",
     now: clock,
     send: collectSends(sink),
     ...overrides,
@@ -28,7 +29,7 @@ function orchestrator(storeDir, clock, sink, overrides = {}) {
 }
 
 /** Declares a run and dispatches design with an expected terminal envelope. */
-function runExpectingEnvelope(lead, clock, runId = "ledger-run") {
+function runExpectingEnvelope(lead, clock, runId = "ledger-run", expectedStatus = "COMPLETE") {
   lead.declareRun(sampleRunSpec(runId));
   clock.advance(1000);
   const grant = lead.startAttempt({
@@ -38,7 +39,7 @@ function runExpectingEnvelope(lead, clock, runId = "ledger-run") {
     kind: "initial",
     model: "claude-opus-5",
     reason: "design phase dispatched",
-    expectedEnvelope: { status: "COMPLETE", sequence: 4 },
+    expectedEnvelope: { status: expectedStatus, sequence: 4 },
   });
   return grant;
 }
@@ -52,6 +53,7 @@ function child(storeDir, clock, grant, { appSessionId = "app-design", pid = 5151
     appSessionId,
     extensionId: "plugin:engineering-loop:loop-execution-visualizer",
     pid,
+    repository: "BerserkerDotNet/engineering-loop",
     now: clock,
     send: collectSends([]),
   });
@@ -202,13 +204,13 @@ test("recovery pending: a healthy orchestrator that a child cannot deliver to is
   const clock = fakeClock();
   try {
     const lead = orchestrator(store.storeDir, clock, []);
-    const grant = runExpectingEnvelope(lead, clock, "pending-healthy");
+    const grant = runExpectingEnvelope(lead, clock, "pending-healthy", "BLOCKED");
     const worker = child(store.storeDir, clock, grant);
 
     lead.heartbeat("active");
     lead.settleEnvelope({
       nodeId: "design", attemptId: "design-a1", state: "failed", reason: "child reported a nonrecoverable error",
-      envelopeStatus: "COMPLETE", envelopeSequence: 4,
+      envelopeStatus: "BLOCKED", envelopeSequence: 4,
     });
     clock.advance(100);
     const opened = lead.detectIncidents();
@@ -234,13 +236,13 @@ test("recovery pending: a stale orchestrator heartbeat parks the incident and on
   const sink = [];
   try {
     const lead = orchestrator(store.storeDir, clock, sink);
-    const grant = runExpectingEnvelope(lead, clock, "pending-stale");
+    const grant = runExpectingEnvelope(lead, clock, "pending-stale", "BLOCKED");
     const worker = child(store.storeDir, clock, grant);
 
     lead.heartbeat("active");
     lead.settleEnvelope({
       nodeId: "design", attemptId: "design-a1", state: "failed", reason: "child reported a nonrecoverable error",
-      envelopeStatus: "COMPLETE", envelopeSequence: 4,
+      envelopeStatus: "BLOCKED", envelopeSequence: 4,
     });
     lead.detectIncidents();
     lead.flush();
@@ -397,6 +399,7 @@ test("outbox: acceptance survives a process restart because the candidate set is
       appSessionId: "app-design",
       extensionId: "plugin:engineering-loop:loop-execution-visualizer",
       pid: 6262,
+      repository: "BerserkerDotNet/engineering-loop",
       now: clock,
       send: collectSends([]),
     });
@@ -462,6 +465,7 @@ test("store: a writer's source identity does not change when its role is learned
       appSessionId: "app-lead",
       extensionId: "plugin:engineering-loop:loop-execution-visualizer",
       pid: 4242,
+      repository: "BerserkerDotNet/engineering-loop",
       now: clock,
       send: collectSends([]),
     });
@@ -473,8 +477,12 @@ test("store: a writer's source identity does not change when its role is learned
     assert.equal(unknown.sourceId, identityBefore, "learning the role never changes where this process writes");
     unknown.flush();
 
-    const dirs = readdirSync(join(store.storeDir, "runs", "identity-run", "events"));
-    assert.deepEqual(dirs, [identityBefore], "one process writes to exactly one source directory for the whole run");
+    const dirs = readdirSync(join(unknown.store.runDir("identity-run"), "events"));
+    assert.deepEqual(
+      dirs,
+      [unknown.store.sourceId],
+      "one process writes to exactly one source directory for the whole run",
+    );
 
     unknown.close();
   } finally {

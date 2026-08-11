@@ -181,9 +181,9 @@ test("store: writes are immutable, sequences resume at max+1 and torn files are 
     first.emit("controller.state", { workflowState: "scheduling", reason: "first process" });
     first.flush();
 
-    const sourceDirs = readdirSync(join(tmp.storeDir, "runs", "store-run", "events"));
+    const sourceDirs = readdirSync(join(first.store.runDir("store-run"), "events"));
     assert.equal(sourceDirs.length, 1);
-    const eventDir = join(tmp.storeDir, "runs", "store-run", "events", sourceDirs[0]);
+    const eventDir = join(first.store.runDir("store-run"), "events", sourceDirs[0]);
     const before = readdirSync(eventDir).sort();
     assert.deepEqual(before, ["000000000001.json", "000000000002.json"]);
 
@@ -367,7 +367,7 @@ test("store: a restarted orchestrator re-adopts its own live run and no other", 
       storeDir: tmp.storeDir, role: "orchestrator",
       hostSessionId: "host-other", appSessionId: "app-other",
       extensionId: "plugin:engineering-loop:loop-execution-visualizer",
-      pid: 4242, now: clock,
+      pid: 4242, now: clock, repository: "BerserkerDotNet/engineering-loop",
     });
     other.declareRun(sampleRunSpec("resume-someone-else"));
     other.flush();
@@ -401,7 +401,7 @@ test("store: a restarted orchestrator re-adopts its own live run and no other", 
       storeDir: tmp.storeDir, role: "unknown",
       hostSessionId: "host-stranger", appSessionId: "app-stranger",
       extensionId: "plugin:engineering-loop:loop-execution-visualizer",
-      pid: 909, now: clock,
+      pid: 909, now: clock, repository: "BerserkerDotNet/engineering-loop",
     });
     assert.equal(stranger.resumeOrchestratorRun(), null, "a run is never adopted by a session that did not declare it");
     assert.equal(stranger.role, "unknown");

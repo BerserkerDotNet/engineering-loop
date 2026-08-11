@@ -94,15 +94,33 @@ export function createLoopbackServer(options) {
     return token;
   }
 
-  function issueCredential(bootstrap = null) {
+  function issueCredential(bootstrap = null, lineage = null) {
+    const current = now();
+    const lineageIssuedAt = lineage?.lineageIssuedAt ?? current;
+    const hardExpiresAt = lineage?.hardExpiresAt ?? lineageIssuedAt + credentialMaxLifetimeMs;
+    if (current >= hardExpiresAt) return null;
     const credential = randomToken(32);
     credentials.set(credential, {
-      issuedAt: now(),
-      expiresAt: now() + credentialTtlMs,
-      maxLifetimeMs: credentialMaxLifetimeMs,
+      issuedAt: current,
+      lineageIssuedAt,
+      hardExpiresAt,
+      expiresAt: Math.min(current + credentialTtlMs, hardExpiresAt),
       bootstrap,
     });
     return credential;
+  }
+
+  function credentialResponse(credential) {
+    const record = credentials.get(credential);
+    const current = now();
+    return {
+      credential,
+      expiresInMs: Math.max(0, record.expiresAt - current),
+      renewAfterMs: Math.max(
+        0,
+        Math.min(CREDENTIAL_RENEW_MS, credentialTtlMs / 2, record.hardExpiresAt - current),
+      ),
+    };
   }
 
   function closeCredentialStreams(credential, reason) {
@@ -126,15 +144,19 @@ export function createLoopbackServer(options) {
     for (const [credential, group] of byCredential) {
       const record = credentials.get(credential);
       if (!record) continue;
-      const hardExpiry = record.issuedAt + record.maxLifetimeMs;
+      const hardExpiry = record.hardExpiresAt;
       const rotateAt = Math.min(record.expiresAt, hardExpiry) - Math.min(CREDENTIAL_RENEW_MS, credentialTtlMs / 2);
       if (current < rotateAt) continue;
-      const replacement = issueCredential();
+      if (current >= hardExpiry) continue;
+      const replacement = issueCredential(null, record);
+      if (!replacement) continue;
+      const payload = credentialResponse(replacement);
       for (const [stream, binding] of group) {
         try {
           stream.write(`event: credential\ndata: ${JSON.stringify({
             credential: replacement,
-            expiresInMs: credentialTtlMs,
+            expiresInMs: payload.expiresInMs,
+            renewAfterMs: payload.renewAfterMs,
           })}\n\n`);
           binding.credential = replacement;
         } catch {
@@ -154,9 +176,9 @@ export function createLoopbackServer(options) {
       }
     }
     for (const [credential, entry] of credentials) {
-      const hardExpiry = entry.issuedAt + entry.maxLifetimeMs;
-      if (current > entry.expiresAt || current > hardExpiry) {
-        const reason = current > hardExpiry ? "instance credential reached its maximum lifetime" : "instance credential expired";
+      const hardExpiry = entry.hardExpiresAt;
+      if (current >= entry.expiresAt || current >= hardExpiry) {
+        const reason = current >= hardExpiry ? "instance credential reached its maximum lifetime" : "instance credential expired";
         expiredCredentials.set(credential, { reason, at: current });
         credentials.delete(credential);
         closeCredentialStreams(credential, reason);
@@ -183,7 +205,7 @@ export function createLoopbackServer(options) {
     if (now() - record.issuedAt > bootstrapTtlMs) return { ok: false, reason: "bootstrap token expired" };
     record.usedAt = now();
     const credential = issueCredential(key);
-    return { ok: true, credential, expiresInMs: credentialTtlMs, renewAfterMs: Math.min(CREDENTIAL_RENEW_MS, credentialTtlMs / 2) };
+    return { ok: true, ...credentialResponse(credential) };
   }
 
   function authenticate(req) {
@@ -198,19 +220,19 @@ export function createLoopbackServer(options) {
       return { ok: false, status: 401, reason: expired?.[1].reason ?? "unknown instance credential" };
     }
     const [credential, record] = found;
-    if (now() > record.expiresAt) {
+    if (now() >= record.expiresAt) {
       credentials.delete(credential);
       return { ok: false, status: 401, reason: "instance credential expired" };
     }
     // Sliding renewal keeps a live canvas working without a long-lived secret,
     // but never past the hard lifetime: an always-open canvas must re-bootstrap
     // rather than hold one credential indefinitely.
-    if (now() - record.issuedAt > record.maxLifetimeMs) {
+    if (now() >= record.hardExpiresAt) {
       credentials.delete(credential);
       return { ok: false, status: 401, reason: "instance credential reached its maximum lifetime" };
     }
-    record.expiresAt = now() + credentialTtlMs;
-    return { ok: true, credential };
+    record.expiresAt = Math.min(now() + credentialTtlMs, record.hardExpiresAt);
+    return { ok: true, credential, record };
   }
 
   function checkNonce(req) {
@@ -349,14 +371,15 @@ export function createLoopbackServer(options) {
 
       const name = pathname.slice("/api/".length);
       if (name === "renew") {
-        const credential = issueCredential();
+        const credential = issueCredential(null, auth.record);
+        if (!credential) {
+          credentials.delete(auth.credential);
+          closeCredentialStreams(auth.credential, "instance credential reached its maximum lifetime");
+          return sendJson(res, 401, { error: "instance credential reached its maximum lifetime" });
+        }
         credentials.delete(auth.credential);
         closeCredentialStreams(auth.credential, "credential rotated");
-        return sendJson(res, 200, {
-          credential,
-          expiresInMs: credentialTtlMs,
-          renewAfterMs: Math.min(CREDENTIAL_RENEW_MS, credentialTtlMs / 2),
-        });
+        return sendJson(res, 200, credentialResponse(credential));
       }
       const handler = handlers[name];
       if (!handler) return sendJson(res, 404, { error: `unknown endpoint ${name}` });

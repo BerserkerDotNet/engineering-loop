@@ -1,7 +1,7 @@
 import { randomBytes } from "node:crypto";
 import { openStore, DEFAULT_LIMITS } from "./store.mjs";
 import { buildProjection, summarizeRun } from "./projection.mjs";
-import { STATES, isSettled } from "./contracts.mjs";
+import { STATES, assertTerminalEnvelopeState, isSettled, terminalEnvelopeStates } from "./contracts.mjs";
 import {
   authorityFor,
   enrollmentProof,
@@ -11,7 +11,7 @@ import {
   parseEnrollmentToken,
 } from "./authority.mjs";
 import { validateInitialGraph } from "./graph.mjs";
-import { LoopVizError, SCHEMA_VERSION, clamp, isoAt, newUuid, sha256, toId, timingSafeEqualString } from "./util.mjs";
+import { LoopVizError, SCHEMA_VERSION, canonicalJson, clamp, isoAt, newUuid, sha256, toId, timingSafeEqualString } from "./util.mjs";
 
 /**
  * Live reporter shared by the orchestrator and every child process.
@@ -37,7 +37,7 @@ function normalizedProjectFact(value) {
 
 export function canonicalProjectIdentity({ repository = null, workingDirectory = null } = {}) {
   const fact = normalizedProjectFact(repository) ?? normalizedProjectFact(workingDirectory);
-  return fact ? `project-${sha256(fact).slice("sha256:".length)}` : "project-unknown";
+  return fact ? `project-${sha256(fact).slice("sha256:".length)}` : null;
 }
 
 const IMMEDIATE_TYPES = new Set([
@@ -174,7 +174,6 @@ export function createReporter({
   pid = 0,
   workingDirectory = null,
   repository = null,
-  projectId = null,
   send = async () => { throw new LoopVizError("no_send", "no session send is wired"); },
   log = () => {},
   now = Date.now,
@@ -190,6 +189,14 @@ export function createReporter({
   // event as `kind`, so the source identity deliberately omits it.
   const sourceId = toId(`${hostSessionId}-${pid}`, "unknown-source");
   const store = openStore({ storeDir, sourceId, limits, now });
+
+  const trustedProjectId = canonicalProjectIdentity({ repository, workingDirectory });
+  if (!trustedProjectId) {
+    throw new LoopVizError(
+      "project_identity_unavailable",
+      "trusted repository and working-directory facts are unavailable; loop visualization is disabled",
+    );
+  }
 
   const state = {
     runId: null,
@@ -212,7 +219,7 @@ export function createReporter({
     priceSnapshotIds: new Set(),
     closed: false,
     repository: normalizedProjectFact(repository),
-    projectId: projectId ?? canonicalProjectIdentity({ repository, workingDirectory }),
+    projectId: trustedProjectId,
   };
 
   function identity() {
@@ -536,14 +543,47 @@ export function createReporter({
       if (state.runId && state.runId !== spec.runId) {
         throw new LoopVizError("run_conflict", `this session already orchestrates run "${state.runId}" and may not declare "${spec.runId}"`);
       }
+      const existing = store.read(spec.runId);
+      if (existing.events.some((e) => e.type === "run.declared")) {
+        const current = readProjection(spec.runId);
+        if (!mayAccess(current)) {
+          throw new LoopVizError("project_forbidden", `run ${spec.runId} is outside this host project`);
+        }
+        const declaration = existing.events.find((event) => event.type === "run.declared");
+        const sameOwner =
+          state.runId === spec.runId &&
+          state.role === "orchestrator" &&
+          declaration?.source?.hostSessionId === hostSessionId;
+        if (!sameOwner) {
+          throw new LoopVizError(
+            "run_exists",
+            `run "${spec.runId}" already exists; generate a fresh timestamped run id or use trusted restart resume`,
+          );
+        }
+        const requestedShape = {
+          skill: spec.skill,
+          skillVersion: spec.skillVersion ?? null,
+          title: spec.title,
+          orchestratorNodeId: spec.orchestratorNodeId,
+          orchestratorLabel: spec.orchestratorLabel ?? "Orchestrator",
+          nodes: spec.nodes,
+        };
+        const storedShape = {
+          skill: declaration.data.skill,
+          skillVersion: declaration.data.skillVersion ?? null,
+          title: declaration.data.title,
+          orchestratorNodeId: declaration.data.orchestratorNodeId,
+          orchestratorLabel: declaration.data.orchestratorLabel,
+          nodes: declaration.data.nodes,
+        };
+        if (canonicalJson(requestedShape) !== canonicalJson(storedShape)) {
+          throw new LoopVizError("run_declaration_mismatch", `run "${spec.runId}" was already declared with different semantics`);
+        }
+        return { created: false, projection: current };
+      }
       validateInitialGraph(spec.nodes, spec.orchestratorNodeId);
       state.role = "orchestrator";
       state.runId = spec.runId;
-      const existing = store.read(spec.runId);
-      if (existing.events.some((e) => e.type === "run.declared")) {
-        const current = projection({ force: true });
-        return { created: false, projection: current };
-      }
       emit("run.declared", {
         skill: spec.skill,
         skillVersion: spec.skillVersion ?? null,
@@ -710,6 +750,9 @@ export function createReporter({
     },
 
     startAttempt({ nodeId, attemptId, attemptNumber, kind, model, reason, expectedEnvelope = null }) {
+      if (expectedEnvelope && typeof expectedEnvelope.status === "string") {
+        terminalEnvelopeStates(expectedEnvelope.status);
+      }
       const grant = this.issueEnrollment(nodeId, attemptId);
       const data = {
         nodeId, attemptId, attemptNumber, kind,
@@ -764,6 +807,7 @@ export function createReporter({
       if (state.role !== "orchestrator") {
         throw new LoopVizError("not_orchestrator", "only the orchestrator may accept a child envelope");
       }
+      assertTerminalEnvelopeState(envelopeStatus, next);
       return emit("node.state", {
         nodeId,
         state: next,

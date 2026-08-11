@@ -334,6 +334,8 @@ function render() {
   const active = document.activeElement;
   const restoreFocus = active?.classList?.contains("controller-card")
     ? { kind: "controller" }
+    : active?.classList?.contains("stage__expander") && active?.closest?.(".stage")?.dataset?.nodeId
+      ? { kind: "expander", nodeId: active.closest(".stage").dataset.nodeId }
     : active?.closest?.(".stage")?.dataset?.nodeId
       ? {
         kind: active.classList?.contains("attempt") ? "attempt" : "node",
@@ -367,9 +369,11 @@ function render() {
     dom.controller.querySelector(".controller-card")?.focus({ preventScroll: true });
   } else if (restoreFocus?.nodeId) {
     const stage = dom.canvas.querySelector(`.stage[data-node-id="${CSS.escape(restoreFocus.nodeId)}"]`);
-    const target = restoreFocus.kind === "attempt" && restoreFocus.attemptId
-      ? stage?.querySelector(`.attempt[data-attempt-id="${CSS.escape(restoreFocus.attemptId)}"]`)
-      : stage;
+    const target = restoreFocus.kind === "expander"
+      ? stage?.querySelector(".stage__expander")
+      : restoreFocus.kind === "attempt" && restoreFocus.attemptId
+        ? stage?.querySelector(`.attempt[data-attempt-id="${CSS.escape(restoreFocus.attemptId)}"]`)
+        : stage;
     target?.focus({ preventScroll: true });
   }
 }

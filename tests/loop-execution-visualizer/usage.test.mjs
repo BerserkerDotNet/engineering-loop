@@ -11,8 +11,16 @@ import { tempStore, fakeClock, sampleRunSpec, collectSends } from "./helpers.mjs
  * label. These tests pin the arithmetic and the labelling separately.
  */
 
-const LEAD = { hostSessionId: "host-lead", appSessionId: "app-lead" };
-const CHILD = { hostSessionId: "host-child-design", appSessionId: "app-child-design" };
+const LEAD = {
+  hostSessionId: "host-lead",
+  appSessionId: "app-lead",
+  repository: "BerserkerDotNet/engineering-loop",
+};
+const CHILD = {
+  hostSessionId: "host-child-design",
+  appSessionId: "app-child-design",
+  repository: "BerserkerDotNet/engineering-loop",
+};
 
 function makeLead(storeDir, clock) {
   return createReporter({
@@ -176,7 +184,7 @@ test("usage: a reload replays the same numbers and a stale aggregate never subtr
     // A fresh process rebuilds purely from the immutable log.
     const reader = createReporter({
       storeDir: store.storeDir, role: "viewer", hostSessionId: "host-viewer", appSessionId: "app-viewer",
-      pid: 5300, now: clock, send: collectSends([]),
+      pid: 5300, now: clock, send: collectSends([]), repository: "BerserkerDotNet/engineering-loop",
     });
     reader.attachRun("usage-reload-run");
     const after = designAttempt(reader.projection({ force: true })).usage;

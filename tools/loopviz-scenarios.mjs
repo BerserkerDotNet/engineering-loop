@@ -43,6 +43,7 @@ function lead(now, { role = "orchestrator", hostSessionId = "host-lead", appSess
     appSessionId,
     extensionId: "plugin:engineering-loop:loop-execution-visualizer",
     pid,
+    repository: "BerserkerDotNet/engineering-loop",
     now,
     send,
   });
@@ -127,6 +128,7 @@ async function scenarioConnectionLost() {
   const kid = createReporter({
     storeDir, role: "child", hostSessionId: "host-design", appSessionId: "app-design",
     extensionId: "plugin:engineering-loop:loop-execution-visualizer", pid: 9002, now, send,
+    repository: "BerserkerDotNet/engineering-loop",
   });
   kid.redeemEnrollment(grant.token);
   kid.noteLifecycle({ phase: "start", reason: "child booted" });
@@ -166,6 +168,7 @@ async function scenarioRecoveryPending() {
   const kid = createReporter({
     storeDir, role: "child", hostSessionId: "host-design-2", appSessionId: "app-design-2",
     extensionId: "plugin:engineering-loop:loop-execution-visualizer", pid: 9102, now, send,
+    repository: "BerserkerDotNet/engineering-loop",
   });
   kid.redeemEnrollment(grant.token);
 
@@ -223,6 +226,7 @@ async function scenarioParked() {
   const kid = createReporter({
     storeDir, role: "child", hostSessionId: "host-design-4", appSessionId: "app-design-4",
     extensionId: "plugin:engineering-loop:loop-execution-visualizer", pid: 9302, now, send,
+    repository: "BerserkerDotNet/engineering-loop",
   });
   kid.redeemEnrollment(grant.token);
 
@@ -280,6 +284,7 @@ async function scenarioUsage() {
   const kid = createReporter({
     storeDir, role: "child", hostSessionId: "host-design-3", appSessionId: "app-design-3",
     extensionId: "plugin:engineering-loop:loop-execution-visualizer", pid: 9202, now, send,
+    repository: "BerserkerDotNet/engineering-loop",
   });
   kid.redeemEnrollment(grant.token);
 
@@ -328,6 +333,7 @@ async function scenarioUsage() {
   const restarted = createReporter({
     storeDir, role: "child", hostSessionId: "host-design-3", appSessionId: "app-design-3",
     extensionId: "plugin:engineering-loop:loop-execution-visualizer", pid: 9203, now, send,
+    repository: "BerserkerDotNet/engineering-loop",
   });
   restarted.attachRun("scn-usage");
   restarted.reconcileUsage(metrics, "checkpoint");

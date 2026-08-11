@@ -352,6 +352,7 @@ test("loopback: a passive event stream rotates credentials before expiry and rev
       headers: { "sec-fetch-site": "same-origin", origin: `http://127.0.0.1:${port}` },
       signal: controller.signal,
     });
+
     const reader = stream.body.getReader();
     const decoder = new TextDecoder();
     assert.match(decoder.decode((await reader.read()).value), /event: hello/);
@@ -377,6 +378,50 @@ test("loopback: a passive event stream rotates credentials before expiry and rev
     assert.equal(renewedResponse.status, 200);
     controller.abort();
     await reader.cancel().catch(() => {});
+  }, { now: () => clock, credentialTtlMs: 10_000, credentialMaxLifetimeMs: 20_000 });
+});
+
+test("loopback: repeated API rotations preserve one immutable lineage hard expiry", async () => {
+  let clock = 1_000;
+  await withServer(async ({ server, base, port }) => {
+    const token = server.issueBootstrap();
+    let credential = (await (await fetch(`${base}/bootstrap`, {
+      method: "POST",
+      headers: sameOrigin(port),
+      body: JSON.stringify({ bootstrap: token }),
+    })).json()).credential;
+
+    const renew = async (seed) => {
+      const response = await fetch(`${base}/api/renew`, {
+        method: "POST",
+        headers: sameOrigin(port, {
+          "x-loopviz-credential": credential,
+          "x-loopviz-nonce": nonce(seed),
+        }),
+        body: "{}",
+      });
+      assert.equal(response.status, 200);
+      credential = (await response.json()).credential;
+    };
+
+    clock = 6_000;
+    await renew("lineage-1");
+    clock = 12_000;
+    await renew("lineage-2");
+    clock = 19_000;
+    await renew("lineage-3");
+
+    clock = 21_000;
+    const expired = await fetch(`${base}/api/ping`, {
+      method: "POST",
+      headers: sameOrigin(port, {
+        "x-loopviz-credential": credential,
+        "x-loopviz-nonce": nonce("lineage-expired"),
+      }),
+      body: "{}",
+    });
+    assert.equal(expired.status, 401);
+    assert.match((await expired.json()).error, /maximum lifetime/);
   }, { now: () => clock, credentialTtlMs: 10_000, credentialMaxLifetimeMs: 20_000 });
 });
 

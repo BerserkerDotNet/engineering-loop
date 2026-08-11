@@ -5,7 +5,11 @@ import { authorize, buildLedger } from "../../extensions/loop-execution-visualiz
 import { createCanvasHandlers } from "../../extensions/loop-execution-visualizer/src/handlers.mjs";
 import { resolveStorageLocation } from "../../extensions/loop-execution-visualizer/src/paths.mjs";
 import { readFileSync } from "node:fs";
-import { createReporter } from "../../extensions/loop-execution-visualizer/src/reporter.mjs";
+import {
+  canonicalProjectIdentity,
+  createReporter,
+} from "../../extensions/loop-execution-visualizer/src/reporter.mjs";
+import { createListeningGate } from "../../extensions/loop-execution-visualizer/src/readiness.mjs";
 import { createTools } from "../../extensions/loop-execution-visualizer/src/tools.mjs";
 import { LoopVizError } from "../../extensions/loop-execution-visualizer/src/util.mjs";
 import { fakeClock, sampleRunSpec, tempStore } from "./helpers.mjs";
@@ -154,6 +158,207 @@ test("authorization boundary: one repository cannot list, read, attach, or mutat
   } finally {
     store.cleanup();
   }
+});
+
+test("declaration ownership: inaccessible adoption, same-project collisions, and implicit resume are refused", () => {
+  const store = tempStore();
+  const clock = fakeClock();
+  try {
+    const owner = reporter(store.storeDir, clock, {
+      repository: "org/repo-a",
+      host: "host-owner",
+      app: "app-owner",
+    });
+    const spec = sampleRunSpec("predictable-20260809-010203");
+    owner.declareRun(spec);
+
+    const foreign = reporter(store.storeDir, clock, {
+      role: "unknown",
+      repository: "org/repo-b",
+      host: "host-foreign",
+      app: "app-foreign",
+    });
+    assert.throws(
+      () => foreign.declareRun(spec),
+      (error) => error instanceof LoopVizError && error.code === "project_forbidden",
+    );
+    assert.equal(foreign.runId, null);
+    assert.equal(foreign.role, "unknown", "a refused declaration establishes no role");
+
+    const sameProject = reporter(store.storeDir, clock, {
+      role: "unknown",
+      repository: "org/repo-a",
+      host: "host-new",
+      app: "app-new",
+    });
+    assert.throws(
+      () => sameProject.declareRun(spec),
+      (error) => error instanceof LoopVizError && error.code === "run_exists",
+    );
+    assert.equal(sameProject.runId, null);
+
+    assert.equal(owner.declareRun(spec).created, false, "the owning live reporter may repeat the exact declaration");
+    assert.throws(
+      () => owner.declareRun({ ...spec, title: "different semantics" }),
+      (error) => error instanceof LoopVizError && error.code === "run_declaration_mismatch",
+    );
+
+    owner.close();
+    const restarted = reporter(store.storeDir, clock, {
+      role: "unknown",
+      repository: "org/repo-a",
+      host: "host-owner",
+      app: "app-owner",
+      pid: 99,
+    });
+    assert.deepEqual(
+      restarted.resumeOrchestratorRun(),
+      { runId: spec.runId, state: "declared" },
+      "restart adoption uses trusted app/host identity through the explicit resume path",
+    );
+  } finally {
+    store.cleanup();
+  }
+});
+
+test("project identity: missing trusted host facts fail closed with an explicit degraded reason", () => {
+  const store = tempStore();
+  try {
+    assert.equal(canonicalProjectIdentity({}), null);
+    assert.throws(
+      () => createReporter({
+        storeDir: store.storeDir,
+        role: "unknown",
+        hostSessionId: "host-without-project",
+      }),
+      (error) =>
+        error instanceof LoopVizError &&
+        error.code === "project_identity_unavailable" &&
+        /visualization is disabled/.test(error.message),
+    );
+    const extension = readFileSync(
+      new URL("../../extensions/loop-execution-visualizer/extension.mjs", import.meta.url),
+      "utf8",
+    );
+    assert.match(extension, /trusted repository and working-directory facts are unavailable; loop visualization is disabled/);
+  } finally {
+    store.cleanup();
+  }
+});
+
+test("replay attribution: telemetry before and after a retry rebind remains with its event-local attempt", () => {
+  const store = tempStore();
+  const clock = fakeClock();
+  try {
+    const lead = reporter(store.storeDir, clock);
+    const first = dispatch(lead, "telemetry-rebind", null);
+    const child = reporter(store.storeDir, clock, {
+      role: "child",
+      host: "host-child",
+      app: "app-child",
+      pid: 2,
+    });
+    assert.equal(child.redeemEnrollment(first.token).ok, true);
+    child.recordUsageSample({ model: "model-a", inputTokens: 10, outputTokens: 1, copilotUsage: { totalNanoAiu: 1e9 } });
+    child.noteActivity("active", "first attempt");
+    child.heartbeat("active");
+    child.flush();
+
+    clock.advance(1_000);
+    const second = lead.startAttempt({
+      nodeId: "design",
+      attemptId: "design-a2",
+      attemptNumber: 2,
+      kind: "retry",
+    });
+    assert.equal(child.redeemEnrollment(second.token).ok, true);
+    child.recordUsageSample({ model: "model-b", inputTokens: 20, outputTokens: 2, copilotUsage: { totalNanoAiu: 2e9 } });
+    child.noteActivity("active", "second attempt");
+    child.heartbeat("active");
+    child.flush();
+
+    const attempts = lead.projection({ force: true }).dag.nodes
+      .find((node) => node.nodeId === "design").attempts;
+    assert.equal(attempts[0].usage.samples, 1);
+    assert.equal(attempts[0].usage.tokens.input, 10);
+    assert.equal(attempts[0].session.activityDetail, "first attempt");
+    assert.ok(attempts[0].session.lastHeartbeatAt);
+    assert.equal(attempts[1].usage.samples, 1);
+    assert.equal(attempts[1].usage.tokens.input, 20);
+    assert.equal(attempts[1].session.activityDetail, "second attempt");
+    assert.ok(attempts[1].session.lastHeartbeatAt);
+  } finally {
+    store.cleanup();
+  }
+});
+
+test("terminal envelopes: status and node state must match before write and during replay", () => {
+  const store = tempStore();
+  const clock = fakeClock();
+  try {
+    const lead = reporter(store.storeDir, clock);
+    dispatch(lead, "blocked-mapping", { status: "BLOCKED", sequence: 21 });
+    const before = lead.store.read("blocked-mapping").events.length;
+    assert.throws(
+      () => lead.settleEnvelope({
+        nodeId: "design",
+        attemptId: "design-a1",
+        state: "succeeded",
+        reason: "invalid mapping",
+        envelopeStatus: "BLOCKED",
+        envelopeSequence: 21,
+      }),
+      (error) => error instanceof LoopVizError && error.code === "envelope_state_mismatch",
+    );
+    assert.equal(lead.store.read("blocked-mapping").events.length, before);
+
+    lead.emit("node.state", {
+      nodeId: "design",
+      attemptId: "design-a1",
+      state: "succeeded",
+      reason: "forged direct event",
+      envelopeStatus: "BLOCKED",
+      envelopeSequence: 21,
+    }, { immediate: true });
+    let attempt = lead.projection({ force: true }).dag.nodes.find((node) => node.nodeId === "design").attempts[0];
+    assert.equal(attempt.state, "running", "replay rejects a persisted status/state mismatch");
+
+    lead.settleEnvelope({
+      nodeId: "design",
+      attemptId: "design-a1",
+      state: "failed",
+      reason: "valid blocked envelope",
+      envelopeStatus: "BLOCKED",
+      envelopeSequence: 21,
+    });
+    attempt = lead.projection({ force: true }).dag.nodes.find((node) => node.nodeId === "design").attempts[0];
+    assert.equal(attempt.state, "failed");
+
+    const success = reporter(store.storeDir, clock, { host: "host-success", app: "app-success" });
+    dispatch(success, "complete-mapping", { status: "COMPLETE", sequence: 21 });
+    assert.throws(
+      () => success.settleEnvelope({
+        nodeId: "design",
+        attemptId: "design-a1",
+        state: "failed",
+        reason: "invalid mapping",
+        envelopeStatus: "COMPLETE",
+        envelopeSequence: 21,
+      }),
+      (error) => error instanceof LoopVizError && error.code === "envelope_state_mismatch",
+    );
+  } finally {
+    store.cleanup();
+  }
+});
+
+test("browser contract: attempt expander focus is captured and restored distinctly", () => {
+  const source = readFileSync(
+    new URL("../../extensions/loop-execution-visualizer/src/ui/app.js", import.meta.url),
+    "utf8",
+  );
+  assert.match(source, /contains\("stage__expander"\)[\s\S]*kind: "expander"/);
+  assert.match(source, /restoreFocus\.kind === "expander"[\s\S]*querySelector\("\.stage__expander"\)/);
 });
 
 test("initial graph admission rejects every invalid shape before persisting a declaration", () => {
@@ -342,16 +547,32 @@ test("storage discovery: plugin lookup failure is distinct from a confirmed dire
   assert.equal(direct.marketplace, "_direct");
 });
 
-test("extension wiring: server readiness resolves on success and terminal unavailable paths", () => {
+test("extension wiring: concurrent canvas startup observes only a listening server or terminal failure", async () => {
+  const gate = createListeningGate();
+  const candidate = { port: 0 };
+  let resolved = false;
+  const waiting = gate.wait(1_000).then((server) => {
+    resolved = true;
+    return server;
+  });
+  await Promise.resolve();
+  assert.equal(resolved, false, "a canvas opened during startup remains gated while port is zero");
+  assert.throws(() => gate.publish(candidate), /before it is listening/);
+  candidate.port = 43123;
+  gate.publish(candidate);
+  assert.equal(await waiting, candidate);
+
+  const failed = createListeningGate();
+  const failureWait = failed.wait(1_000);
+  failed.fail(new Error("listen EADDRINUSE"));
+  await assert.rejects(failureWait, /EADDRINUSE/);
+
   const source = readFileSync(
     new URL("../../extensions/loop-execution-visualizer/extension.mjs", import.meta.url),
     "utf8",
   );
-  assert.match(source, /await runtime\.server\.start\(\);[\s\S]*runtime\.resolveServerReady\(runtime\.server\);/);
-  assert.ok(
-    source.match(/runtime\.resolveServerReady\(null\);/g)?.length >= 2,
-    "server startup failure and reporter-unavailable startup both release rehydrating canvases",
-  );
+  assert.match(source, /await candidateServer\.start\(\);[\s\S]*runtime\.server = candidateServer;[\s\S]*runtime\.serverGate\.publish\(candidateServer\);/);
+  assert.ok(source.match(/runtime\.serverGate\.fail\(/g)?.length >= 2);
 });
 
 test("extension wiring: live SSE updates preserve the attached-run identity", () => {

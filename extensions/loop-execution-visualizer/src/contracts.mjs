@@ -95,3 +95,23 @@ export function eventAuthoritySpec(type) {
   if (!spec) throw new LoopVizError("unknown_event_type", `no authority rule for event type "${type}"`);
   return spec;
 }
+
+/** Returns the only terminal node/attempt states allowed for a child status. */
+export function terminalEnvelopeStates(status) {
+  const mapping = STATES.terminalEnvelopeStates?.[status];
+  if (!mapping) {
+    throw new LoopVizError("unknown_envelope_status", `status "${status}" has no terminal-state contract`);
+  }
+  return mapping;
+}
+
+export function assertTerminalEnvelopeState(status, nodeState) {
+  const mapping = terminalEnvelopeStates(status);
+  if (mapping.node !== nodeState) {
+    throw new LoopVizError(
+      "envelope_state_mismatch",
+      `status "${status}" must settle the node as "${mapping.node}", not "${nodeState}"`,
+    );
+  }
+  return mapping;
+}

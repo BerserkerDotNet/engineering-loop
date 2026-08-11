@@ -2,6 +2,16 @@
   "$id": "loop-execution-visualizer/v1/states",
   "version": "1",
   "description": "Normative state vocabularies and transitions. Every state machine in the visualizer is defined here once; per-skill duplication of these rules is forbidden and is rejected by the coverage validator.",
+  "terminalEnvelopeStates": {
+    "COMPLETE": { "node": "succeeded", "attempt": "succeeded" },
+    "CRITIQUE_COMPLETE": { "node": "succeeded", "attempt": "succeeded" },
+    "CRITIQUE_ADDRESSED": { "node": "succeeded", "attempt": "succeeded" },
+    "REFINED": { "node": "succeeded", "attempt": "succeeded" },
+    "IMPLEMENTATION_VALIDATED": { "node": "succeeded", "attempt": "succeeded" },
+    "PR_CREATED": { "node": "succeeded", "attempt": "succeeded" },
+    "RETRO_COMPLETE": { "node": "succeeded", "attempt": "succeeded" },
+    "BLOCKED": { "node": "failed", "attempt": "failed" }
+  },
   "run": {
     "states": [
       "declared",

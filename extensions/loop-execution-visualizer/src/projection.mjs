@@ -1,4 +1,4 @@
-import { STATES, canTransition } from "./contracts.mjs";
+import { STATES, canTransition, terminalEnvelopeStates } from "./contracts.mjs";
 import { authorize, buildLedger } from "./authority.mjs";
 import { clamp, isoAt } from "./util.mjs";
 
@@ -298,7 +298,7 @@ export function buildProjection({ events, quarantined = [], truncated = false, d
     const nodeId = event.data.nodeId ?? null;
     const attemptId = event.data.attemptId ?? null;
     if (nodeId && attemptId) return attemptIndex.get(`${nodeId}:${attemptId}`) ?? null;
-    const binding = ledger.bindings.get(event.source.hostSessionId);
+    const binding = ledger.bindingsAtEvent.get(event);
     if (!binding) return null;
     return attemptIndex.get(`${binding.nodeId}:${binding.attemptId}`) ?? null;
   };
@@ -429,11 +429,20 @@ export function buildProjection({ events, quarantined = [], truncated = false, d
             }, received ${event.data.envelopeStatus ?? "(none)"}/${event.data.envelopeSequence ?? "(none)"}`);
             break;
           }
-          const attemptState = event.data.state === "succeeded"
-            ? "succeeded"
-            : event.data.state === "canceled"
-              ? "canceled"
-              : "failed";
+          let terminalStates;
+          try {
+            terminalStates = terminalEnvelopeStates(event.data.envelopeStatus);
+          } catch (error) {
+            note(`ignored envelope settlement for ${event.data.attemptId}: ${error.message}`);
+            break;
+          }
+          if (terminalStates.node !== event.data.state) {
+            note(`ignored envelope settlement for ${event.data.attemptId}: status ${
+              event.data.envelopeStatus
+            } requires ${terminalStates.node}, received ${event.data.state}`);
+            break;
+          }
+          const attemptState = terminalStates.attempt;
           if (!canTransition("attempt", owner.attempt.state, attemptState)) {
             note(`ignored envelope settlement transition ${owner.attempt.state} -> ${attemptState}`);
             break;

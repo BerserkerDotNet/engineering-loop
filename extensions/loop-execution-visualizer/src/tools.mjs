@@ -1,4 +1,4 @@
-import { COVERAGE, STATES } from "./contracts.mjs";
+import { COVERAGE, STATES, assertTerminalEnvelopeState } from "./contracts.mjs";
 import { summarizeRun } from "./projection.mjs";
 import { LoopVizError } from "./util.mjs";
 
@@ -298,6 +298,11 @@ export function createTools({ reporter, onChange = () => {} }) {
               ok: false,
               reason: "accepted envelope settlement requires attemptId and envelopeStatus together",
             });
+          }
+          try {
+            assertTerminalEnvelopeState(args.envelopeStatus, args.state);
+          } catch (error) {
+            return changed({ ok: false, error: error.code ?? "invalid_envelope_state", reason: error.message });
           }
           reporter.settleEnvelope({
             nodeId: args.nodeId,

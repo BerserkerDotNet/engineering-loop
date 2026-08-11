@@ -46,6 +46,10 @@ Never branch on absence more than once, never poll for the tool to appear, and
 never treat absence as a blocker. A run without the extension must behave
 exactly as it did before the extension existed.
 
+A declaration collision is not a resume signal. Generate a fresh valid timestamp
+and run ID, unless the extension itself resumes the same host session from its
+trusted immutable declaration. Never retry a colliding ID unchanged.
+
 ## 3. Visibility never has authority
 
 Every visibility call is an observation. None of them can change what the
@@ -118,6 +122,17 @@ status or sequence recorded at dispatch is refused and leaves both unsettled.
 Never call `loopviz_attempt_state` with a terminal state to accept an envelope,
 and never trust a child-authored authority flag. Report what the envelope said,
 not what you concluded from it, and not your reaction to it.
+
+The terminal state is determined by the shared contract, not by the caller:
+
+| Envelope status | Node state | Attempt state |
+| --- | --- | --- |
+| `COMPLETE`, `CRITIQUE_COMPLETE`, `CRITIQUE_ADDRESSED`, `REFINED` | `succeeded` | `succeeded` |
+| `IMPLEMENTATION_VALIDATED`, `PR_CREATED`, `RETRO_COMPLETE` | `succeeded` | `succeeded` |
+| `BLOCKED` | `failed` | `failed` |
+
+Any other status, or a status paired with different states, is rejected before
+persistence and rejected again during replay.
 
 Only a child's own envelope, or your own explicit decision recorded through
 `loopviz_run_outcome`, can end a stage or a run. A quiet session is not a
