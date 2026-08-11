@@ -330,11 +330,11 @@ Send one consolidated list to the existing design session. Require it to:
 
 Immediately before sending the findings, call `loopviz_attempt_start` on the design node
 with kind `retry`, a fresh reconciliation attempt ID, and expected envelope
-`CRITIQUE_ADDRESSED` plus the message sequence. Include its enrollment line in the message.
-When that exact envelope arrives, call `loopviz_node_state` with the reconciliation
-attempt ID, `state: succeeded`, and the exact status and sequence. A `BLOCKED` envelope is
-settled as `failed`. Do not leave the reconciliation attempt running after accepting its
-terminal envelope.
+statuses `CRITIQUE_ADDRESSED` and `BLOCKED` plus the message sequence. Include its
+enrollment line in the message. When either exact envelope arrives, call
+`loopviz_node_state` with the reconciliation attempt ID and exact status and sequence:
+`CRITIQUE_ADDRESSED` is `succeeded`; `BLOCKED` is `failed`. Do not leave the
+reconciliation attempt running after accepting its terminal envelope.
 
 Inspect the updated design and resolution map before requesting approval. If a finding was
 silently skipped, return it to the design session.
@@ -503,8 +503,10 @@ For each child, add one unplanned retro node, start one `initial` attempt with e
 envelope `COMPLETE` and that message's sequence, and include the returned enrollment line
 in the retro prompt. Settle each report with `loopviz_node_state`, using the exact attempt
 ID, status, and sequence. After every report is incorporated, settle the initially planned
-aggregate `retro` node as `succeeded`; if the declared graph has no aggregate retro work,
-settle that node as `skipped`. No completed run may retain pending retro nodes or attempts.
+aggregate `retro` node. If aggregate work exists, first set it to `running` when aggregation
+begins, then set it to `succeeded` after the report is produced. If no aggregate work exists,
+settle the still-pending node as `skipped`. No completed run may retain pending retro nodes
+or attempts.
 
 Each child reviews its own complete conversation and returns evidence, not generic advice.
 Wait for all reports.
@@ -596,7 +598,8 @@ Make each call at the site below. If `loopviz_run_declare` is unavailable, recor
 | `LOOPVIZ:el.p8.retro.add` | Retro fan-out, adding one node per child session being asked for a retro report. | `loopviz_node_add` |
 | `LOOPVIZ:el.p8.retro.dispatch` | Before sending each retro prompt, start one attempt on that child's retro node and include its enrollment line. | `loopviz_attempt_start` |
 | `LOOPVIZ:el.p8.retro.result` | On each child retro terminal envelope, settle the matching attempt and node with the exact status and sequence. | `loopviz_node_state` |
-| `LOOPVIZ:el.p8.retro.aggregate` | After aggregating every report, settle or skip the planned aggregate retro node. | `loopviz_node_state` |
+| `LOOPVIZ:el.p8.retro.aggregate.start` | When aggregation begins, move the planned aggregate retro node to running. | `loopviz_node_state` |
+| `LOOPVIZ:el.p8.retro.aggregate.result` | After aggregation, settle the running node as succeeded, or skip a pending no-work node. | `loopviz_node_state` |
 | `LOOPVIZ:el.outcome` | Completion or terminal blocker, exactly once. | `loopviz_run_outcome` |
 | `LOOPVIZ:el.incidents` | Whenever the orchestration session resumes, is woken by a message it did not expect, or begins waiting on children. Respond using the failure and resume rules above. | `loopviz_incidents` |
 

@@ -191,12 +191,18 @@ export function createTools({ reporter, onChange = () => {} }) {
           reason: { type: "string" },
           expectedEnvelope: {
             type: "object",
-            description: "The envelope this attempt is required to deliver back. Recording it is what makes a missing envelope detectable; without it no envelope_missing incident can be raised for this attempt.",
+            description: "The exact terminal status or finite alternative status set this attempt may deliver. Recording it is what makes a missing envelope detectable; without it no envelope_missing incident can be raised for this attempt.",
             properties: {
               status: { type: "string", description: "Expected terminal status word, e.g. COMPLETE." },
+              statuses: {
+                type: "array",
+                minItems: 1,
+                maxItems: 8,
+                items: { type: "string" },
+                description: "Allowed alternative terminal status words, e.g. CRITIQUE_ADDRESSED or BLOCKED.",
+              },
               sequence: { type: "integer", minimum: 0, description: "Expected SEQUENCE value, when the skill uses one." },
             },
-            required: ["status"],
           },
         },
         required: ["nodeId", "attemptId", "attemptNumber", "kind"],

@@ -386,14 +386,59 @@ async function scenarioParallelLayout() {
   orch.close();
 }
 
+/** Completed reconciliation plus retro aggregation with no pending work. */
+async function scenarioRemediationComplete() {
+  const now = clockFrom("2026-08-09T20:45:00.000Z");
+  const orch = lead(now, { hostSessionId: "host-remediation", appSessionId: "app-remediation", pid: 9501 });
+  orch.declareRun({
+    ...spec("scn-remediation-complete", "Reconciliation and retrospective completed"),
+    nodes: [
+      { nodeId: "design", label: "Design reconciliation", phase: "3", role: "worker", dependsOn: [] },
+      { nodeId: "retro", label: "Retrospective aggregate", phase: "8", role: "review", dependsOn: ["design"] },
+    ],
+  });
+  orch.startAttempt({
+    nodeId: "design",
+    attemptId: "design-reconcile-a2",
+    attemptNumber: 2,
+    kind: "retry",
+    model: "gpt-5.6-sol",
+    reason: "incorporating consolidated critique findings",
+    expectedEnvelope: {
+      statuses: ["CRITIQUE_ADDRESSED", "BLOCKED"],
+      sequence: 24,
+    },
+  });
+  now.advance(500);
+  orch.settleEnvelope({
+    nodeId: "design",
+    attemptId: "design-reconcile-a2",
+    state: "succeeded",
+    reason: "CRITIQUE_ADDRESSED accepted",
+    envelopeStatus: "CRITIQUE_ADDRESSED",
+    envelopeSequence: 24,
+  });
+  now.advance(500);
+  orch.setNodeState({ nodeId: "retro", state: "running", reason: "aggregating child retrospective reports" });
+  now.advance(500);
+  orch.setNodeState({ nodeId: "retro", state: "succeeded", reason: "retrospective aggregate completed" });
+  orch.emit("run.outcome", {
+    outcome: "completed",
+    reason: "reconciliation and retrospective completed without pending work",
+    prUrl: null,
+  }, { immediate: true });
+  orch.close();
+}
+
 await scenarioConnectionLost();
 await scenarioRecoveryPending();
 await scenarioUsage();
 await scenarioParallelLayout();
+await scenarioRemediationComplete();
 await scenarioArchived();
 
 const reader = lead(clockFrom("2026-08-09T21:00:00.000Z"), { hostSessionId: "host-reader", appSessionId: "app-reader", pid: 9999 });
-for (const runId of ["scn-connection-lost", "scn-recovery-pending", "scn-parked", "scn-usage", "scn-parallel-layout", "scn-archived"]) {
+for (const runId of ["scn-connection-lost", "scn-recovery-pending", "scn-parked", "scn-usage", "scn-parallel-layout", "scn-remediation-complete", "scn-archived"]) {
   const run = reader.readRun(runId);
   const design = run.dag.nodes.find((n) => n.nodeId === "design");
   const attempt = design?.attempts?.[0] ?? null;
@@ -402,6 +447,12 @@ for (const runId of ["scn-connection-lost", "scn-recovery-pending", "scn-parked"
     runState: run.state,
     controller: run.controller.workflowState,
     controllerHealth: run.controller.session.health,
+    nodes: run.dag.nodes.map((node) => ({
+      nodeId: node.nodeId,
+      state: node.state,
+      attempts: node.attempts.map((candidate) => candidate.state),
+    })),
+    pendingNodes: run.dag.nodes.filter((node) => node.state === "pending").map((node) => node.nodeId),
     node: design?.state ?? null,
     attemptState: attempt?.state ?? null,
     attemptHealth: attempt?.session?.health ?? null,

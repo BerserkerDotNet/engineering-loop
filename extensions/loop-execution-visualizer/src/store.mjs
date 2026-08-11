@@ -3,7 +3,7 @@ import {
   renameSync, rmSync, statSync, watch, openSync, writeSync, fsyncSync, closeSync,
   constants as FS_CONSTANTS,
 } from "node:fs";
-import { dirname, join } from "node:path";
+import { basename, dirname, join, relative } from "node:path";
 import { canonicalJson, sha256, LoopVizError, pad } from "./util.mjs";
 import { validateEvent } from "./contracts.mjs";
 import { authorize, buildLedger } from "./authority.mjs";
@@ -57,6 +57,11 @@ const CLOCK_REFRESH_MS = 1000;
 
 export function encodePathSegment(segment) {
   return `id-${sha256(String(segment)).slice("sha256:".length)}`;
+}
+
+/** Path encoding used before collision-resistant hashes were introduced. */
+export function legacyPathSegment(segment) {
+  return String(segment).replace(/[^A-Za-z0-9._-]+/g, "_").slice(0, 96) || "unknown";
 }
 
 function ensureDir(path) {
@@ -127,6 +132,39 @@ function durableReplace(path, body) {
   }
   renameSync(tmp, path);
   syncDirectory(dirname(path));
+}
+
+function sleepSync(ms) {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+function readTextSafe(path) {
+  try {
+    return readFileSync(path, "utf8");
+  } catch (error) {
+    if (error?.code === "ENOENT") return null;
+    throw error;
+  }
+}
+
+function listFilesRecursive(root) {
+  const files = [];
+  const visit = (path) => {
+    let entries;
+    try {
+      entries = readdirSync(path, { withFileTypes: true });
+    } catch (error) {
+      if (error?.code === "ENOENT") return;
+      throw new LoopVizError("legacy_migration_unreadable", `cannot enumerate legacy directory ${path}: ${error.message}`);
+    }
+    for (const entry of entries) {
+      const child = join(path, entry.name);
+      if (entry.isDirectory()) visit(child);
+      else if (entry.isFile()) files.push(child);
+    }
+  };
+  visit(root);
+  return files;
 }
 
 export function frameRecord(event) {
@@ -207,10 +245,72 @@ export function openStore({ storeDir, sourceId, limits: configuredLimits = DEFAU
   const clockScannedAt = new Map();
 
   const runsRoot = () => join(storeDir, "runs");
+  const storeLocksDir = () => join(storeDir, ".locks");
   const runPathCache = new Map();
   const hashedRunDir = (runId) => join(runsRoot(), encodePathSegment(runId));
+  let legacyScanCompleted = false;
 
-  function declaredRunIdAt(path) {
+  function withStoreLockSync(key, fn, {
+    ttlMs = limits.lockTtlMs,
+    waitMs = limits.lockWaitMs,
+  } = {}) {
+    ensureDir(storeLocksDir());
+    const path = join(storeLocksDir(), `${encodePathSegment(key)}.lock`);
+    const deadline = Date.now() + waitMs;
+    const token = `${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    for (;;) {
+      const body = JSON.stringify({ owner: safeSource, token, expiresAt: Date.now() + ttlMs });
+      try {
+        durableExclusiveWrite(path, body);
+        break;
+      } catch (error) {
+        if (!error || error.code !== "EEXIST") {
+          throw new LoopVizError("lock_failed", `could not lock ${key}: ${error.message}`);
+        }
+        let lock = null;
+        try {
+          lock = JSON.parse(readFileSync(path, "utf8"));
+        } catch { /* a torn lock is stale and may be recovered */ }
+        if (!lock || Date.now() >= (lock.expiresAt ?? 0)) {
+          const tombstone = `${path}.stale-${process.pid}-${Date.now()}`;
+          try {
+            renameSync(path, tombstone);
+            rmSync(tombstone, { force: true });
+          } catch { /* another contender recovered it first */ }
+          continue;
+        }
+        if (Date.now() >= deadline) throw new LoopVizError("lock_timeout", `lock ${key} is held`);
+        sleepSync(15);
+      }
+    }
+    try {
+      return fn();
+    } finally {
+      try {
+        const held = JSON.parse(readFileSync(path, "utf8"));
+        if (held.token === token) rmSync(path, { force: true });
+      } catch { /* a recovered or already-removed lock is not ours to delete */ }
+    }
+  }
+
+  function copyExact(path, body) {
+    ensureDir(dirname(path));
+    try {
+      durableExclusiveWrite(path, body);
+    } catch (error) {
+      if (!error || error.code !== "EEXIST") throw error;
+      const existing = readTextSafe(path);
+      if (existing !== body) {
+        throw new LoopVizError("migration_conflict", `existing migrated file differs at ${path}`);
+      }
+    }
+    if (readTextSafe(path) !== body) {
+      throw new LoopVizError("migration_verify_failed", `migrated file did not verify at ${path}`);
+    }
+  }
+
+  function declaredRunIdsAt(path) {
+    const runIds = new Set();
     const root = join(path, "events");
     for (const sourceEntry of readDirSafe(root)) {
       if (!sourceEntry.isDirectory()) continue;
@@ -218,26 +318,207 @@ export function openStore({ storeDir, sourceId, limits: configuredLimits = DEFAU
         if (!entry.isFile() || !entry.name.endsWith(".json")) continue;
         try {
           const parsed = parseRecord(readFileSync(join(root, sourceEntry.name, entry.name), "utf8"));
-          if (parsed.ok && parsed.event.type === "run.declared") return parsed.event.runId;
+          if (parsed.ok && parsed.event.type === "run.declared") runIds.add(parsed.event.runId);
         } catch { /* an unreadable directory cannot establish a logical id */ }
       }
     }
-    return null;
+    return runIds;
+  }
+
+  function legacySnapshot(path) {
+    return ["events", "claims", "quarantine"]
+      .flatMap((name) => listFilesRecursive(join(path, name)))
+      .map((file) => {
+        const body = readTextSafe(file);
+        return `${relative(path, file)}:${body === null ? "unreadable" : sha256(body)}`;
+      })
+      .sort()
+      .join("\n");
+  }
+
+  function assertNoActiveLegacyLocks(path) {
+    for (const file of listFilesRecursive(join(path, "locks"))) {
+      let lock = null;
+      try {
+        lock = JSON.parse(readFileSync(file, "utf8"));
+      } catch { /* a torn legacy lock is stale */ }
+      if (lock && Date.now() < (lock.expiresAt ?? 0)) {
+        throw new LoopVizError("migration_busy", `legacy run directory has an active lock: ${file}`);
+      }
+    }
+  }
+
+  function migrateLegacyDirectory(name, path) {
+    return withStoreLockSync(`legacy-run:${name}`, () => {
+      if (!existsSync(path)) return;
+      const runIds = [...declaredRunIdsAt(path)];
+      if (runIds.length === 0) return;
+      if (runIds.some((runId) => name === encodePathSegment(runId))) return;
+      assertNoActiveLegacyLocks(path);
+
+      const snapshot = legacySnapshot(path);
+      const records = [];
+      for (const file of listFilesRecursive(join(path, "events"))) {
+        if (!file.endsWith(".json")) continue;
+        const body = readTextSafe(file);
+        if (body === null) {
+          throw new LoopVizError("legacy_migration_unreadable", `cannot read legacy event ${file}`);
+        }
+        const parsed = parseRecord(body);
+        if (!parsed.ok) {
+          throw new LoopVizError("legacy_migration_invalid", `cannot safely assign legacy event ${file}: ${parsed.reason}`);
+        }
+        if (!runIds.includes(parsed.event.runId)) {
+          throw new LoopVizError(
+            "legacy_migration_unassigned",
+            `legacy event ${file} belongs to undeclared run ${parsed.event.runId}`,
+          );
+        }
+        records.push({
+          body,
+          event: parsed.event,
+          relativePath: relative(join(path, "events"), file),
+        });
+      }
+
+      for (const runId of runIds) {
+        const target = hashedRunDir(runId);
+        if (target.toLowerCase() === path.toLowerCase()) {
+          throw new LoopVizError("legacy_migration_path_conflict", `legacy directory already aliases ${runId}`);
+        }
+        for (const record of records.filter((candidate) => candidate.event.runId === runId)) {
+          copyExact(join(target, "events", record.relativePath), record.body);
+        }
+      }
+
+      const grantRuns = new Map();
+      const incidentRuns = new Map();
+      const outboxRuns = new Map();
+      for (const record of records) {
+        if (record.event.type === "attempt.started" && record.event.authority?.grantId) {
+          grantRuns.set(record.event.authority.grantId, record.event.runId);
+        } else if (record.event.type === "incident.opened") {
+          incidentRuns.set(record.event.data.incidentId, record.event.runId);
+        } else if (record.event.type === "outbox.queued") {
+          outboxRuns.set(record.event.data.messageId, record.event.runId);
+        }
+      }
+
+      for (const file of listFilesRecursive(join(path, "claims"))) {
+        if (!file.endsWith(".json")) continue;
+        const body = readTextSafe(file);
+        if (body === null) {
+          throw new LoopVizError("legacy_migration_unreadable", `cannot read legacy claim ${file}`);
+        }
+        let parsed = null;
+        try {
+          parsed = JSON.parse(body);
+        } catch {
+          throw new LoopVizError("legacy_migration_invalid", `cannot safely migrate legacy claim ${file}`);
+        }
+        const base = basename(file, ".json");
+        let exactName = null;
+        let targetRunId = null;
+        if (parsed?.payload?.grantId && grantRuns.has(parsed.payload.grantId)) {
+          exactName = `enroll-${parsed.payload.grantId}`;
+          targetRunId = grantRuns.get(parsed.payload.grantId);
+        } else if (base.startsWith("redeem-") && grantRuns.has(base.slice("redeem-".length))) {
+          exactName = base;
+          targetRunId = grantRuns.get(base.slice("redeem-".length));
+        } else if (base.startsWith("incident-") && incidentRuns.has(base.slice("incident-".length))) {
+          exactName = base;
+          targetRunId = incidentRuns.get(base.slice("incident-".length));
+        } else if (base.startsWith("outbox-") && outboxRuns.has(base.slice("outbox-".length))) {
+          exactName = base;
+          targetRunId = outboxRuns.get(base.slice("outbox-".length));
+        }
+        const targets = targetRunId ? [targetRunId] : runIds;
+        for (const runId of targets) {
+          const fileName = exactName ? `${encodePathSegment(exactName)}.json` : basename(file);
+          copyExact(join(hashedRunDir(runId), "claims", fileName), body);
+        }
+      }
+
+      for (const file of listFilesRecursive(join(path, "quarantine"))) {
+        const body = readTextSafe(file);
+        if (body === null) continue;
+        for (const runId of runIds) {
+          copyExact(
+            join(hashedRunDir(runId), "quarantine", `legacy-${encodePathSegment(name)}`, relative(join(path, "quarantine"), file)),
+            body,
+          );
+        }
+      }
+
+      if (legacySnapshot(path) !== snapshot) {
+        throw new LoopVizError("migration_busy", `legacy run directory ${name} changed during migration`);
+      }
+
+      const tombstone = join(runsRoot(), `.migrated-${encodePathSegment(name)}-${process.pid}-${Date.now()}`);
+      renameSync(path, tombstone);
+      syncDirectory(runsRoot());
+      if (legacySnapshot(tombstone) !== snapshot) {
+        throw new LoopVizError(
+          "migration_busy",
+          `legacy run directory ${name} changed during its atomic rename; preserved for restart recovery`,
+        );
+      }
+      for (const record of records) {
+        const target = join(hashedRunDir(record.event.runId), "events", record.relativePath);
+        if (readTextSafe(target) !== record.body) {
+          throw new LoopVizError("migration_verify_failed", `migrated event did not verify at ${target}`);
+        }
+      }
+      rmSync(tombstone, { recursive: true, force: true });
+      for (const runId of runIds) {
+        const legacyIndex = join(storeDir, "index", `${legacyPathSegment(runId)}.json`);
+        const hashedIndex = join(storeDir, "index", `${encodePathSegment(runId)}.json`);
+        if (legacyIndex.toLowerCase() !== hashedIndex.toLowerCase()) rmSync(legacyIndex, { force: true });
+        runPathCache.set(runId, hashedRunDir(runId));
+      }
+    }, { ttlMs: Math.max(limits.lockTtlMs, 60000), waitMs: limits.lockWaitMs });
   }
 
   function discoverRunPaths() {
+    ensureDir(runsRoot());
+    for (const entry of readDirSafe(runsRoot())) {
+      if (entry.isDirectory() && entry.name.startsWith(".migrated-")) {
+        migrateLegacyDirectory(entry.name, join(runsRoot(), entry.name));
+      }
+    }
+    for (let pass = 0; pass < 4; pass += 1) {
+      let migrated = false;
+      for (const entry of readDirSafe(runsRoot())) {
+        if (!entry.isDirectory() || entry.name.startsWith(".migrated-")) continue;
+        const path = join(runsRoot(), entry.name);
+        const runIds = [...declaredRunIdsAt(path)];
+        if (runIds.length === 0) continue;
+        if (runIds.some((runId) => entry.name === encodePathSegment(runId))) continue;
+        migrateLegacyDirectory(entry.name, path);
+        migrated = true;
+      }
+      if (!migrated) break;
+      if (pass === 3) {
+        throw new LoopVizError("migration_busy", "legacy run directories kept changing during migration");
+      }
+    }
     const found = new Map();
     for (const entry of readDirSafe(runsRoot())) {
-      if (!entry.isDirectory()) continue;
+      if (!entry.isDirectory() || entry.name.startsWith(".migrated-")) continue;
       const path = join(runsRoot(), entry.name);
-      const runId = declaredRunIdAt(path);
-      if (runId !== null && !found.has(runId)) found.set(runId, path);
+      const runIds = [...declaredRunIdsAt(path)];
+      const canonical = runIds.filter((runId) => entry.name === encodePathSegment(runId));
+      for (const runId of canonical.length > 0 ? canonical : runIds) {
+        if (!found.has(runId)) found.set(runId, path);
+      }
     }
     for (const [runId, path] of found) runPathCache.set(runId, path);
+    legacyScanCompleted = true;
     return found;
   }
 
   const runDir = (runId) => {
+    if (!legacyScanCompleted) discoverRunPaths();
     const expected = hashedRunDir(runId);
     if (existsSync(expected)) {
       runPathCache.set(runId, expected);
@@ -348,6 +629,15 @@ export function openStore({ storeDir, sourceId, limits: configuredLimits = DEFAU
     runDir,
     eventsDir,
 
+    /** Serializes first declaration admission for one logical run id across processes. */
+    withRunAdmission(runId, fn) {
+      return withStoreLockSync(
+        `run-admission:${runId}`,
+        fn,
+        { ttlMs: Math.max(limits.lockTtlMs, 30000), waitMs: limits.lockWaitMs },
+      );
+    },
+
     /** Writes one event immutably. Returns the event as persisted. */
     append(event) {
       const runId = event.runId;
@@ -452,33 +742,63 @@ export function openStore({ storeDir, sourceId, limits: configuredLimits = DEFAU
       };
     },
 
-    /** One-use claim. The first exclusive create wins; later callers observe it. */
+    /** One-use claim, including claims written under the pre-hash filename. */
     claim(runId, name, payload) {
-      ensureDir(claimsDir(runId));
-      const path = join(claimsDir(runId), `${encodePathSegment(name)}.json`);
-      const body = JSON.stringify({ at: new Date(now()).toISOString(), payload }, null, 2);
-      try {
-        durableExclusiveWrite(path, body);
-        return { claimed: true, existing: null };
-      } catch (error) {
-        if (error && error.code === "EEXIST") {
+      return withStoreLockSync(`claim:${runId}:${name}`, () => {
+        ensureDir(claimsDir(runId));
+        const path = join(claimsDir(runId), `${encodePathSegment(name)}.json`);
+        const legacyPath = join(claimsDir(runId), `${legacyPathSegment(name)}.json`);
+        const currentBody = readTextSafe(path);
+        const legacyBody = legacyPath.toLowerCase() === path.toLowerCase() ? null : readTextSafe(legacyPath);
+        if (currentBody !== null && legacyBody !== null && currentBody !== legacyBody) {
+          throw new LoopVizError("claim_conflict", `legacy and current claims disagree for ${name}`);
+        }
+        const existingBody = currentBody ?? legacyBody;
+        if (existingBody !== null) {
+          if (currentBody === null) copyExact(path, existingBody);
           try {
-            return { claimed: false, existing: JSON.parse(readFileSync(path, "utf8")) };
+            return { claimed: false, existing: JSON.parse(existingBody) };
           } catch {
             return { claimed: false, existing: null };
           }
         }
-        throw new LoopVizError("claim_failed", `could not claim ${name}: ${error.message}`);
-      }
+        const body = JSON.stringify({ at: new Date(now()).toISOString(), payload }, null, 2);
+        try {
+          durableExclusiveWrite(path, body);
+          return { claimed: true, existing: null };
+        } catch (error) {
+          if (error && error.code === "EEXIST") {
+            const raced = readTextSafe(path);
+            try {
+              return { claimed: false, existing: raced === null ? null : JSON.parse(raced) };
+            } catch {
+              return { claimed: false, existing: null };
+            }
+          }
+          throw new LoopVizError("claim_failed", `could not claim ${name}: ${error.message}`);
+        }
+      });
     },
 
     readClaim(runId, name) {
-      const path = join(claimsDir(runId), `${encodePathSegment(name)}.json`);
-      try {
-        return JSON.parse(readFileSync(path, "utf8"));
-      } catch {
-        return null;
-      }
+      return withStoreLockSync(`claim:${runId}:${name}`, () => {
+        ensureDir(claimsDir(runId));
+        const path = join(claimsDir(runId), `${encodePathSegment(name)}.json`);
+        const legacyPath = join(claimsDir(runId), `${legacyPathSegment(name)}.json`);
+        const currentBody = readTextSafe(path);
+        const legacyBody = legacyPath.toLowerCase() === path.toLowerCase() ? null : readTextSafe(legacyPath);
+        if (currentBody !== null && legacyBody !== null && currentBody !== legacyBody) {
+          throw new LoopVizError("claim_conflict", `legacy and current claims disagree for ${name}`);
+        }
+        const body = currentBody ?? legacyBody;
+        if (body === null) return null;
+        if (currentBody === null) copyExact(path, body);
+        try {
+          return JSON.parse(body);
+        } catch {
+          return null;
+        }
+      });
     },
 
     /** Bounded expiring lock used only for mutable revisions. */

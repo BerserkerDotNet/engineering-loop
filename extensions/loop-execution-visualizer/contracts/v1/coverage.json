@@ -59,7 +59,8 @@
         { "id": "el.p8.retro.add", "phase": "8", "site": "Retro fan-out to every child session", "tool": "loopviz_node_add", "required": true },
         { "id": "el.p8.retro.dispatch", "phase": "8", "site": "Before sending the retro prompt to each child session", "tool": "loopviz_attempt_start", "required": true },
         { "id": "el.p8.retro.result", "phase": "8", "site": "On each child retro terminal envelope", "tool": "loopviz_node_state", "required": true },
-        { "id": "el.p8.retro.aggregate", "phase": "8", "site": "After all child retro reports are aggregated", "tool": "loopviz_node_state", "required": true },
+        { "id": "el.p8.retro.aggregate.start", "phase": "8", "site": "When aggregation of child retro reports begins", "tool": "loopviz_node_state", "required": true },
+        { "id": "el.p8.retro.aggregate.result", "phase": "8", "site": "After all child retro reports are aggregated or no aggregate work exists", "tool": "loopviz_node_state", "required": true },
         { "id": "el.outcome", "phase": "8", "site": "Run completion or terminal blocker", "tool": "loopviz_run_outcome", "required": true },
         { "id": "el.incidents", "phase": "0", "site": "Whenever the coordinator resumes, is woken, or waits on children", "tool": "loopviz_incidents", "required": true }
       ]
@@ -91,7 +92,8 @@
         { "id": "ir.p9.retro.add", "phase": "9", "site": "Retro fan-out to every child session", "tool": "loopviz_node_add", "required": true },
         { "id": "ir.p9.retro.dispatch", "phase": "9", "site": "Before sending the retro prompt to each child session", "tool": "loopviz_attempt_start", "required": true },
         { "id": "ir.p9.retro.result", "phase": "9", "site": "On each child retro terminal envelope", "tool": "loopviz_node_state", "required": true },
-        { "id": "ir.p9.retro.aggregate", "phase": "9", "site": "After all child retro reports are aggregated", "tool": "loopviz_node_state", "required": true },
+        { "id": "ir.p9.retro.aggregate.start", "phase": "9", "site": "When aggregation of child retro reports begins", "tool": "loopviz_node_state", "required": true },
+        { "id": "ir.p9.retro.aggregate.result", "phase": "9", "site": "After all child retro reports are aggregated or no aggregate work exists", "tool": "loopviz_node_state", "required": true },
         { "id": "ir.invalidation", "phase": "recovery", "site": "Invalidation that supersedes a session and adds a replacement stage", "tool": "loopviz_node_add", "required": true },
         { "id": "ir.recovery", "phase": "recovery", "site": "Recovery, resume, or interruption handling", "tool": "loopviz_incidents", "required": true },
         { "id": "ir.outcome", "phase": "9", "site": "Run completion or terminal blocker", "tool": "loopviz_run_outcome", "required": true }

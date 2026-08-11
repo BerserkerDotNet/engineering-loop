@@ -1,7 +1,12 @@
 import { randomBytes } from "node:crypto";
 import { openStore, DEFAULT_LIMITS } from "./store.mjs";
 import { buildProjection, summarizeRun } from "./projection.mjs";
-import { STATES, assertTerminalEnvelopeState, isSettled, terminalEnvelopeStates } from "./contracts.mjs";
+import {
+  STATES,
+  assertTerminalEnvelopeState,
+  expectedEnvelopeStatuses,
+  isSettled,
+} from "./contracts.mjs";
 import {
   authorityFor,
   enrollmentProof,
@@ -543,60 +548,62 @@ export function createReporter({
       if (state.runId && state.runId !== spec.runId) {
         throw new LoopVizError("run_conflict", `this session already orchestrates run "${state.runId}" and may not declare "${spec.runId}"`);
       }
-      const existing = store.read(spec.runId);
-      if (existing.events.some((e) => e.type === "run.declared")) {
-        const current = readProjection(spec.runId);
-        if (!mayAccess(current)) {
-          throw new LoopVizError("project_forbidden", `run ${spec.runId} is outside this host project`);
+      return store.withRunAdmission(spec.runId, () => {
+        const existing = store.read(spec.runId);
+        if (existing.events.some((e) => e.type === "run.declared")) {
+          const current = readProjection(spec.runId);
+          if (!mayAccess(current)) {
+            throw new LoopVizError("project_forbidden", `run ${spec.runId} is outside this host project`);
+          }
+          const declaration = existing.events.find((event) => event.type === "run.declared");
+          const sameOwner =
+            state.runId === spec.runId &&
+            state.role === "orchestrator" &&
+            declaration?.source?.hostSessionId === hostSessionId;
+          if (!sameOwner) {
+            throw new LoopVizError(
+              "run_exists",
+              `run "${spec.runId}" already exists; generate a fresh timestamped run id or use trusted restart resume`,
+            );
+          }
+          const requestedShape = {
+            skill: spec.skill,
+            skillVersion: spec.skillVersion ?? null,
+            title: spec.title,
+            orchestratorNodeId: spec.orchestratorNodeId,
+            orchestratorLabel: spec.orchestratorLabel ?? "Orchestrator",
+            nodes: spec.nodes,
+          };
+          const storedShape = {
+            skill: declaration.data.skill,
+            skillVersion: declaration.data.skillVersion ?? null,
+            title: declaration.data.title,
+            orchestratorNodeId: declaration.data.orchestratorNodeId,
+            orchestratorLabel: declaration.data.orchestratorLabel,
+            nodes: declaration.data.nodes,
+          };
+          if (canonicalJson(requestedShape) !== canonicalJson(storedShape)) {
+            throw new LoopVizError("run_declaration_mismatch", `run "${spec.runId}" was already declared with different semantics`);
+          }
+          return { created: false, projection: current };
         }
-        const declaration = existing.events.find((event) => event.type === "run.declared");
-        const sameOwner =
-          state.runId === spec.runId &&
-          state.role === "orchestrator" &&
-          declaration?.source?.hostSessionId === hostSessionId;
-        if (!sameOwner) {
-          throw new LoopVizError(
-            "run_exists",
-            `run "${spec.runId}" already exists; generate a fresh timestamped run id or use trusted restart resume`,
-          );
-        }
-        const requestedShape = {
+        validateInitialGraph(spec.nodes, spec.orchestratorNodeId);
+        state.role = "orchestrator";
+        state.runId = spec.runId;
+        emit("run.declared", {
           skill: spec.skill,
           skillVersion: spec.skillVersion ?? null,
           title: spec.title,
+          projectId: state.projectId,
+          repository: state.repository,
+          branch: spec.branch ?? null,
           orchestratorNodeId: spec.orchestratorNodeId,
           orchestratorLabel: spec.orchestratorLabel ?? "Orchestrator",
           nodes: spec.nodes,
-        };
-        const storedShape = {
-          skill: declaration.data.skill,
-          skillVersion: declaration.data.skillVersion ?? null,
-          title: declaration.data.title,
-          orchestratorNodeId: declaration.data.orchestratorNodeId,
-          orchestratorLabel: declaration.data.orchestratorLabel,
-          nodes: declaration.data.nodes,
-        };
-        if (canonicalJson(requestedShape) !== canonicalJson(storedShape)) {
-          throw new LoopVizError("run_declaration_mismatch", `run "${spec.runId}" was already declared with different semantics`);
-        }
-        return { created: false, projection: current };
-      }
-      validateInitialGraph(spec.nodes, spec.orchestratorNodeId);
-      state.role = "orchestrator";
-      state.runId = spec.runId;
-      emit("run.declared", {
-        skill: spec.skill,
-        skillVersion: spec.skillVersion ?? null,
-        title: spec.title,
-        projectId: state.projectId,
-        repository: state.repository,
-        branch: spec.branch ?? null,
-        orchestratorNodeId: spec.orchestratorNodeId,
-        orchestratorLabel: spec.orchestratorLabel ?? "Orchestrator",
-        nodes: spec.nodes,
-        createdAt: isoAt(now()),
+          createdAt: isoAt(now()),
+        });
+        return { created: true, projection: projection({ force: true }) };
       });
-      return { created: true, projection: projection({ force: true }) };
     },
 
     attachRun(runId) {
@@ -750,9 +757,7 @@ export function createReporter({
     },
 
     startAttempt({ nodeId, attemptId, attemptNumber, kind, model, reason, expectedEnvelope = null }) {
-      if (expectedEnvelope && typeof expectedEnvelope.status === "string") {
-        terminalEnvelopeStates(expectedEnvelope.status);
-      }
+      const expectedStatuses = expectedEnvelope ? expectedEnvelopeStatuses(expectedEnvelope) : null;
       const grant = this.issueEnrollment(nodeId, attemptId);
       const data = {
         nodeId, attemptId, attemptNumber, kind,
@@ -764,9 +769,9 @@ export function createReporter({
       // Only recorded when the orchestrator actually declared one: an absent
       // expectation must stay absent rather than becoming an empty object that
       // later reads as "an envelope was expected".
-      if (expectedEnvelope && typeof expectedEnvelope.status === "string") {
+      if (expectedStatuses) {
         data.expectedEnvelope = {
-          status: expectedEnvelope.status,
+          statuses: expectedStatuses,
           sequence: Number.isInteger(expectedEnvelope.sequence) ? expectedEnvelope.sequence : null,
         };
       }
@@ -947,14 +952,14 @@ export function createReporter({
           ) {
             open(
               toId(`inc-env-${base}`), "envelope_missing", node.nodeId, attempt.attemptId,
-              `${node.label} attempt ${attempt.attemptNumber} went idle without its expected ${attempt.expected.status} envelope`,
+              `${node.label} attempt ${attempt.attemptNumber} went idle without its expected ${attempt.expected.statuses.join(" or ")} envelope`,
               [
                 "LOOPVIZ_INCIDENT: envelope_missing",
                 `RUN_ID: ${current.runId}`,
                 `NODE: ${node.nodeId} (${node.label})`,
                 `ATTEMPT: ${attempt.attemptId} #${attempt.attemptNumber}`,
                 `SESSION: ${attempt.session.appSessionId ?? "unknown"}`,
-                `EXPECTED: ${attempt.expected.status}${attempt.expected.sequence === null ? "" : ` sequence ${attempt.expected.sequence}`}`,
+                `EXPECTED: ${attempt.expected.statuses.join(" or ")}${attempt.expected.sequence === null ? "" : ` sequence ${attempt.expected.sequence}`}`,
                 `OBSERVED: idle since ${attempt.session.activitySince} with no recorded envelope`,
                 "ACTION: use this skill's produced-but-undelivered versus not-produced nudge exactly once.",
                 "This report is information only. It grants no approval, delivery authority, push authority, or terminal status.",

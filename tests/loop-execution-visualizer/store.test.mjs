@@ -1,11 +1,21 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
-import { mkdirSync, readdirSync, readFileSync, writeFileSync, rmSync } from "node:fs";
-import { join } from "node:path";
+import { spawn, spawnSync } from "node:child_process";
+import {
+  cpSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync, rmSync,
+} from "node:fs";
+import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
-import { DEFAULT_LIMITS, encodePathSegment, openStore, parseRecord, frameRecord, sortEvents } from "../../extensions/loop-execution-visualizer/src/store.mjs";
+import {
+  DEFAULT_LIMITS,
+  encodePathSegment,
+  frameRecord,
+  legacyPathSegment,
+  openStore,
+  parseRecord,
+  sortEvents,
+} from "../../extensions/loop-execution-visualizer/src/store.mjs";
 import { createReporter } from "../../extensions/loop-execution-visualizer/src/reporter.mjs";
 import { tempStore, fakeClock, sampleRunSpec, collectSends } from "./helpers.mjs";
 
@@ -19,10 +29,16 @@ import { tempStore, fakeClock, sampleRunSpec, collectSends } from "./helpers.mjs
 const HERE = fileURLToPath(new URL(".", import.meta.url));
 const REPO = join(HERE, "..", "..");
 
-function reporterFor(storeDir, clock, { role = "orchestrator", host = "host-lead", app = "app-lead", pid = 900 } = {}) {
+function reporterFor(storeDir, clock, {
+  role = "orchestrator",
+  host = "host-lead",
+  app = "app-lead",
+  pid = 900,
+  send = collectSends([]),
+} = {}) {
   return createReporter({
     storeDir, role, hostSessionId: host, appSessionId: app, pid, now: clock,
-    repository: "BerserkerDotNet/engineering-loop", send: collectSends([]),
+    repository: "BerserkerDotNet/engineering-loop", send,
   });
 }
 
@@ -36,6 +52,31 @@ function eventFiles(storeDir, runId) {
     }
   }
   return out.sort();
+}
+
+function runNode(script, args) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, [script, ...args], { stdio: ["ignore", "pipe", "pipe"] });
+    let stdout = "";
+    let stderr = "";
+    child.stdout.on("data", (chunk) => { stdout += chunk; });
+    child.stderr.on("data", (chunk) => { stderr += chunk; });
+    child.on("error", reject);
+    child.on("exit", (status) => resolve({ status, stdout, stderr }));
+  });
+}
+
+function listFilesRecursiveForTest(root) {
+  const files = [];
+  const visit = (path) => {
+    for (const entry of readdirSync(path, { withFileTypes: true })) {
+      const child = join(path, entry.name);
+      if (entry.isDirectory()) visit(child);
+      else if (entry.isFile()) files.push(child);
+    }
+  };
+  visit(root);
+  return files;
 }
 
 test("store: an event file is written exactly once and never rewritten", async () => {
@@ -96,6 +137,273 @@ test("store: valid run ids that previously collided retain distinct collision-re
     assert.notEqual(encodePathSegment("Run").toLowerCase(), encodePathSegment("run").toLowerCase());
     assert.notEqual(encodePathSegment("CON").toLowerCase(), "con");
     for (const runId of ids) assert.equal(reader.read(runId).events[0].runId, runId);
+  } finally {
+    store.cleanup();
+  }
+});
+
+test("store: one cross-process declaration admission wins and a crashed admission lock recovers", async () => {
+  const store = tempStore("loopviz-declare-race-");
+  try {
+    const writer = join(store.dir, "declare-writer.mjs");
+    const reporterUrl = pathToFileURL(join(REPO, "extensions", "loop-execution-visualizer", "src", "reporter.mjs")).href;
+    const helpersUrl = pathToFileURL(join(REPO, "tests", "loop-execution-visualizer", "helpers.mjs")).href;
+    writeFileSync(writer, `
+import { createReporter } from ${JSON.stringify(reporterUrl)};
+import { sampleRunSpec } from ${JSON.stringify(helpersUrl)};
+const [storeDir, tag] = process.argv.slice(2);
+const reporter = createReporter({
+  storeDir,
+  role: "orchestrator",
+  hostSessionId: "host-" + tag,
+  appSessionId: "app-" + tag,
+  pid: process.pid,
+  repository: "BerserkerDotNet/engineering-loop",
+  send: async () => {},
+});
+try {
+  const result = reporter.declareRun(sampleRunSpec("declaration-race"));
+  process.stdout.write(JSON.stringify({ ok: true, created: result.created }));
+} catch (error) {
+  process.stdout.write(JSON.stringify({ ok: false, code: error.code, message: error.message }));
+} finally {
+  reporter.close();
+}
+`, "utf8");
+
+    const results = await Promise.all(
+      Array.from({ length: 16 }, (_, index) => runNode(writer, [store.storeDir, String(index)])),
+    );
+    for (const result of results) assert.equal(result.status, 0, result.stderr);
+    const reports = results.map((result) => JSON.parse(result.stdout));
+    assert.equal(reports.filter((report) => report.created === true).length, 1);
+    assert.equal(reports.filter((report) => report.code === "run_exists").length, 15);
+
+    const reader = openStore({ storeDir: store.storeDir, sourceId: "declaration-reader" });
+    assert.equal(
+      reader.read("declaration-race").events.filter((event) => event.type === "run.declared").length,
+      1,
+      "the exclusive admission claim prevents duplicate declarations on disk",
+    );
+
+    const staleRunId = "stale-admission-lock";
+    const lockDir = join(store.storeDir, ".locks");
+    mkdirSync(lockDir, { recursive: true });
+    writeFileSync(
+      join(lockDir, `${encodePathSegment(`run-admission:${staleRunId}`)}.lock`),
+      JSON.stringify({ owner: "crashed", token: "dead", expiresAt: Date.now() - 1 }),
+      "utf8",
+    );
+    const recovered = reporterFor(store.storeDir, fakeClock(), { host: "host-recovered", app: "app-recovered" });
+    assert.equal(recovered.declareRun(sampleRunSpec(staleRunId)).created, true);
+  } finally {
+    store.cleanup();
+  }
+});
+
+test("store: legacy one-use claims migrate without allowing duplicate enrollment or delivery work", async () => {
+  const store = tempStore("loopviz-legacy-claims-");
+  const clock = fakeClock();
+  try {
+    const runId = "legacy-claims";
+    const lead = reporterFor(store.storeDir, clock);
+    lead.declareRun(sampleRunSpec(runId));
+    const grant = lead.startAttempt({
+      nodeId: "design",
+      attemptId: "design-a1",
+      attemptNumber: 1,
+      kind: "initial",
+      expectedEnvelope: { status: "COMPLETE", sequence: 24 },
+    });
+    const claims = join(lead.store.runDir(runId), "claims");
+    const enrollmentName = `enroll-${grant.grantId}`;
+    const enrollmentCurrent = join(claims, `${encodePathSegment(enrollmentName)}.json`);
+    const enrollmentLegacy = join(claims, `${legacyPathSegment(enrollmentName)}.json`);
+    renameSync(enrollmentCurrent, enrollmentLegacy);
+    const redeemName = `redeem-${grant.grantId}`;
+    writeFileSync(
+      join(claims, `${legacyPathSegment(redeemName)}.json`),
+      JSON.stringify({ at: new Date(clock()).toISOString(), payload: { hostSessionId: "host-old" } }, null, 2),
+      "utf8",
+    );
+
+    const child = reporterFor(store.storeDir, clock, {
+      role: "child",
+      host: "host-new",
+      app: "app-new",
+      pid: 901,
+    });
+    assert.deepEqual(
+      child.redeemEnrollment(grant.token),
+      { ok: false, reason: "enrollment token was already redeemed" },
+    );
+    assert.ok(existsSync(enrollmentCurrent), "reading a legacy enrollment creates its durable hashed copy");
+    assert.ok(existsSync(join(claims, `${encodePathSegment(redeemName)}.json`)));
+
+    lead.startAttempt({
+      nodeId: "design",
+      attemptId: "design-a2",
+      attemptNumber: 2,
+      kind: "retry",
+    });
+    lead.setAttemptState({
+      nodeId: "design",
+      attemptId: "design-a2",
+      state: "failed",
+      reason: "authoritative child failure",
+    });
+    const incidentName = "incident-inc-fail-design-design-a2";
+    const incidentBody = JSON.stringify({ at: new Date(clock()).toISOString(), payload: { legacy: true } }, null, 2);
+    const incidentLegacy = join(claims, `${legacyPathSegment(incidentName)}.json`);
+    const incidentCurrent = join(claims, `${encodePathSegment(incidentName)}.json`);
+    writeFileSync(incidentLegacy, incidentBody, "utf8");
+    const failedAttempt = lead.projection({ force: true }).dag.nodes
+      .find((node) => node.nodeId === "design").attempts[1];
+    assert.equal(failedAttempt.state, "failed");
+    assert.equal(failedAttempt.authoritativeFailure, true);
+    assert.deepEqual(lead.detectIncidents(), [], "the legacy incident claim suppresses duplicate opening");
+    assert.ok(existsSync(incidentCurrent));
+
+    const targetGrant = lead.startAttempt({
+      nodeId: "requirements",
+      attemptId: "requirements-a1",
+      attemptNumber: 1,
+      kind: "initial",
+    });
+    const sends = [];
+    const target = reporterFor(store.storeDir, clock, {
+      role: "child",
+      host: "host-target",
+      app: "app-target",
+      pid: 902,
+      send: collectSends(sends),
+    });
+    assert.equal(target.redeemEnrollment(targetGrant.token).ok, true);
+    const queued = lead.queueMessage({ targetAppSessionId: "app-target", body: "do not redeliver" });
+    const outboxName = `outbox-${queued.messageId}`;
+    const outboxBody = JSON.stringify({ at: new Date(clock()).toISOString(), payload: { legacy: true } }, null, 2);
+    const outboxLegacy = join(claims, `${legacyPathSegment(outboxName)}.json`);
+    const outboxCurrent = join(claims, `${encodePathSegment(outboxName)}.json`);
+    writeFileSync(outboxLegacy, outboxBody, "utf8");
+    assert.deepEqual(await target.outboxTick(), [], "the legacy outbox claim suppresses duplicate delivery");
+    assert.deepEqual(sends, []);
+    assert.ok(existsSync(outboxCurrent));
+
+    rmSync(outboxCurrent, { force: true });
+    const restarted = openStore({ storeDir: store.storeDir, sourceId: "restart-outbox" });
+    assert.deepEqual(restarted.readClaim(runId, outboxName)?.payload, { legacy: true });
+    assert.ok(existsSync(outboxCurrent), "restart repairs an interrupted legacy-to-hash claim copy");
+  } finally {
+    store.cleanup();
+  }
+});
+
+test("store: a shared legacy Windows directory splits exact Run and run histories safely under contention", async () => {
+  const store = tempStore("loopviz-legacy-case-");
+  try {
+    const upperClock = fakeClock(Date.parse("2026-01-01T00:00:00.000Z"));
+    const lowerClock = fakeClock(Date.parse("2026-01-02T00:00:00.000Z"));
+    const upper = reporterFor(store.storeDir, upperClock, { host: "host-upper", app: "app-upper", pid: 910 });
+    upper.declareRun(sampleRunSpec("Run"));
+    const upperGrant = upper.startAttempt({
+      nodeId: "design",
+      attemptId: "design-upper-a1",
+      attemptNumber: 1,
+      kind: "initial",
+    });
+    upper.emit("run.outcome", { outcome: "completed", reason: "upper complete", prUrl: null }, { immediate: true });
+    upper.close();
+    const lower = reporterFor(store.storeDir, lowerClock, { host: "host-lower", app: "app-lower", pid: 911 });
+    lower.declareRun(sampleRunSpec("run"));
+    const lowerGrant = lower.startAttempt({
+      nodeId: "requirements",
+      attemptId: "requirements-lower-a1",
+      attemptNumber: 1,
+      kind: "initial",
+    });
+    lower.emit("run.outcome", { outcome: "completed", reason: "lower complete", prUrl: null }, { immediate: true });
+    lower.close();
+
+    const before = openStore({ storeDir: store.storeDir, sourceId: "before-merge" });
+    const expected = new Map([
+      ["Run", before.read("Run").events.map((event) => event.eventId).sort()],
+      ["run", before.read("run").events.map((event) => event.eventId).sort()],
+    ]);
+    const upperDir = before.runDir("Run");
+    const lowerDir = before.runDir("run");
+    const legacyDir = join(store.storeDir, "runs", legacyPathSegment("run"));
+    mkdirSync(join(legacyDir, "events"), { recursive: true });
+    for (const sourceDir of [upperDir, lowerDir]) {
+      for (const source of readdirSync(join(sourceDir, "events"), { withFileTypes: true })) {
+        if (source.isDirectory()) {
+          cpSync(join(sourceDir, "events", source.name), join(legacyDir, "events", source.name), { recursive: true });
+        }
+      }
+      cpSync(join(sourceDir, "claims"), join(legacyDir, "claims"), { recursive: true });
+    }
+    rmSync(upperDir, { recursive: true, force: true });
+    rmSync(lowerDir, { recursive: true, force: true });
+
+    const declarationFile = listFilesRecursiveForTest(join(legacyDir, "events"))
+      .find((file) => {
+        const parsed = parseRecord(readFileSync(file, "utf8"));
+        return parsed.ok && parsed.event.type === "run.declared" && parsed.event.runId === "Run";
+      });
+    const relativeDeclaration = declarationFile.slice(join(legacyDir, "events").length + 1);
+    const partialTarget = join(store.storeDir, "runs", encodePathSegment("Run"), "events", relativeDeclaration);
+    mkdirSync(dirname(partialTarget), { recursive: true });
+    writeFileSync(partialTarget, readFileSync(declarationFile, "utf8"), "utf8");
+    const interruptedTombstone = join(store.storeDir, "runs", ".migrated-interrupted-case");
+    renameSync(legacyDir, interruptedTombstone);
+
+    const readerScript = join(store.dir, "migration-reader.mjs");
+    const storeUrl = pathToFileURL(join(REPO, "extensions", "loop-execution-visualizer", "src", "store.mjs")).href;
+    writeFileSync(readerScript, `
+import { openStore } from ${JSON.stringify(storeUrl)};
+const [storeDir, tag] = process.argv.slice(2);
+try {
+  const store = openStore({ storeDir, sourceId: "migration-" + tag });
+  process.stdout.write(JSON.stringify({ ok: true, ids: store.listRunIds().sort() }));
+} catch (error) {
+  process.stdout.write(JSON.stringify({ ok: false, code: error.code, message: error.message }));
+}
+`, "utf8");
+    const migrations = await Promise.all(
+      Array.from({ length: 4 }, (_, index) => runNode(readerScript, [store.storeDir, String(index)])),
+    );
+    for (const result of migrations) {
+      assert.equal(result.status, 0, result.stderr);
+      assert.deepEqual(JSON.parse(result.stdout), { ok: true, ids: ["Run", "run"] });
+    }
+
+    const migrated = openStore({ storeDir: store.storeDir, sourceId: "after-migration" });
+    assert.deepEqual(migrated.listRunIds().sort(), ["Run", "run"]);
+    for (const runId of ["Run", "run"]) {
+      assert.deepEqual(
+        migrated.read(runId).events.map((event) => event.eventId).sort(),
+        expected.get(runId),
+        `${runId} retains exactly its own immutable history`,
+      );
+      assert.ok(existsSync(join(store.storeDir, "runs", encodePathSegment(runId))));
+    }
+    assert.equal(existsSync(interruptedTombstone), false, "the interrupted tombstone is removed only after verification");
+    assert.ok(migrated.readClaim("Run", `enroll-${upperGrant.grantId}`));
+    assert.equal(migrated.readClaim("Run", `enroll-${lowerGrant.grantId}`), null);
+    assert.ok(migrated.readClaim("run", `enroll-${lowerGrant.grantId}`));
+    assert.equal(migrated.readClaim("run", `enroll-${upperGrant.grantId}`), null);
+
+    const indexer = reporterFor(store.storeDir, fakeClock(), { role: "unknown", host: "host-indexer", app: "app-indexer", pid: 912 });
+    assert.deepEqual(indexer.listRuns().map((summary) => summary.runId).sort(), ["Run", "run"]);
+    for (const runId of ["Run", "run"]) {
+      assert.ok(existsSync(join(store.storeDir, "index", `${encodePathSegment(runId)}.json`)));
+    }
+    const collision = reporterFor(store.storeDir, fakeClock(), { host: "host-collision", app: "app-collision", pid: 913 });
+    assert.throws(() => collision.declareRun(sampleRunSpec("Run")), (error) => error.code === "run_exists");
+    assert.equal(migrated.read("Run").events.filter((event) => event.type === "run.declared").length, 1);
+
+    assert.deepEqual(migrated.pruneRuns(0, (runId) => runId === "run"), ["Run"]);
+    assert.deepEqual(migrated.listRunIds(), ["run"]);
+    assert.equal(migrated.read("run").events.length, expected.get("run").length);
   } finally {
     store.cleanup();
   }

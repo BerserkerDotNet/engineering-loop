@@ -76,8 +76,8 @@ test("envelope ledger: an idle child that never delivered its expected envelope 
 
     const declared = lead.projection({ force: true }).dag.nodes.find((n) => n.nodeId === "design").attempts[0];
     assert.deepEqual(
-      { status: declared.expected.status, sequence: declared.expected.sequence, satisfied: declared.expected.satisfied },
-      { status: "COMPLETE", sequence: 4, satisfied: false },
+      { statuses: declared.expected.statuses, sequence: declared.expected.sequence, satisfied: declared.expected.satisfied },
+      { statuses: ["COMPLETE"], sequence: 4, satisfied: false },
       "the expectation is recorded on the attempt at dispatch time",
     );
 

@@ -171,6 +171,120 @@ test("tools: the orchestrator drives a run from declaration to authoritative out
   }
 });
 
+test("tools: both skills settle reconciliation success or BLOCKED from one exact alternative contract", async () => {
+  const cases = [
+    { skill: "engineering-loop", status: "CRITIQUE_ADDRESSED", state: "succeeded" },
+    { skill: "engineering-loop", status: "BLOCKED", state: "failed" },
+    { skill: "issue-resolution", status: "CRITIQUE_ADDRESSED", state: "succeeded" },
+    { skill: "issue-resolution", status: "BLOCKED", state: "failed" },
+  ];
+  for (const [index, scenario] of cases.entries()) {
+    const store = tempStore(`loopviz-reconcile-${index}-`);
+    const clock = fakeClock();
+    try {
+      const lead = orchestrator(store.storeDir, clock, []);
+      const tools = toolMap(lead);
+      const spec = {
+        ...sampleRunSpec(`reconcile-${scenario.skill}-${scenario.status.toLowerCase()}`),
+        skill: scenario.skill,
+      };
+      assert.equal((await tools.get("loopviz_run_declare").handler({
+        runId: spec.runId,
+        skill: spec.skill,
+        skillVersion: spec.skillVersion,
+        title: spec.title,
+        orchestratorLabel: spec.orchestratorLabel,
+        nodes: spec.nodes,
+      })).ok, true);
+      assert.equal((await tools.get("loopviz_attempt_start").handler({
+        nodeId: "design",
+        attemptId: "design-reconcile-a2",
+        attemptNumber: 2,
+        kind: "retry",
+        expectedEnvelope: {
+          statuses: ["CRITIQUE_ADDRESSED", "BLOCKED"],
+          sequence: 24,
+        },
+      })).ok, true);
+
+      const settled = await tools.get("loopviz_node_state").handler({
+        nodeId: "design",
+        attemptId: "design-reconcile-a2",
+        state: scenario.state,
+        reason: `${scenario.status} accepted`,
+        envelopeStatus: scenario.status,
+        envelopeSequence: 24,
+      });
+      assert.equal(settled.ok, true);
+      const attempt = lead.projection({ force: true }).dag.nodes
+        .find((node) => node.nodeId === "design").attempts[0];
+      assert.equal(attempt.state, scenario.state);
+      assert.deepEqual(attempt.expected.statuses, ["CRITIQUE_ADDRESSED", "BLOCKED"]);
+      assert.equal(attempt.expected.satisfied, true);
+      clock.advance(STATES.incident.envelopeSettleMs * 2);
+      lead.detectIncidents();
+      assert.equal(
+        lead.projection({ force: true }).incidents.some((incident) => incident.kind === "envelope_missing"),
+        false,
+        "an accepted alternative never opens envelope_missing",
+      );
+    } finally {
+      store.cleanup();
+    }
+  }
+});
+
+test("tools: both skills move retro aggregate running to succeeded or skip pending no-work aggregates", async () => {
+  for (const skill of ["engineering-loop", "issue-resolution"]) {
+    for (const hasWork of [true, false]) {
+      const store = tempStore(`loopviz-retro-${skill}-${hasWork}-`);
+      const clock = fakeClock();
+      try {
+        const lead = orchestrator(store.storeDir, clock, []);
+        const tools = toolMap(lead);
+        const spec = {
+          ...sampleRunSpec(`retro-${skill}-${hasWork ? "work" : "empty"}`),
+          skill,
+          nodes: [
+            { nodeId: "retro", label: "Retrospective", phase: skill === "engineering-loop" ? "8" : "9", role: "review", dependsOn: [] },
+          ],
+        };
+        await tools.get("loopviz_run_declare").handler({
+          runId: spec.runId,
+          skill: spec.skill,
+          skillVersion: spec.skillVersion,
+          title: spec.title,
+          orchestratorLabel: spec.orchestratorLabel,
+          nodes: spec.nodes,
+        });
+        if (hasWork) {
+          assert.equal((await tools.get("loopviz_node_state").handler({
+            nodeId: "retro",
+            state: "running",
+            reason: "aggregating child reports",
+          })).ok, true);
+          assert.equal((await tools.get("loopviz_node_state").handler({
+            nodeId: "retro",
+            state: "succeeded",
+            reason: "aggregate report completed",
+          })).ok, true);
+        } else {
+          assert.equal((await tools.get("loopviz_node_state").handler({
+            nodeId: "retro",
+            state: "skipped",
+            reason: "no aggregate retro work was declared",
+          })).ok, true);
+        }
+        const retro = lead.projection({ force: true }).dag.nodes.find((node) => node.nodeId === "retro");
+        assert.equal(retro.state, hasWork ? "succeeded" : "skipped");
+        assert.notEqual(retro.state, "pending");
+      } finally {
+        store.cleanup();
+      }
+    }
+  }
+});
+
 test("tools: a child session may report detail but may not control the run", async () => {
   const store = tempStore();
   const clock = fakeClock();

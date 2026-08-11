@@ -119,6 +119,10 @@ When a child returns a terminal envelope, report the outcome it declared with
 its exact `SEQUENCE` as `envelopeSequence`. This one orchestrator-authored event
 atomically settles the attempt and logical node. A mismatch with the expected
 status or sequence recorded at dispatch is refused and leaves both unsettled.
+When a child contract has more than one legitimate terminal status, declare the
+complete finite set in `expectedEnvelope.statuses` at dispatch. The accepted
+envelope must match one member and the one exact sequence; an undeclared status
+is still refused. Use `expectedEnvelope.status` for a single-status contract.
 Never call `loopviz_attempt_state` with a terminal state to accept an envelope,
 and never trust a child-authored authority flag. Report what the envelope said,
 not what you concluded from it, and not your reaction to it.

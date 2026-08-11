@@ -105,6 +105,24 @@ export function terminalEnvelopeStates(status) {
   return mapping;
 }
 
+/** Normalizes a single expected status or an exact finite alternative set. */
+export function expectedEnvelopeStatuses(expectedEnvelope) {
+  const requested = Array.isArray(expectedEnvelope?.statuses)
+    ? expectedEnvelope.statuses
+    : typeof expectedEnvelope?.status === "string"
+      ? [expectedEnvelope.status]
+      : [];
+  const statuses = [...new Set(requested)];
+  if (statuses.length === 0) {
+    throw new LoopVizError("missing_envelope_status", "an expected envelope must declare at least one status");
+  }
+  if (statuses.length > 8) {
+    throw new LoopVizError("too_many_envelope_statuses", "an expected envelope may declare at most 8 statuses");
+  }
+  for (const status of statuses) terminalEnvelopeStates(status);
+  return statuses;
+}
+
 export function assertTerminalEnvelopeState(status, nodeState) {
   const mapping = terminalEnvelopeStates(status);
   if (mapping.node !== nodeState) {

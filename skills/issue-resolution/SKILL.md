@@ -295,11 +295,12 @@ silently skipped finding to the writer.
 
 Immediately before each RCA or fix-plan reconciliation message, call
 `loopviz_attempt_start` on that artifact's writer node with kind `retry`, a fresh
-reconciliation attempt ID, and expected envelope `CRITIQUE_ADDRESSED` plus the message
-sequence. Include the enrollment line in the message. On the exact terminal envelope,
-call `loopviz_node_state` with that attempt ID, status, sequence, and the shared mapped
-terminal state. This applies to both artifact writers; no reconciliation attempt may be
-left running after its result is accepted.
+reconciliation attempt ID, the message sequence, and expected status set
+`CRITIQUE_ADDRESSED` plus `BLOCKED`.
+Include the enrollment line in the message. On either exact terminal envelope, call
+`loopviz_node_state` with that attempt ID, status, sequence, and the shared mapped terminal
+state (`succeeded` for `CRITIQUE_ADDRESSED`, `failed` for `BLOCKED`). This applies to both
+artifact writers; no reconciliation attempt may be left running after its result is accepted.
 
 ## Phases 4 and 6: approval gates
 
@@ -461,8 +462,10 @@ the proposals in a concise table.
 For each child, add one unplanned retro node, start one `initial` attempt with expected
 envelope `RETRO_COMPLETE` and the message sequence, and include the enrollment line in the
 retro prompt. Settle each exact report with `loopviz_node_state`. After aggregation, settle
-the initially planned aggregate `retro` node as `succeeded`, or as `skipped` when no
-aggregate work was declared. No completed run may retain pending retro nodes or attempts.
+the initially planned aggregate `retro` node: move it to `running` when aggregation begins,
+then to `succeeded` after the report is produced. When no aggregate work was declared,
+settle the still-pending node as `skipped`. No completed run may retain pending retro nodes
+or attempts.
 
 This phase reports proposals only; do not edit any destination. List all child sessions and
 identify superseded or read-only sessions that are safe for the user to delete. This
@@ -524,7 +527,8 @@ Make each call at the site below. If `loopviz_run_declare` is unavailable, recor
 | `LOOPVIZ:ir.p9.retro.add` | Retro fan-out, adding one node per child session being asked for a retro report. | `loopviz_node_add` |
 | `LOOPVIZ:ir.p9.retro.dispatch` | Before sending each retro prompt, start one attempt on that child's retro node and include its enrollment line. | `loopviz_attempt_start` |
 | `LOOPVIZ:ir.p9.retro.result` | On each `RETRO_COMPLETE` envelope, settle the matching attempt and node with the exact sequence. | `loopviz_node_state` |
-| `LOOPVIZ:ir.p9.retro.aggregate` | After aggregating every report, settle or skip the planned aggregate retro node. | `loopviz_node_state` |
+| `LOOPVIZ:ir.p9.retro.aggregate.start` | When aggregation begins, move the planned aggregate retro node to running. | `loopviz_node_state` |
+| `LOOPVIZ:ir.p9.retro.aggregate.result` | After aggregation, settle the running node as succeeded, or skip a pending no-work node. | `loopviz_node_state` |
 | `LOOPVIZ:ir.invalidation` | When an invalidation supersedes a session, adding the replacement stage before dispatching it. The superseded stage keeps its history. | `loopviz_node_add` |
 | `LOOPVIZ:ir.recovery` | Whenever this session resumes, is woken by a message it did not expect, or handles an interruption. Respond using the Recovery section above. | `loopviz_incidents` |
 | `LOOPVIZ:ir.outcome` | Completion or terminal blocker, exactly once. | `loopviz_run_outcome` |

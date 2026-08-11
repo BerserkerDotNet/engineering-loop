@@ -419,13 +419,13 @@ export function buildProjection({ events, quarantined = [], truncated = false, d
             break;
           }
           const expected = owner.attempt.expected;
-          const statusMatches = !expected || expected.status === event.data.envelopeStatus;
+          const statusMatches = !expected || expected.statuses.includes(event.data.envelopeStatus);
           const sequenceMatches = !expected
             || expected.sequence === null
             || expected.sequence === event.data.envelopeSequence;
           if (!event.data.envelopeStatus || !statusMatches || !sequenceMatches) {
             note(`ignored envelope settlement for ${event.data.attemptId}: expected ${
-              expected ? `${expected.status}/${expected.sequence ?? "*"}` : "an explicit status"
+              expected ? `${expected.statuses.join("|")}/${expected.sequence ?? "*"}` : "an explicit status"
             }, received ${event.data.envelopeStatus ?? "(none)"}/${event.data.envelopeSequence ?? "(none)"}`);
             break;
           }
@@ -501,7 +501,7 @@ export function buildProjection({ events, quarantined = [], truncated = false, d
           // unknowable and no incident may be opened for it.
           expected: event.data.expectedEnvelope
             ? {
-              status: event.data.expectedEnvelope.status,
+              statuses: event.data.expectedEnvelope.statuses ?? [event.data.expectedEnvelope.status],
               sequence: event.data.expectedEnvelope.sequence ?? null,
               satisfied: false,
               satisfiedAt: null,

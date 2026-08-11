@@ -153,13 +153,31 @@
           "model": { "$ref": "#/$defs/nullableString" },
           "reason": { "$ref": "#/$defs/nullableString" },
           "expectedEnvelope": {
-            "type": "object",
-            "additionalProperties": false,
-            "required": ["status"],
-            "properties": {
-              "status": { "type": "string", "minLength": 1, "maxLength": 64 },
-              "sequence": { "type": ["integer", "null"], "minimum": 0 }
-            }
+            "anyOf": [
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["status"],
+                "properties": {
+                  "status": { "type": "string", "minLength": 1, "maxLength": 64 },
+                  "sequence": { "type": ["integer", "null"], "minimum": 0 }
+                }
+              },
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["statuses"],
+                "properties": {
+                  "statuses": {
+                    "type": "array",
+                    "minItems": 1,
+                    "maxItems": 8,
+                    "items": { "type": "string", "minLength": 1, "maxLength": 64 }
+                  },
+                  "sequence": { "type": ["integer", "null"], "minimum": 0 }
+                }
+              }
+            ]
           },
           "grantSecretHash": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
           "grantExpiresAt": { "$ref": "#/$defs/isoTime" }

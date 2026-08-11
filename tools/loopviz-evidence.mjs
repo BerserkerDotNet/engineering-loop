@@ -112,8 +112,11 @@ const entry = createServer((req, res) => {
   if (req.url === "/latency") {
     const marker = `latency-${Date.now()}`;
     const sentAt = new Date().toISOString();
-    reporter.noteActivity("active", marker);
-    reporter.flush();
+    const current = reporter.projection({ force: true });
+    if (!current.outcome) {
+      reporter.noteActivity("active", marker);
+      reporter.flush();
+    }
     server.broadcast("run", {
       reason: "latency_probe",
       run: reporter.projection({ force: true }),
