@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import {
-  cpSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync, rmSync,
+  existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync, rmSync,
 } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -11,7 +11,6 @@ import {
   DEFAULT_LIMITS,
   encodePathSegment,
   frameRecord,
-  legacyPathSegment,
   openStore,
   parseRecord,
   sortEvents,
@@ -64,19 +63,6 @@ function runNode(script, args) {
     child.on("error", reject);
     child.on("exit", (status) => resolve({ status, stdout, stderr }));
   });
-}
-
-function extractRevisionExtension(root, revision) {
-  const archive = join(root, `${revision}.tar`);
-  const archived = spawnSync(
-    "git",
-    ["archive", "--format=tar", `--output=${archive}`, revision, "extensions/loop-execution-visualizer"],
-    { cwd: REPO, encoding: "utf8" },
-  );
-  assert.equal(archived.status, 0, archived.stderr);
-  const extracted = spawnSync("tar", ["-xf", archive, "-C", root], { encoding: "utf8" });
-  assert.equal(extracted.status, 0, extracted.stderr);
-  return join(root, "extensions", "loop-execution-visualizer");
 }
 
 function listFilesRecursiveForTest(root) {
@@ -155,7 +141,7 @@ test("store: valid run ids that previously collided retain distinct collision-re
   }
 });
 
-test("store: permanent declaration admission has one winner under stale contention", async () => {
+test("store: permanent v1 declaration admission has one winner under 96-process contention", async () => {
   const store = tempStore("loopviz-declare-race-");
   try {
     const writer = join(store.dir, "declare-writer.mjs");
@@ -185,12 +171,12 @@ try {
 `, "utf8");
 
     const results = await Promise.all(
-      Array.from({ length: 64 }, (_, index) => runNode(writer, [store.storeDir, String(index)])),
+      Array.from({ length: 96 }, (_, index) => runNode(writer, [store.storeDir, String(index)])),
     );
     for (const result of results) assert.equal(result.status, 0, result.stderr);
     const reports = results.map((result) => JSON.parse(result.stdout));
     assert.equal(reports.filter((report) => report.created === true).length, 1);
-    assert.equal(reports.filter((report) => report.code === "run_exists").length, 63);
+    assert.equal(reports.filter((report) => report.code === "run_exists").length, 95);
 
     const reader = openStore({ storeDir: store.storeDir, sourceId: "declaration-reader" });
     assert.equal(
@@ -199,16 +185,18 @@ try {
       "the exclusive admission claim prevents duplicate declarations on disk",
     );
 
-    const staleRunId = "stale-admission-lock";
-    const lockDir = join(store.storeDir, ".locks");
-    mkdirSync(lockDir, { recursive: true });
-    writeFileSync(
-      join(lockDir, `${encodePathSegment(`run-admission:${staleRunId}`)}.lock`),
-      JSON.stringify({ owner: "crashed", token: "dead", expiresAt: Date.now() - 1 }),
-      "utf8",
+    const crashedId = "crash-before-declaration";
+    const crashed = openStore({ storeDir: store.storeDir, sourceId: "crashed-owner" });
+    assert.equal(
+      crashed.withRunAdmission(crashedId, { hostSessionId: "crashed" }, () => "crashed").acquired,
+      true,
     );
     const recovered = reporterFor(store.storeDir, fakeClock(), { host: "host-recovered", app: "app-recovered" });
-    assert.equal(recovered.declareRun(sampleRunSpec(staleRunId)).created, true);
+    assert.throws(
+      () => recovered.declareRun(sampleRunSpec(crashedId)),
+      (error) => error.code === "run_declaration_incomplete",
+    );
+    assert.equal(recovered.declareRun(sampleRunSpec("fresh-after-crash")).created, true);
 
     const slowWriter = join(store.dir, "slow-admission-writer.mjs");
     const storeUrl = pathToFileURL(join(REPO, "extensions", "loop-execution-visualizer", "src", "store.mjs")).href;
@@ -244,383 +232,201 @@ process.stdout.write(JSON.stringify(result));
   }
 });
 
-test("store: legacy one-use claims migrate without allowing duplicate enrollment or delivery work", async () => {
-  const store = tempStore("loopviz-legacy-claims-");
+test("reporter: failed declaration append burns the id and rolls back attachment for a fresh id", () => {
+  const store = tempStore("loopviz-declare-append-failure-");
+  const clock = fakeClock();
+  let failNextAppend = true;
+  try {
+    const lead = createReporter({
+      storeDir: store.storeDir,
+      role: "unknown",
+      hostSessionId: "host-injected-failure",
+      appSessionId: "app-injected-failure",
+      repository: "BerserkerDotNet/engineering-loop",
+      now: clock,
+      send: collectSends([]),
+      storeFactory(options) {
+        const production = openStore(options);
+        return {
+          ...production,
+          append(event) {
+            if (failNextAppend) {
+              failNextAppend = false;
+              throw new Error("injected append failure");
+            }
+            return production.append(event);
+          },
+        };
+      },
+    });
+
+    assert.throws(
+      () => lead.declareRun(sampleRunSpec("burned-after-append-failure")),
+      (error) => error.code === "run_declaration_incomplete" && /injected append failure/.test(error.message),
+    );
+    assert.equal(lead.runId, null);
+    assert.equal(lead.store.read("burned-after-append-failure").events.length, 0);
+    assert.throws(
+      () => lead.declareRun(sampleRunSpec("burned-after-append-failure")),
+      (error) => error.code === "run_declaration_incomplete",
+    );
+    assert.equal(lead.declareRun(sampleRunSpec("fresh-after-append-failure")).created, true);
+    assert.equal(lead.runId, "fresh-after-append-failure");
+  } finally {
+    store.cleanup();
+  }
+});
+
+test("reporter: declaration capacity failure rolls back attachment and preserves precise error", () => {
+  const store = tempStore("loopviz-declare-capacity-");
   const clock = fakeClock();
   try {
-    const runId = "legacy-claims";
-    const lead = reporterFor(store.storeDir, clock);
-    lead.declareRun(sampleRunSpec(runId));
-    const grant = lead.startAttempt({
-      nodeId: "design",
-      attemptId: "design-a1",
-      attemptNumber: 1,
-      kind: "initial",
-      expectedEnvelope: { status: "COMPLETE", sequence: 24 },
+    const lead = createReporter({
+      storeDir: store.storeDir,
+      role: "unknown",
+      hostSessionId: "host-capacity",
+      appSessionId: "app-capacity",
+      repository: "BerserkerDotNet/engineering-loop",
+      now: clock,
+      send: collectSends([]),
+      limits: { maxRecordBytes: 4096 },
     });
-    const claims = join(lead.store.runDir(runId), "claims");
-    const enrollmentName = `enroll-${grant.grantId}`;
-    const enrollmentCurrent = join(claims, `${encodePathSegment(enrollmentName)}.json`);
-    const enrollmentLegacy = join(claims, `${legacyPathSegment(enrollmentName)}.json`);
-    renameSync(enrollmentCurrent, enrollmentLegacy);
-    const redeemName = `redeem-${grant.grantId}`;
-    writeFileSync(
-      join(claims, `${legacyPathSegment(redeemName)}.json`),
-      JSON.stringify({ at: new Date(clock()).toISOString(), payload: { hostSessionId: "host-old" } }, null, 2),
-      "utf8",
-    );
-
-    const child = reporterFor(store.storeDir, clock, {
-      role: "child",
-      host: "host-new",
-      app: "app-new",
-      pid: 901,
-    });
-    assert.deepEqual(
-      child.redeemEnrollment(grant.token),
-      { ok: false, reason: "enrollment token was already redeemed" },
-    );
-    assert.ok(existsSync(enrollmentCurrent), "reading a legacy enrollment creates its durable hashed copy");
-    assert.ok(existsSync(join(claims, `${encodePathSegment(redeemName)}.json`)));
-
-    lead.startAttempt({
-      nodeId: "design",
-      attemptId: "design-a2",
-      attemptNumber: 2,
-      kind: "retry",
-    });
-    lead.setAttemptState({
-      nodeId: "design",
-      attemptId: "design-a2",
-      state: "failed",
-      reason: "authoritative child failure",
-    });
-    const incidentName = "incident-inc-fail-design-design-a2";
-    const incidentBody = JSON.stringify({ at: new Date(clock()).toISOString(), payload: { legacy: true } }, null, 2);
-    const incidentLegacy = join(claims, `${legacyPathSegment(incidentName)}.json`);
-    const incidentCurrent = join(claims, `${encodePathSegment(incidentName)}.json`);
-    writeFileSync(incidentLegacy, incidentBody, "utf8");
-    const failedAttempt = lead.projection({ force: true }).dag.nodes
-      .find((node) => node.nodeId === "design").attempts[1];
-    assert.equal(failedAttempt.state, "failed");
-    assert.equal(failedAttempt.authoritativeFailure, true);
-    assert.deepEqual(lead.detectIncidents(), [], "the legacy incident claim suppresses duplicate opening");
-    assert.ok(existsSync(incidentCurrent));
-
-    const targetGrant = lead.startAttempt({
-      nodeId: "requirements",
-      attemptId: "requirements-a1",
-      attemptNumber: 1,
-      kind: "initial",
-    });
-    const sends = [];
-    const target = reporterFor(store.storeDir, clock, {
-      role: "child",
-      host: "host-target",
-      app: "app-target",
-      pid: 902,
-      send: collectSends(sends),
-    });
-    assert.equal(target.redeemEnrollment(targetGrant.token).ok, true);
-    const queued = lead.queueMessage({ targetAppSessionId: "app-target", body: "do not redeliver" });
-    const outboxName = `outbox-${queued.messageId}`;
-    const outboxBody = JSON.stringify({ at: new Date(clock()).toISOString(), payload: { legacy: true } }, null, 2);
-    const outboxLegacy = join(claims, `${legacyPathSegment(outboxName)}.json`);
-    const outboxCurrent = join(claims, `${encodePathSegment(outboxName)}.json`);
-    writeFileSync(outboxLegacy, outboxBody, "utf8");
-    assert.deepEqual(await target.outboxTick(), [], "the legacy outbox claim suppresses duplicate delivery");
-    assert.deepEqual(sends, []);
-    assert.ok(existsSync(outboxCurrent));
-
-    rmSync(outboxCurrent, { force: true });
-    const restarted = openStore({ storeDir: store.storeDir, sourceId: "restart-outbox" });
-    assert.deepEqual(restarted.readClaim(runId, outboxName)?.payload, { legacy: true });
-    assert.ok(existsSync(outboxCurrent), "restart repairs an interrupted legacy-to-hash claim copy");
-  } finally {
-    store.cleanup();
-  }
-});
-
-test("store: actual e50 and current processes share one claim winner and live event bridge", async () => {
-  const store = tempStore("loopviz-mixed-version-");
-  try {
-    const oldRoot = extractRevisionExtension(store.dir, "e50b7d88e0224d723d25391be43249e828aad5ca");
-    const oldReporterUrl = pathToFileURL(join(oldRoot, "src", "reporter.mjs")).href;
-    const oldStoreUrl = pathToFileURL(join(oldRoot, "src", "store.mjs")).href;
-    const currentStoreUrl = pathToFileURL(join(REPO, "extensions", "loop-execution-visualizer", "src", "store.mjs")).href;
-    const helpersUrl = pathToFileURL(join(REPO, "tests", "loop-execution-visualizer", "helpers.mjs")).href;
-    const initialize = join(store.dir, "initialize-old-run.mjs");
-    writeFileSync(initialize, `
-import { createReporter } from ${JSON.stringify(oldReporterUrl)};
-import { sampleRunSpec } from ${JSON.stringify(helpersUrl)};
-const reporter = createReporter({
-  storeDir: process.argv[2],
-  role: "orchestrator",
-  hostSessionId: "old-host",
-  appSessionId: "old-app",
-  repository: "BerserkerDotNet/engineering-loop",
-  send: async () => {},
-});
-reporter.declareRun(sampleRunSpec("mixed-version-run"));
-reporter.close();
-`, "utf8");
-    const initialized = await runNode(initialize, [store.storeDir]);
-    assert.equal(initialized.status, 0, initialized.stderr);
-
-    const race = join(store.dir, "claim-racer.mjs");
-    writeFileSync(race, `
-import { existsSync, writeFileSync } from "node:fs";
-const [moduleUrl, storeDir, tag, ready, gate] = process.argv.slice(2);
-const { openStore } = await import(moduleUrl);
-const store = openStore({ storeDir, sourceId: tag });
-writeFileSync(ready, "ready", "utf8");
-while (!existsSync(gate)) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10);
-const result = store.claim("mixed-version-run", "redeem-shared-grant", { tag });
-process.stdout.write(JSON.stringify(result));
-`, "utf8");
-    const gate = join(store.dir, "claim-gate");
-    const oldReady = join(store.dir, "old-ready");
-    const currentReady = join(store.dir, "current-ready");
-    const racers = [
-      runNode(race, [oldStoreUrl, store.storeDir, "old", oldReady, gate]),
-      runNode(race, [currentStoreUrl, store.storeDir, "current", currentReady, gate]),
-    ];
-    while (!existsSync(oldReady) || !existsSync(currentReady)) {
-      await new Promise((resolve) => setTimeout(resolve, 10));
-    }
-    writeFileSync(gate, "go", "utf8");
-    const raceResults = await Promise.all(racers);
-    for (const result of raceResults) assert.equal(result.status, 0, result.stderr);
-    const claims = raceResults.map((result) => JSON.parse(result.stdout));
-    assert.equal(claims.filter((result) => result.claimed).length, 1);
-    assert.equal(claims.filter((result) => !result.claimed).length, 1);
-
-    const current = openStore({ storeDir: store.storeDir, sourceId: "bridge-before" });
-    assert.deepEqual(current.listRunIds(), ["mixed-version-run"]);
-    const legacyDir = join(store.storeDir, "runs", legacyPathSegment("mixed-version-run"));
-    assert.ok(existsSync(legacyDir), "the active compatibility path is never destructively retired");
-
-    const eventWriter = join(store.dir, "old-event-writer.mjs");
-    const eventReady = join(store.dir, "event-ready");
-    const eventGate = join(store.dir, "event-gate");
-    writeFileSync(eventWriter, `
-import { existsSync, writeFileSync } from "node:fs";
-import { createReporter } from ${JSON.stringify(oldReporterUrl)};
-const [storeDir, ready, gate] = process.argv.slice(2);
-const reporter = createReporter({
-  storeDir,
-  role: "orchestrator",
-  hostSessionId: "old-host",
-  appSessionId: "old-app",
-  repository: "BerserkerDotNet/engineering-loop",
-  send: async () => {},
-});
-reporter.attachRun("mixed-version-run");
-writeFileSync(ready, "ready", "utf8");
-while (!existsSync(gate)) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10);
-reporter.heartbeat("post-migration-old-write");
-reporter.close();
-`, "utf8");
-    const writing = runNode(eventWriter, [store.storeDir, eventReady, eventGate]);
-    while (!existsSync(eventReady)) await new Promise((resolve) => setTimeout(resolve, 10));
-    current.listRunIds();
-    writeFileSync(eventGate, "go", "utf8");
-    const written = await writing;
-    assert.equal(written.status, 0, written.stderr);
-
-    const restarted = openStore({ storeDir: store.storeDir, sourceId: "bridge-after" });
-    const replay = restarted.read("mixed-version-run");
-    assert.ok(
-      replay.events.some((event) => event.type === "health.heartbeat" && event.data.activity === "post-migration-old-write"),
-      "a post-bridge old writer remains visible after restart",
-    );
-    assert.ok(existsSync(legacyDir), "reading and restart preserve the live compatibility bridge");
-  } finally {
-    store.cleanup();
-  }
-});
-
-test("store: a shared legacy Windows directory splits exact Run and run histories safely under contention", async () => {
-  const store = tempStore("loopviz-legacy-case-");
-  try {
-    const upperClock = fakeClock(Date.parse("2026-01-01T00:00:00.000Z"));
-    const lowerClock = fakeClock(Date.parse("2026-01-02T00:00:00.000Z"));
-    const upper = reporterFor(store.storeDir, upperClock, { host: "host-upper", app: "app-upper", pid: 910 });
-    upper.declareRun(sampleRunSpec("Run"));
-    const upperGrant = upper.startAttempt({
-      nodeId: "design",
-      attemptId: "design-upper-a1",
-      attemptNumber: 1,
-      kind: "initial",
-    });
-    upper.emit("run.outcome", { outcome: "completed", reason: "upper complete", prUrl: null }, { immediate: true });
-    upper.close();
-    const lower = reporterFor(store.storeDir, lowerClock, { host: "host-lower", app: "app-lower", pid: 911 });
-    lower.declareRun(sampleRunSpec("run"));
-    const lowerGrant = lower.startAttempt({
-      nodeId: "requirements",
-      attemptId: "requirements-lower-a1",
-      attemptNumber: 1,
-      kind: "initial",
-    });
-    lower.emit("run.outcome", { outcome: "completed", reason: "lower complete", prUrl: null }, { immediate: true });
-    lower.close();
-
-    const before = openStore({ storeDir: store.storeDir, sourceId: "before-merge" });
-    const expected = new Map([
-      ["Run", before.read("Run").events.map((event) => event.eventId).sort()],
-      ["run", before.read("run").events.map((event) => event.eventId).sort()],
-    ]);
-    const upperDir = before.runDir("Run");
-    const lowerDir = before.runDir("run");
-    const legacyDir = join(store.storeDir, "runs", legacyPathSegment("run"));
-    mkdirSync(join(legacyDir, "events"), { recursive: true });
-    for (const sourceDir of [upperDir, lowerDir]) {
-      for (const source of readdirSync(join(sourceDir, "events"), { withFileTypes: true })) {
-        if (source.isDirectory()) {
-          cpSync(join(sourceDir, "events", source.name), join(legacyDir, "events", source.name), { recursive: true });
-        }
-      }
-      cpSync(join(sourceDir, "claims"), join(legacyDir, "claims"), { recursive: true });
-    }
-    rmSync(upperDir, { recursive: true, force: true });
-    rmSync(lowerDir, { recursive: true, force: true });
-
-    const declarationFile = listFilesRecursiveForTest(join(legacyDir, "events"))
-      .find((file) => {
-        const parsed = parseRecord(readFileSync(file, "utf8"));
-        return parsed.ok && parsed.event.type === "run.declared" && parsed.event.runId === "Run";
-      });
-    const relativeDeclaration = declarationFile.slice(join(legacyDir, "events").length + 1);
-    const partialTarget = join(store.storeDir, "runs", encodePathSegment("Run"), "events", relativeDeclaration);
-    mkdirSync(dirname(partialTarget), { recursive: true });
-    writeFileSync(partialTarget, readFileSync(declarationFile, "utf8"), "utf8");
-    const interruptedTombstone = join(store.storeDir, "runs", ".migrated-interrupted-case");
-    renameSync(legacyDir, interruptedTombstone);
-
-    const readerScript = join(store.dir, "migration-reader.mjs");
-    const storeUrl = pathToFileURL(join(REPO, "extensions", "loop-execution-visualizer", "src", "store.mjs")).href;
-    writeFileSync(readerScript, `
-import { openStore } from ${JSON.stringify(storeUrl)};
-const [storeDir, tag] = process.argv.slice(2);
-try {
-  const store = openStore({ storeDir, sourceId: "migration-" + tag });
-  process.stdout.write(JSON.stringify({ ok: true, ids: store.listRunIds().sort() }));
-} catch (error) {
-  process.stdout.write(JSON.stringify({ ok: false, code: error.code, message: error.message }));
-}
-`, "utf8");
-    const migrations = await Promise.all(
-      Array.from({ length: 4 }, (_, index) => runNode(readerScript, [store.storeDir, String(index)])),
-    );
-    for (const result of migrations) {
-      assert.equal(result.status, 0, result.stderr);
-      assert.deepEqual(JSON.parse(result.stdout), { ok: true, ids: ["Run", "run"] });
-    }
-
-    const migrated = openStore({ storeDir: store.storeDir, sourceId: "after-migration" });
-    assert.deepEqual(migrated.listRunIds().sort(), ["Run", "run"]);
-    for (const runId of ["Run", "run"]) {
-      assert.deepEqual(
-        migrated.read(runId).events.map((event) => event.eventId).sort(),
-        expected.get(runId),
-        `${runId} retains exactly its own immutable history`,
-      );
-      assert.ok(existsSync(join(store.storeDir, "runs", encodePathSegment(runId))));
-    }
-    assert.equal(existsSync(interruptedTombstone), true, "legacy compatibility bytes remain available to active old writers");
-    assert.ok(migrated.readClaim("Run", `enroll-${upperGrant.grantId}`));
-    assert.throws(
-      () => migrated.readClaim("Run", `enroll-${lowerGrant.grantId}`),
-      (error) => error.code === "claim_ambiguous",
-    );
-    assert.ok(migrated.readClaim("run", `enroll-${lowerGrant.grantId}`));
-    assert.throws(
-      () => migrated.readClaim("run", `enroll-${upperGrant.grantId}`),
-      (error) => error.code === "claim_ambiguous",
-    );
-
-    const indexer = reporterFor(store.storeDir, fakeClock(), { role: "unknown", host: "host-indexer", app: "app-indexer", pid: 912 });
-    assert.deepEqual(indexer.listRuns().map((summary) => summary.runId).sort(), ["Run", "run"]);
-    for (const runId of ["Run", "run"]) {
-      assert.ok(existsSync(join(store.storeDir, "index", `${encodePathSegment(runId)}.json`)));
-    }
-    const collision = reporterFor(store.storeDir, fakeClock(), { host: "host-collision", app: "app-collision", pid: 913 });
-    assert.throws(() => collision.declareRun(sampleRunSpec("Run")), (error) => error.code === "run_exists");
-    assert.equal(migrated.read("Run").events.filter((event) => event.type === "run.declared").length, 1);
-
-    assert.deepEqual(migrated.pruneRuns(0, (runId) => runId === "run"), ["Run"]);
-    assert.deepEqual(migrated.listRunIds(), ["run"]);
-    assert.equal(migrated.read("run").events.length, expected.get("run").length);
-  } finally {
-    store.cleanup();
-  }
-});
-
-test("store: ambiguous hashed claims in a case-colliding legacy directory fail closed per run", () => {
-  const store = tempStore("loopviz-ambiguous-claims-");
-  try {
-    const createHistory = (runId, host, app, pid) => {
-      const reporter = reporterFor(store.storeDir, fakeClock(), { host, app, pid });
-      reporter.declareRun(sampleRunSpec(runId));
-      reporter.emit("incident.opened", {
-        incidentId: "shared-incident",
-        kind: "child_failed",
-        subjectNodeId: "design",
-        subjectAttemptId: null,
-        summary: "same deterministic incident",
-        envelope: "STATUS: BLOCKED",
-      }, { kind: "system", basis: "system", immediate: true });
-      reporter.emit("outbox.queued", {
-        messageId: "shared-message",
-        targetAppSessionId: "shared-target",
-        targetNodeId: "design",
-        body: "same deterministic body",
-        expiresAt: "2027-01-01T00:00:00.000Z",
-      }, { immediate: true });
-      reporter.close();
-      return openStore({ storeDir: store.storeDir, sourceId: `source-${runId}` }).runDir(runId);
+    const oversized = {
+      ...sampleRunSpec("burned-after-capacity-failure"),
+      nodes: Array.from({ length: 60 }, (_, index) => ({
+        nodeId: `capacity-${index}`,
+        label: `Capacity node ${index} ${"x".repeat(80)}`,
+        phase: "capacity",
+        role: "worker",
+        dependsOn: [],
+        planned: true,
+      })),
     };
-    const upperDir = createHistory("Run", "upper-host", "upper-app", 920);
-    const lowerDir = createHistory("run", "lower-host", "lower-app", 921);
-    const shared = join(store.storeDir, "runs", legacyPathSegment("Run"));
-    mkdirSync(join(shared, "events"), { recursive: true });
-    for (const sourceDir of [upperDir, lowerDir]) {
-      for (const source of readdirSync(join(sourceDir, "events"), { withFileTypes: true })) {
-        if (source.isDirectory()) {
-          cpSync(join(sourceDir, "events", source.name), join(shared, "events", source.name), { recursive: true });
-        }
-      }
-      rmSync(sourceDir, { recursive: true, force: true });
-    }
-
-    const claimBody = JSON.stringify({ at: "2026-08-10T00:00:00.000Z", payload: { legacy: true } }, null, 2);
-    const incidentName = "incident-shared-incident";
-    const outboxName = "outbox-shared-message";
-    mkdirSync(join(shared, "claims"), { recursive: true });
-    writeFileSync(join(shared, "claims", `${encodePathSegment(incidentName)}.json`), claimBody, "utf8");
-    writeFileSync(join(shared, "claims", `${encodePathSegment(outboxName)}.json`), claimBody, "utf8");
-
-    const reader = openStore({ storeDir: store.storeDir, sourceId: "ambiguous-reader" });
-    assert.deepEqual(reader.listRunIds().sort(), ["Run", "run"]);
-    for (const runId of ["Run", "run"]) {
-      assert.throws(() => reader.readClaim(runId, incidentName), (error) => error.code === "claim_ambiguous");
-      assert.throws(() => reader.readClaim(runId, outboxName), (error) => error.code === "claim_ambiguous");
-      assert.equal(
-        existsSync(join(reader.runDir(runId), "claims", `${encodePathSegment(incidentName)}.json`)),
-        false,
-        "an ambiguous claim is never broadcast into a logical run",
-      );
-    }
-    const registry = join(store.storeDir, "compatibility", "ambiguous-claims");
-    assert.ok(listFilesRecursiveForTest(registry).some((file) => file.endsWith("original.bin")));
+    assert.throws(
+      () => lead.declareRun(oversized),
+      (error) => error.code === "record_too_large",
+    );
+    assert.equal(lead.runId, null);
+    assert.equal(lead.store.read(oversized.runId).events.length, 0);
+    assert.equal(lead.declareRun(sampleRunSpec("fresh-after-capacity-failure")).created, true);
   } finally {
     store.cleanup();
   }
 });
 
-test("store: corrupt legacy records are quarantined without blocking healthy discovery or restart", async () => {
-  const store = tempStore("loopviz-corrupt-compat-");
+test("store: v1 one-use claims have one hashed physical winner", async () => {
+  const store = tempStore("loopviz-v1-claims-");
+  const clock = fakeClock();
+  try {
+    const first = openStore({ storeDir: store.storeDir, sourceId: "first", now: clock });
+    const second = openStore({ storeDir: store.storeDir, sourceId: "second", now: clock });
+    assert.equal(first.claim("claim-run", "redeem-shared", { by: "first" }).claimed, true);
+    assert.deepEqual(second.claim("claim-run", "redeem-shared", { by: "second" }), {
+      claimed: false,
+      existing: {
+        at: new Date(clock()).toISOString(),
+        payload: { by: "first" },
+      },
+    });
+    const claims = join(first.runDir("claim-run"), "claims");
+    assert.deepEqual(readdirSync(claims).filter((name) => name.endsWith(".json")), [
+      `${encodePathSegment("redeem-shared")}.json`,
+    ]);
+  } finally {
+    store.cleanup();
+  }
+});
+
+test("store: v1 ignores realistic pre-v1 sibling data without touching it", () => {
+  const store = tempStore("loopviz-v1-isolation-");
+  const v1 = join(store.storeDir, "v1");
+  const oldRun = join(store.storeDir, "runs", "development-run", "events", "old-source");
+  const oldClaim = join(store.storeDir, "runs", "development-run", "claims", "old-claim.json");
+  mkdirSync(oldRun, { recursive: true });
+  mkdirSync(dirname(oldClaim), { recursive: true });
+  const oldBytes = Buffer.from('{"development":"unsupported"}');
+  writeFileSync(join(oldRun, "000000000001.json"), oldBytes);
+  writeFileSync(oldClaim, oldBytes);
+
+  try {
+    const lead = reporterFor(v1, fakeClock());
+    lead.declareRun(sampleRunSpec("v1-only-run"));
+    lead.close();
+    const reader = openStore({ storeDir: v1, sourceId: "reader" });
+    assert.deepEqual(reader.listRunIds(), ["v1-only-run"]);
+    assert.equal(reader.read("development-run").events.length, 0);
+    assert.equal(reader.readClaim("development-run", "old-claim"), null);
+    assert.ok(readFileSync(join(oldRun, "000000000001.json")).equals(oldBytes));
+    assert.ok(readFileSync(oldClaim).equals(oldBytes));
+  } finally {
+    store.cleanup();
+  }
+});
+
+test("store: single-run v1 hot paths do not enumerate or parse 49 unrelated runs", () => {
+  const store = tempStore("loopviz-v1-scale-");
+  const clock = fakeClock();
+  try {
+    for (let index = 0; index < 50; index += 1) {
+      const lead = reporterFor(store.storeDir, clock, {
+        host: `host-scale-${index}`,
+        app: `app-scale-${index}`,
+        pid: 10_000 + index,
+      });
+      lead.declareRun(sampleRunSpec(`scale-${index}`));
+      for (let event = 0; event < 8; event += 1) {
+        clock.advance(1_000);
+        lead.heartbeat(`sample-${event}`);
+        lead.flush();
+      }
+      lead.close();
+    }
+
+    const reader = openStore({ storeDir: store.storeDir, sourceId: "scale-fixture", now: clock });
+    for (let index = 0; index < 49; index += 1) {
+      const files = eventFiles(store.storeDir, `scale-${index}`);
+      writeFileSync(files.at(-1), '{"checksum":"sha256:broken","event":', "utf8");
+    }
+
+    const target = reporterFor(store.storeDir, clock, {
+      role: "unknown",
+      host: "host-scale-reader",
+      app: "app-scale-reader",
+      pid: 20_000,
+    });
+    const startedAt = performance.now();
+    target.attachRun("scale-49");
+    target.heartbeat("hot-path");
+    target.flush();
+    assert.equal(target.projection({ force: true }).runId, "scale-49");
+    const elapsedMs = performance.now() - startedAt;
+    assert.ok(elapsedMs < 1_000, `single-run append and projection took ${elapsedMs.toFixed(1)} ms`);
+
+    for (let index = 0; index < 49; index += 1) {
+      assert.equal(
+        existsSync(join(reader.runDir(`scale-${index}`), "quarantine")),
+        false,
+        `hot-path access did not inspect scale-${index}`,
+      );
+    }
+
+    assert.equal(target.listRuns().length, 50, "history rebuild remains complete after writes and corruption");
+    const restarted = reporterFor(store.storeDir, clock, {
+      role: "unknown",
+      host: "host-scale-restart",
+      app: "app-scale-restart",
+      pid: 20_001,
+    });
+    assert.equal(restarted.listRuns().length, 50, "restart rebuilds the complete v1 history list");
+    target.close();
+    restarted.close();
+  } finally {
+    store.cleanup();
+  }
+});
+
+test("store: corrupt v1 artifacts are quarantined once without blocking healthy runs", () => {
+  const store = tempStore("loopviz-v1-corrupt-");
   try {
     const healthy = reporterFor(store.storeDir, fakeClock(), { host: "healthy-host", app: "healthy-app", pid: 930 });
     healthy.declareRun(sampleRunSpec("healthy-run"));
@@ -629,43 +435,29 @@ test("store: corrupt legacy records are quarantined without blocking healthy dis
     affected.declareRun(sampleRunSpec("affected-run"));
     affected.close();
 
-    const affectedHashed = openStore({ storeDir: store.storeDir, sourceId: "fixture" }).runDir("affected-run");
-    const affectedLegacy = join(store.storeDir, "runs", legacyPathSegment("affected-run"));
-    cpSync(affectedHashed, affectedLegacy, { recursive: true });
-    rmSync(affectedHashed, { recursive: true, force: true });
-    const corrupt = join(affectedLegacy, "events", "torn-source", "000000000999.json");
+    const raw = openStore({ storeDir: store.storeDir, sourceId: "fixture" });
+    const corrupt = join(raw.eventsDir("affected-run"), "torn-source", "000000000999.json");
     mkdirSync(dirname(corrupt), { recursive: true });
     const corruptBytes = Buffer.from([0x7b, 0x22, 0x74, 0x6f, 0x72, 0x6e, 0xff, 0x00]);
     writeFileSync(corrupt, corruptBytes);
 
-    const readerScript = join(store.dir, "corrupt-reader.mjs");
-    const storeUrl = pathToFileURL(join(REPO, "extensions", "loop-execution-visualizer", "src", "store.mjs")).href;
-    writeFileSync(readerScript, `
-import { openStore } from ${JSON.stringify(storeUrl)};
-const store = openStore({ storeDir: process.argv[2], sourceId: process.argv[3] });
-const ids = store.listRunIds().sort();
-const affected = store.read("affected-run");
-process.stdout.write(JSON.stringify({ ids, quarantined: affected.quarantined.length }));
-`, "utf8");
-    const readers = await Promise.all(
-      Array.from({ length: 8 }, (_, index) => runNode(readerScript, [store.storeDir, `reader-${index}`])),
-    );
-    for (const result of readers) {
-      assert.equal(result.status, 0, result.stderr);
-      assert.deepEqual(JSON.parse(result.stdout), {
-        ids: ["affected-run", "healthy-run"],
-        quarantined: 1,
-      });
+    for (let index = 0; index < 12; index += 1) {
+      assert.equal(raw.read("affected-run").quarantined.length, 1);
+      assert.equal(raw.read("healthy-run").quarantined.length, 0);
+      assert.deepEqual(raw.listRunIds().sort(), ["affected-run", "healthy-run"]);
     }
+    const artifacts = listFilesRecursiveForTest(join(raw.runDir("affected-run"), "quarantine", "artifacts"));
+    assert.equal(artifacts.filter((file) => file.endsWith(".bin")).length, 1);
+    assert.equal(artifacts.filter((file) => file.endsWith(".json")).length, 1);
+    assert.ok(readFileSync(artifacts.find((file) => file.endsWith(".bin"))).equals(corruptBytes));
 
-    const restarted = openStore({ storeDir: store.storeDir, sourceId: "corrupt-restart" });
-    assert.deepEqual(restarted.listRunIds().sort(), ["affected-run", "healthy-run"]);
-    assert.equal(restarted.read("healthy-run").quarantined.length, 0);
+    const restarted = openStore({ storeDir: store.storeDir, sourceId: "restart" });
     assert.equal(restarted.read("affected-run").quarantined.length, 1);
-    const quarantinedBytes = listFilesRecursiveForTest(
-      join(store.storeDir, "compatibility", "quarantine"),
-    ).find((file) => file.endsWith("original.bin") && readFileSync(file).equals(corruptBytes));
-    assert.ok(quarantinedBytes, "the exact invalid bytes survive in migration quarantine");
+    assert.equal(
+      listFilesRecursiveForTest(join(raw.runDir("affected-run"), "quarantine", "artifacts")).length,
+      2,
+      "restart and repeated reads do not create unbounded notes",
+    );
   } finally {
     store.cleanup();
   }
@@ -768,10 +560,12 @@ test("store: a torn or tampered record is quarantined instead of applied", async
     assert.equal(projection.integrity.quarantined, 3, "each damaged record is quarantined separately");
     assert.equal(projection.title, sampleRunSpec("torn-run").title, "the tampered value never reached the projection");
 
-    const notes = readdirSync(join(raw.runDir("torn-run"), "quarantine"));
-    assert.ok(notes.length >= 1, "quarantine leaves an inspectable note");
-    const note = JSON.parse(readFileSync(join(raw.runDir("torn-run"), "quarantine", notes[0]), "utf8"));
-    const reasons = note.quarantined.map((q) => q.reason).join(" | ");
+    const artifactDir = join(raw.runDir("torn-run"), "quarantine", "artifacts");
+    const notes = readdirSync(artifactDir).filter((name) => name.endsWith(".json"));
+    assert.equal(notes.length, 3, "each distinct damaged artifact leaves one inspectable note");
+    const reasons = notes
+      .map((name) => JSON.parse(readFileSync(join(artifactDir, name), "utf8")).reason)
+      .join(" | ");
     assert.match(reasons, /unreadable record/);
     assert.match(reasons, /checksum mismatch/);
     assert.match(reasons, /does not match/);
@@ -1000,10 +794,16 @@ test("store: retention drops whole old runs, keeps the newest, and never drops t
         reporter.emit("run.outcome", { outcome: "completed", reason: "terminal history" }, { immediate: true });
       }
       reporter.flush();
+      reporter.store.claim(`retained-${i}`, `retention-claim-${i}`, { index: i });
       reporters.push(reporter);
       clock.advance(60000);
     }
-    assert.equal(new Set(store.listRunIds?.() ?? []).size || 5, 5);
+    const fixture = openStore({ storeDir: store.storeDir, sourceId: "retention-fixture", now: clock });
+    const corrupt = join(fixture.eventsDir("retained-1"), "damaged", "000000009999.json");
+    mkdirSync(dirname(corrupt), { recursive: true });
+    writeFileSync(corrupt, "{torn", "utf8");
+    assert.equal(fixture.read("retained-1").quarantined.length, 1);
+    assert.equal(fixture.listRunIds().length, 5);
 
     // The oldest run is the live one, so retention must refuse to drop it.
     const live = reporters[0];
@@ -1016,12 +816,11 @@ test("store: retention drops whole old runs, keeps the newest, and never drops t
     assert.ok(remaining.includes("retained-4"), "the newest run survives");
     for (const runId of dropped) {
       assert.equal(remaining.includes(runId), false, `${runId} was fully removed`);
-      assert.equal(
-        readdirSync(join(store.storeDir, "index")).includes(`${runId}.json`),
-        false,
-        "the index entry is removed with the run",
-      );
+      assert.equal(existsSync(fixture.runDir(runId)), false, "events, claims, and integrity evidence are removed together");
+      assert.equal(existsSync(join(store.storeDir, "index", `${encodePathSegment(runId)}.json`)), false);
+      assert.equal(existsSync(join(store.storeDir, "declarations", `${encodePathSegment(runId)}.json`)), false);
     }
+    assert.ok(fixture.readClaim("retained-0", "retention-claim-0"), "the active run's claim survives");
 
     // A surviving run is still complete: retention never truncates a history.
     const survivor = live.readRun("retained-4");

@@ -375,6 +375,22 @@ test("browser contract: composer standing state is run-scoped across navigation 
   assert.match(source, /source\.addEventListener\("run"[\s\S]*render\(\)/);
 });
 
+test("browser contract: delayed composer results cannot navigate away from the newly selected run", () => {
+  const source = readFileSync(
+    new URL("../../extensions/loop-execution-visualizer/src/ui/app.js", import.meta.url),
+    "utf8",
+  );
+  const submit = source.slice(
+    source.indexOf('dom.composer.addEventListener("submit"'),
+    source.indexOf("// interaction: zoom"),
+  );
+  assert.match(submit, /submittedRunIsSelected = \(\) =>[\s\S]*state\.view === "run"[\s\S]*state\.run\?\.runId === submittedRunId/);
+  assert.match(submit, /if \(submittedRunIsSelected\(\) && dom\.composerBody\.value === submittedBody\)/);
+  assert.match(submit, /if \(submittedRunIsSelected\(\)\) await loadRun\(submittedRunId\)/);
+  assert.match(submit, /catch \(error\)[\s\S]*composerFeedback\.set\(submittedRunId[\s\S]*if \(submittedRunIsSelected\(\)\) renderComposerTargets\(\)/);
+  assert.doesNotMatch(submit, /\n\s*await loadRun\(submittedRunId\);/);
+});
+
 test("initial graph admission rejects every invalid shape before persisting a declaration", () => {
   const cases = [
     [{ nodeId: "a", label: "A", dependsOn: [] }, { nodeId: "a", label: "Again", dependsOn: [] }],
@@ -559,6 +575,7 @@ test("storage discovery: plugin lookup failure is distinct from a confirmed dire
   });
   assert.equal(direct.available, true);
   assert.equal(direct.marketplace, "_direct");
+  assert.match(direct.storeDir, /loop-execution-visualizer[\\/]v1$/);
 });
 
 test("extension wiring: concurrent canvas startup observes only a listening server or terminal failure", async () => {

@@ -120,6 +120,11 @@ manifests, rebuildable projections, mutable-only expiring locks and quarantine. 
 exchanges for rotating short-TTL instance credentials; enforce Origin/Fetch-Metadata, CSRF,
 CSP/frame headers, route/body limits, constant-time checks and replay rejection.
 
+The first-release store is an isolated `v1` namespace below the plugin data directory.
+Only v1 data is discovered, read, watched, retained, claimed, or written. Unsupported
+development stores outside that namespace are ignored and left untouched; v1 performs no
+migration, import, dual read/write, or compatibility retention.
+
 ## Implementation map and risks
 
 | Slice | Changed areas | Gate |

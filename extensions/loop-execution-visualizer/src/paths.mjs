@@ -12,6 +12,7 @@ import { dirname, join, basename } from "node:path";
  */
 
 export const STORE_FOLDER = "loop-execution-visualizer";
+export const STORE_VERSION = "v1";
 
 function readJsonSafe(path, readFile) {
   try {
@@ -94,7 +95,7 @@ export function resolveStorageLocation({
     pluginName,
     marketplace,
     dataDir,
-    storeDir: join(dataDir, STORE_FOLDER),
+    storeDir: join(dataDir, STORE_FOLDER, STORE_VERSION),
     pluginScoped: typeof extensionId === "string" ? extensionId.startsWith("plugin:") : true,
   };
 }
@@ -112,10 +113,6 @@ export function assertPluginScoped(extensionPath) {
   if (userScoped) return { ok: false, reason: "loaded from the user extensions directory" };
   if (projectScoped) return { ok: false, reason: "loaded from a project .github/extensions directory" };
   return { ok: true, pluginRoot: root, reason: null };
-}
-
-export function runDirectory(storeDir, runId) {
-  return join(storeDir, "runs", runId);
 }
 
 export function describeLocation(location) {

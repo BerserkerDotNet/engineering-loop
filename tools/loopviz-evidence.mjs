@@ -24,6 +24,7 @@ import { tmpdir } from "node:os";
 
 const urlFile = join(tmpdir(), "loopviz-evidence-url.txt");
 const ENTRY_PORT = 57999;
+const maintenanceDelayMs = Number(process.env.LOOPVIZ_EVIDENCE_MAINTENANCE_DELAY_MS ?? 0);
 
 const [
   storeDir,
@@ -73,7 +74,11 @@ const handlers = createCanvasHandlers({
       at: new Date().toISOString(),
     });
   },
-  maintenanceTick: async () => {},
+  maintenanceTick: async () => {
+    if (Number.isFinite(maintenanceDelayMs) && maintenanceDelayMs > 0) {
+      await new Promise((resolve) => setTimeout(resolve, maintenanceDelayMs));
+    }
+  },
 });
 
 server = createLoopbackServer({ handlers, log: (line) => process.stdout.write(`[server] ${line}\n`) });

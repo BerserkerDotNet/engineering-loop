@@ -120,7 +120,11 @@ detect that once and run exactly as they did before it existed.
   [`extensions/loop-execution-visualizer/contracts/v1/`](extensions/loop-execution-visualizer/contracts/v1/)
 
 The extension uses Node built-ins only (Node 22+) and has no dependencies to
-install. Run its tests with the Node test runner:
+install. Its first-release store is isolated at
+`plugin-data/<marketplace>/<plugin>/loop-execution-visualizer/v1`; only that
+namespace is read, watched, retained, or written. Pre-v1 sibling data from
+development builds is unsupported, remains untouched, and is never imported or
+discovered. Run its tests with the Node test runner:
 
 ```powershell
 node --test "tests/loop-execution-visualizer/*.test.mjs"

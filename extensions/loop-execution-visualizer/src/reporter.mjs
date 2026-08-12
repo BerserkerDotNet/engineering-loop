@@ -183,6 +183,7 @@ export function createReporter({
   log = () => {},
   now = Date.now,
   limits = DEFAULT_LIMITS,
+  storeFactory = openStore,
 }) {
   if (!hostSessionId) throw new LoopVizError("no_identity", "a trusted host session id is required");
 
@@ -193,7 +194,7 @@ export function createReporter({
   // this writer uniquely and stably, and the live role travels separately on each
   // event as `kind`, so the source identity deliberately omits it.
   const sourceId = toId(`${hostSessionId}-${pid}`, "unknown-source");
-  const store = openStore({ storeDir, sourceId, limits, now });
+  const store = storeFactory({ storeDir, sourceId, limits, now });
 
   const trustedProjectId = canonicalProjectIdentity({ repository, workingDirectory });
   if (!trustedProjectId) {
@@ -596,21 +597,46 @@ export function createReporter({
       }, () => {
         const existing = inspectExisting();
         if (existing) return existing;
+        const previous = {
+          runId: state.runId,
+          role: state.role,
+          projection: state.projection,
+          projectionStamp: state.projectionStamp,
+        };
         state.role = "orchestrator";
         state.runId = spec.runId;
-        emit("run.declared", {
-          skill: spec.skill,
-          skillVersion: spec.skillVersion ?? null,
-          title: spec.title,
-          projectId: state.projectId,
-          repository: state.repository,
-          branch: spec.branch ?? null,
-          orchestratorNodeId: spec.orchestratorNodeId,
-          orchestratorLabel: spec.orchestratorLabel ?? "Orchestrator",
-          nodes: spec.nodes,
-          createdAt: isoAt(now()),
-        });
-        return { created: true, projection: projection({ force: true }) };
+        try {
+          const declaration = makeEvent("run.declared", {
+            skill: spec.skill,
+            skillVersion: spec.skillVersion ?? null,
+            title: spec.title,
+            projectId: state.projectId,
+            repository: state.repository,
+            branch: spec.branch ?? null,
+            orchestratorNodeId: spec.orchestratorNodeId,
+            orchestratorLabel: spec.orchestratorLabel ?? "Orchestrator",
+            nodes: spec.nodes,
+            createdAt: isoAt(now()),
+          });
+          store.append(declaration);
+          state.projectionStamp = 0;
+          const replayed = projection({ force: true });
+          if (!replayed || replayed.runId !== spec.runId) {
+            throw new LoopVizError("run_declaration_incomplete", `run "${spec.runId}" could not be replayed after declaration`);
+          }
+          return { created: true, projection: replayed };
+        } catch (error) {
+          state.runId = previous.runId;
+          state.role = previous.role;
+          state.projection = previous.projection;
+          state.projectionStamp = previous.projectionStamp;
+          if (error instanceof LoopVizError && CONTRACT_ERRORS.has(error.code)) throw error;
+          if (error instanceof LoopVizError && error.code === "run_declaration_incomplete") throw error;
+          throw new LoopVizError(
+            "run_declaration_incomplete",
+            `run "${spec.runId}" was admitted but its declaration did not persist and replay: ${error.message}`,
+          );
+        }
       });
       if (admission.acquired) return admission.value;
       const deadline = Date.now() + store.limits.lockWaitMs;

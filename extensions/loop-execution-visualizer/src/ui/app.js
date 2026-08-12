@@ -1059,6 +1059,9 @@ dom.composer.addEventListener("submit", async (event) => {
   dom.composerSend.disabled = true;
   setComposerNote("transient", "Sending…");
   const submittedRunId = state.run.runId;
+  const submittedBody = body;
+  const submittedRunIsSelected = () =>
+    state.view === "run" && state.run?.runId === submittedRunId;
   try {
     const selected = dom.composerTarget.selectedOptions[0];
     const result = await api("sendMessage", {
@@ -1072,14 +1075,16 @@ dom.composer.addEventListener("submit", async (event) => {
         text: `Queued (${result.state}). The exact text is delivered unchanged.`,
         tone: "ok",
       });
-      dom.composerBody.value = "";
+      if (submittedRunIsSelected() && dom.composerBody.value === submittedBody) {
+        dom.composerBody.value = "";
+      }
     } else {
       state.composerFeedback.set(submittedRunId, { text: result.reason, tone: "bad" });
     }
-    await loadRun(submittedRunId);
+    if (submittedRunIsSelected()) await loadRun(submittedRunId);
   } catch (error) {
     state.composerFeedback.set(submittedRunId, { text: error.message, tone: "bad" });
-    renderComposerTargets();
+    if (submittedRunIsSelected()) renderComposerTargets();
   } finally {
     if (state.run) renderComposerTargets();
   }
