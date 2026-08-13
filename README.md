@@ -124,7 +124,16 @@ install. Its first-release store is isolated at
 `plugin-data/<marketplace>/<plugin>/loop-execution-visualizer/v1`; only that
 namespace is read, watched, retained, or written. Pre-v1 sibling data from
 development builds is unsupported, remains untouched, and is never imported or
-discovered. Run its tests with the Node test runner:
+discovered.
+
+This release is a local, single-user MVP intended for normal engineering-loop
+and issue-resolution runs. It keeps at most 50 run histories and replays at most
+20,000 events per run; any replay windowing is shown as truncated rather than
+presented as complete. **Deferred hardening:** large-scale concurrent retention,
+power-loss recovery, legacy-store migration, and performance beyond those
+practical bounds are not release guarantees.
+
+Run its tests with the Node test runner:
 
 ```powershell
 node --test "tests/loop-execution-visualizer/*.test.mjs"
