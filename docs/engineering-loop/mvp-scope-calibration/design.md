@@ -7,85 +7,105 @@
 
 ## Summary and decisions
 
-Extend only `skills/engineering-loop/` so one concise calibration record becomes the scope
-authority for every phase. Requirements captures intended outcome, users/usage, maturity,
-included edge cases, and exclusions; design, critiques, and implementation must trace added
-work to that record or an existing applicable safeguard. Bounded work uses the smallest
-coherent, codebase-consistent solution rather than a new scoring framework. Material
-structural debt triggers one explicit refactor-first/current-structure decision; cosmetic
-debt does not.
+Only `skills/engineering-loop/` and focused validator contracts change. A closed PRD
+calibration record governs every phase; each item must trace to approved behavior or an
+evidence-backed necessary safeguard. Bounded work selects the smallest coherent solution.
+Material structural debt triggers the requested two-option decision, not a rubric or third
+mandatory option.
 
 ## Requirements and current path
 
 | Requirement | Design mechanism | Verification |
 |---|---|---|
-| G1, FR1-FR2, AC1, AC4, EF1, C2 | Add a `Scope calibration` table to `templates/prd.md`; `prompts/requirements.md` extracts supplied facts and returns one `NEEDS_INPUT` only for a missing/contradictory material field. Edge coverage is satisfied only by an explicit supplied answer or one focused confirmation. | Structural positive/negative tests; live requirements child with supplied outcome/users/maturity but omitted coverage asks only coverage and writes all fields. |
-| FR3, NG1, AC5, C1 | Add the calibration fields to the Phase 0 ledger and require each downstream launch/revision prompt to include the current PRD/design scope authority. Existing gates, lineage, envelopes, validation, and push rules remain unchanged. | Validator removes each handoff rule in fixtures; full smoke follows the existing phase sequence. |
-| G2, FR4-FR5, NG2, AC2 | `prompts/design.md`, `templates/design.md`, `prompts/critique.md`, and `prompts/implementation.md` require requirement/safeguard traceability and keep optional hardening, extensibility, polish, and speculative cases in exclusions. | Bounded-MVP probe rejects an untraced hardening item while retaining an applicable safeguard. |
-| G3, FR6-FR7, AC3, EF2 | Define one structural-decision protocol in `SKILL.md`, used by design and implementation prompts before scope expansion. Record the answer in design scope; repeat design critique/approval only when the choice materially changes design. | Live poor-structure probe observes the pause, selected option, and downstream adherence. |
+| G1, FR1-FR2, AC1, AC4, EF1, C2 | `templates/prd.md` adds outcome, users/usage, maturity, included edge cases, exclusions, and coverage source (`initial-ask` or `coordinator-answer`). `prompts/requirements.md` asks one missing/contradictory decision; repository inference cannot confirm coverage. | Explicit, omitted, contradictory, and inferred-only coverage probes. |
+| FR3, NG1, AC5, C1 | `SKILL.md` ledger and every launch/revision prompt carry the authoritative PRD/design commit and calibration snapshot while preserving all gates, lineage, envelopes, validation, and no-push rules. | Validator mutations plus an orchestrated phase run inspect ledger, prompts, commits, and ancestry. |
+| G2, FR4-FR5, NG2, AC2 | Design/template, critique, and implementation contracts require per-item behavior/safeguard traceability; speculative hardening remains optional/excluded. | Bounded-MVP run accepts necessary privacy/validation and rejects relabeled retry/extensibility work. |
+| G3, FR6-FR7, AC3, EF2 | One structural-decision protocol records evidence, material consequence, choice, scope effect, and source in design before downstream use. | Design-stage and late-discovery runs exercise both choices and downstream inheritance. |
 
-Current execution is prompt-driven: `SKILL.md` Phase 0 builds the requirements launch,
-`prompts/requirements.md` produces `templates/prd.md`, Phase 2 passes that artifact to
-`prompts/design.md`, three children use `prompts/critique.md`, and
-`prompts/implementation.md` consumes the approved result. The current contracts require
-focused questions and approved scope but do not define or enforce a shared calibration shape.
+Current flow is `SKILL.md` intake -> requirements prompt/template -> design prompt/template ->
+three critique children -> implementation prompt. It lacks a shared calibration shape, closed
+pause states, and branch-safe ownership for revisions.
 
 ## End-to-end flow and entry points
 
-1. On new-run or resumed-run intake, the coordinator preserves supplied calibration facts and
-   launches the requirements child.
-2. Requirements asks at most one missing decision at a time, then commits the complete scope
-   calibration and explicit exclusions. The coordinator rejects `COMPLETE` if fields are absent.
-3. Design proposes only traced behavior/safeguards. A material structural tradeoff returns
-   `NEEDS_INPUT`; the coordinator asks the user and resumes the same design session.
-4. Each critic evaluates completeness and proportionality; optional ideal-state work cannot be
-   promoted to required scope without requirement or safeguard evidence.
-5. Implementation follows the approved choice. A newly discovered material structural issue
-   pauses and routes through existing design recovery, critique, and approval before expansion.
+1. Intake extracts explicit facts. Coverage may be “minimal/default cases only,” but is never
+   inferred; an explicit initial answer causes no question.
+2. Requirements commits the complete calibration. The coordinator rejects `COMPLETE` when a
+   field or coverage provenance is absent.
+3. Design includes a scope-trace table and authoritative structural-decision section. A
+   structural question requires repository citations plus a stated consequence to approved
+   scope, risk, maintainability, or delivery. Cosmetic naming/style debt does not trigger;
+   coupling that forces unrelated changes or duplicated invariants does.
+4. Critics classify each recommendation as calibrated behavior, necessary safeguard, optional,
+   or structural decision. Optional ideal-state work cannot become a blocker.
+5. Implementation consumes the exact commits and choice. `current-structure` may introduce a
+   localized adapter/seam when that is the simplest way not to worsen coupling; it is not a
+   third user choice.
+6. Calibration-changing feedback updates PRD and design before downstream work resumes.
 
 | Entry point | Existing path | Required change |
 |---|---|---|
-| Skill invocation/resume | `SKILL.md` Phases 0-2 | Ledger calibration; requirements completion gate; do not re-ask supplied facts. |
-| Requirements launch/answer | `prompts/requirements.md`, `templates/prd.md` | Closed calibration fields, exclusions, one-question contract. |
-| Design launch/critique/refinement | Phase 2-4, design prompt/template | Proportionality trace and structural-decision state. |
-| Three critique launches | Phase 3, critique prompt | Classify recommendations as calibrated behavior, required safeguard, optional, or structural decision. |
-| Implementation launch/refinement/recovery | Phase 5-6, implementation prompt | Enforce approved depth and pause on late structural scope changes. |
+| Invocation/resume and requirements answers | `SKILL.md` Phases 0-2; requirements prompt/template | Extract/backfill calibration, provenance, ledger state, and completion gate. |
+| Design launch, structural answer, critique reconciliation, user refinement | Phases 2-4; design prompt/template | Scope trace, committed structural choice, and synchronized PRD/design revision. |
+| Three critique launches | Phase 3; critique prompt | Propagate commits/calibration and require scope-classified evidence. |
+| Implementation launch/refinement/late discovery | Phases 5-6; implementation prompt | Enforce commits/choice and route recoverable scope decisions to design. |
 
 ## Contracts and invariants
 
 | Component | Input | Responsibility | Output | Consumer |
 |---|---|---|---|---|
-| Requirements child | Initial ask plus known facts | Normalize, never duplicate answered questions, explicitly resolve edge coverage | PRD calibration: outcome, users/usage, maturity, included coverage, exclusions | Coordinator completion gate; all downstream phases |
-| Coordinator | PRD and child envelopes | Persist scope authority; relay exactly one material question; reject incomplete success | Complete phase prompt containing current authority | Design, critics, implementation |
-| Design child | Calibrated PRD and repository evidence | Select smallest coherent solution; identify only material structural tradeoffs | Traced design plus `not-applicable`, `refactor-first`, or `current-structure` decision | Critics and approval |
-| Critics | PRD, design, risk brief | Challenge gaps without turning optional ideal-state work into a blocker | Evidence-backed, scope-classified findings | Design reconciliation |
-| Implementation child | Approved PRD/design/choice | Implement traced work; preserve applicable correctness/security/privacy/compatibility safeguards | Validated commit or explicit decision pause | Approval and PR |
+| Requirements child | Ask plus explicit known facts | Normalize without repetition; explicitly resolve coverage | Committed calibration and provenance | Coordinator gate; design |
+| Design child | PRD commit and repository evidence | Produce smallest traced design; own structural decision | Committed design and, when authorized below, synchronized PRD | Critics, approval, implementation |
+| Critics | Exact PRD/design commits | Challenge completeness and proportionality | Evidence-backed, scope-classified findings | Design reconciliation |
+| Implementation child | Approved commits and choice | Implement only traced work; pause on late structural scope | Validated commit or recoverable pause | Approval/PR or design recovery |
 
-`NEEDS_INPUT` is nonterminal and carries the missing dimension, known facts, one question,
-and why it changes scope. Structural questions additionally carry repository evidence,
-user-visible tradeoff, and the two choices. No child may return success with inferred
-material calibration or silently refactor/work around poor structure. Existing artifacts
-resume without migration when equivalent facts are present; only genuinely missing material
-facts are requested. No issue-resolution or pr-review files, shared framework, schema
-versioning, concurrency mechanism, or rollout machinery is added.
+An item is in scope only when it cites a requirement/criterion, or names an existing safeguard,
+cites repository or authoritative platform evidence, and explains necessity for approved
+behavior. Unproven items remain optional.
+
+| Phase/reason | Ledger state | Resume/answer path | Allowed next status |
+|---|---|---|---|
+| Requirements: missing/contradictory calibration | `awaiting-calibration` | Answer to same requirements child | `NEEDS_INPUT`, `COMPLETE`, `BLOCKED` |
+| Design: material structural choice | `awaiting-structure-choice` | Answer to same design child | `NEEDS_INPUT`, `COMPLETE`, `BLOCKED` |
+| Implementation: late material structural choice | `awaiting-structure-choice` | Hold implementation; answer/evidence to existing design child; terminally supersede original implementation | Design recovery, then replacement implementation; original returns `SUPERSEDED` |
+
+Each `NEEDS_INPUT` carries reason, known facts, one question, and scope impact; structural
+payloads also carry citations, materiality rationale, and both choices. Every coordinator
+command gets the next global sequence; the child echoes it. Accept only the expected
+session/run/phase/latest sequence and allowed status; reject stale envelopes. `NEEDS_INPUT`
+is delivered once per sequence, requested terminal envelopes exactly once, and `BLOCKED` is
+reserved for unrecoverable conditions.
+
+Before Phase 2, requirements owns PRD updates. Afterward, the design session may update only
+`prd.md` and `design.md` together when feedback
+changes outcome, users/usage, maturity, coverage, or exclusions. In-calibration feedback stays
+in its current child. A calibration change commits both artifacts on the design lineage,
+reruns all critiques, repeats design approval, and replaces any implementation from that new
+commit; no merge, cherry-pick, duplicate session, or history rewrite. Late structural discovery
+always updates design and launches a replacement implementation; critiques rerun when contracts,
+architecture, behavior, scope, or verification materially changes, and scope/behavior changes
+require reapproval.
+
+Legacy runs reuse their writable session/lineage. Equivalent explicit prose is backfilled
+without questioning; missing facts receive one focused question, then committed backfill before
+downstream work. Missing coverage is never labeled legacy/inferred to bypass FR2/C2.
 
 ## Implementation map and risks
 
-| Vertical slice / risk | Upstream and changed areas | Downstream consumer | Mitigation |
-|---|---|---|---|
-| Calibrated intake | `SKILL.md`, requirements prompt, PRD template | Design launch | Closed fields plus coordinator completeness gate. |
-| Proportionate delivery | Design/critique/implementation prompts and design template | Approved implementation | Every included item cites behavior or safeguard; exclusions stay visible. |
-| Structural choice | Design and implementation recovery in `SKILL.md` and prompts | Critique/approval/implementation | One shared protocol; materiality threshold prevents routine debt questions. |
-| Contract drift | `tests/validate-skills.ps1` | Published plugin | Engineering-loop-only assertions and self-test mutations for each invariant. |
+| Vertical slice / risk | Changed areas | Mitigation |
+|---|---|---|
+| Calibration and revision ownership | `SKILL.md`, requirements prompt, PRD template | Closed fields/provenance; phase-owned backfill and synchronized commits. |
+| Proportionate downstream scope | Design/critique/implementation prompts and design template | Evidence-backed trace and visible exclusions. |
+| Pause/state drift | `SKILL.md` and child envelopes | Closed states, sequence acceptance, recovery, and supersession. |
+| Regression | `tests/validate-skills.ps1` | Small engineering-loop semantic checks/helpers and self-test mutations; no sibling-validator copy. |
 
 ## Verification
 
-| Proof | Exact path/state/object observed | Boundary or failure it catches |
+| Proof | Exact observation | Boundary caught |
 |---|---|---|
-| Structural | `pwsh -File tests/validate-skills.ps1 -RepoRoot .` and `-SelfTest` inspect all changed contracts and negative fixtures. | Missing handoff, field, classification, pause, or preserved gate. |
-| Actual app-session contract | Launch real requirements/design/critique/implementation child sessions from the edited prompt text; inspect delivered envelopes and committed PRD/design objects. | Prompt exists but is not consumed across phase boundaries. |
-| Runtime scenarios | Through app session tools, run: pre-answered MVP lacking coverage; bounded MVP challenged with speculative hardening; synthetic materially coupled code with each structural choice. Observe question count/text, artifact scope, finding classification, and implementation/recovery behavior. | Re-asking, omitted coverage, scope inflation, ignored choice, or dead fallback path. |
-| Local plugin routing smoke | `copilot --plugin-dir .` invokes engineering-loop from this worktree before the app-session scenarios. | Packaged skill not discoverable from the changed local plugin. |
+| Structural | Both validator modes cover calibration/completion, provenance, trace classes, structural record/propagation, ledger handoff, closed pauses, and preserved gates; each has a negative fixture. | Prompt or handoff contract removed. |
+| Primary runtime | Start the edited local coordinator via `copilot --plugin-dir <worktree>` in an app-capable session; inspect actual messages, SQL ledger states, artifact commits, child launch prompts, and ancestry through completion/recovery. If app session tools are unavailable, implementation is blocked rather than substituting prompt inspection. | Coordinator extraction/relay/acceptance or lineage bypassed. |
+| Scenario matrix | Run explicit and omitted coverage; inferred-only invalid completion; cosmetic versus coupled structure; both choices at design and late implementation; calibration-changing design and implementation refinements; legacy equivalent/missing coverage; evidence-backed safeguard versus speculative hardening. | Re-asking, scope inflation, stale acceptance, unsynchronized artifacts, ignored choice, or wrong child reuse. |
 
 ## Open design questions
 
