@@ -12,7 +12,8 @@ entry point, applicable test/runtime harnesses, and established error/security/c
 patterns. Trace each affected flow from entry action through downstream consumers to the
 observable result; reuse existing mechanisms before adding abstractions.
 
-Persist only `docs/engineering-loop/<task-slug>/design.md`. Do not implement production code
+Persist `docs/engineering-loop/<task-slug>/design.md`; only the calibration-change revision
+contract below also permits updating the paired `prd.md`. Do not implement production code
 or create a critique artifact. Use the supplied concise template and stay within the supplied
 word cap; only the coordinator may authorize the bounded complex-task exception recorded in
 the ledger. The design must:

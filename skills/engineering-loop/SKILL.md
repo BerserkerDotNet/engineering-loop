@@ -85,9 +85,12 @@ to resume. Never overwrite an unrelated run.
 
 For a legacy run, reuse its writable sessions and branch lineage. Equivalent explicit prose
 may be normalized into the calibration record without a question. Missing or contradictory
-facts require one focused question through the owning requirements session, and the backfill
-must be committed before downstream work. Neither `legacy` nor repository inference is valid
-coverage provenance.
+facts require one focused question through the phase owner: the requirements session before
+Phase 2, or the existing design session at and after Phase 2. Before Phase 2, commit the PRD
+backfill on the requirements lineage. At and after Phase 2, the design session updates and
+commits PRD and design together so the authoritative commit remains on the delivery lineage,
+then reruns downstream gates as required below. Neither `legacy` nor repository inference is
+valid coverage provenance.
 
 Generate a stable run ID as `<task-slug>-<UTC YYYYMMDD-HHmmss>`. Reuse it for every child
 prompt, ledger update, retry, and the final `PR_AUTHORIZED` marker.
@@ -136,8 +139,8 @@ handoff. At minimum preserve:
 - Project ID, repository, and original default branch
 - Closed calibration snapshot: intended outcome, users/usage, maturity, included edge cases,
   exclusions, and the `initial-ask` or `coordinator-answer` source for each field
-- Authoritative PRD commit, authoritative design commit, structural choice and source, and
-  the latest global sequence
+- Authoritative PRD commit, authoritative design commit, structural choice and source, the
+  latest global sequence, and the latest command sequence issued to each active child
 - Complexity dimension scores, total, override/rationale, artifact size caps, requirements
   and design model, selected critic trio, and implementation model
 - Current phase and blocker
@@ -187,11 +190,13 @@ coordinated child must:
 4. Never assume local chat, idle notification, or a produced-but-unsent envelope counts.
 
 Use one acceptance procedure for every child envelope: accept only when run ID, phase,
-sequence, expected child session, and status match the ledger's latest command and the
-allowed statuses for that state. Reject and ignore stale or mismatched envelopes; never
-advance or mutate authority from them. `NEEDS_INPUT` is delivered once per sequence, every
-requested terminal envelope exactly once, and `BLOCKED` is reserved for unrecoverable
-conditions.
+sequence, expected child session, and status match the latest command issued to that child
+and the allowed statuses for that child's state. The global sequence remains unique and
+monotonic, but parallel children retain independent outstanding command sequences; launching
+a later sibling does not stale an earlier sibling. Reject and ignore stale or mismatched
+envelopes; never advance or mutate authority from them. `NEEDS_INPUT` is delivered once per
+sequence, every requested terminal envelope exactly once, and `BLOCKED` is reserved for
+unrecoverable conditions.
 
 The closed nonterminal states are:
 
@@ -374,6 +379,13 @@ duplicates while preserving:
 - Evidence
 - Design sections affected
 - Recommended resolution
+- Scope class
+
+When critics disagree on scope class, resolve from the calibration and evidence rather than
+using a severity-like maximum: a finding is `calibrated-behavior` only with a cited
+requirement/criterion, `necessary-safeguard` only with the required evidence and necessity
+statement, `structural-decision` only with material repository evidence, and otherwise
+`optional`. Record the resolution rationale.
 
 Dismiss only findings that are demonstrably inapplicable; retain the rationale in the
 orchestration conversation.
@@ -478,7 +490,9 @@ If implementation discovers a late material structural issue, it returns one
 `awaiting-structure-choice`; do not treat this recoverable condition as `BLOCKED`. Relay
 evidence and the coordinator-obtained answer, with a new sequence, to the existing design
 session. Require the original implementation to return `SUPERSEDED` exactly once before
-starting a replacement.
+starting a replacement. The design session commits the choice, reruns all three critiques
+when the choice changes contracts, architecture, behavior, scope, or verification, and the
+coordinator repeats design approval before creating any replacement implementation.
 
 If implementation discovers that the approved design must materially change:
 

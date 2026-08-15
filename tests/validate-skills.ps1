@@ -1462,7 +1462,16 @@ function Test-EngineeringLoopContracts {
             Patterns = @(
                 'Closed calibration snapshot:', 'Authoritative PRD commit',
                 'authoritative design commit', 'latest global sequence',
+                'latest command sequence issued to each active child',
                 'Use one acceptance procedure for every child envelope'
+            )
+        }
+        'parallel-sequence-acceptance' = @{
+            Target = 'SKILL.md'
+            Patterns = @(
+                'match the latest command issued to that child',
+                'parallel children retain independent outstanding command sequences',
+                'launching a later sibling does not stale an earlier sibling'
             )
         }
         'closed-pause-states' = @{
@@ -1483,6 +1492,7 @@ function Test-EngineeringLoopContracts {
         'revision-ownership' = @{
             Target = 'design prompt'
             Patterns = @(
+                'only the calibration-change revision contract below also permits updating the paired `prd.md`',
                 'Before Phase 2 only the requirements session owns `prd.md`',
                 'update `prd.md` and `design.md` together in one new commit',
                 'Never update only one artifact'
@@ -1494,6 +1504,28 @@ function Test-EngineeringLoopContracts {
                 'For a legacy run, reuse this writable session and lineage',
                 'Never mark legacy or repository-inferred coverage as explicit',
                 'before any downstream phase'
+            )
+        }
+        'legacy-phase-owner' = @{
+            Target = 'SKILL.md'
+            Patterns = @(
+                'the requirements session before Phase 2, or the existing design session at and after Phase 2',
+                'design session updates and commits PRD and design together',
+                'authoritative commit remains on the delivery lineage'
+            )
+        }
+        'reconciliation-scope-class' = @{
+            Target = 'SKILL.md'
+            Patterns = @(
+                'Scope class', 'When critics disagree on scope class',
+                'resolve from the calibration and evidence rather than using a severity-like maximum'
+            )
+        }
+        'late-structure-reapproval' = @{
+            Target = 'SKILL.md'
+            Patterns = @(
+                'The design session commits the choice, reruns all three critiques',
+                'coordinator repeats design approval before creating any replacement implementation'
             )
         }
         'preserved-gates' = @{
@@ -1864,6 +1896,15 @@ function Get-NegativeFixtures {
             }
         },
         @{
+            Name  = 'engineering-loop-parallel-sequence-staled'
+            Apply = {
+                param([string] $Dir)
+                Edit-FixtureFile -Path (Join-Path $Dir 'skills/engineering-loop/SKILL.md') `
+                    -Find 'parallel children retain independent outstanding command sequences; launching a later sibling does not stale an earlier sibling' `
+                    -ReplaceWith 'only the latest global command sequence remains valid'
+            }
+        },
+        @{
             Name  = 'engineering-loop-open-pause-state'
             Apply = {
                 param([string] $Dir)
@@ -1891,6 +1932,33 @@ function Get-NegativeFixtures {
             }
         },
         @{
+            Name  = 'engineering-loop-design-forbids-prd-revision'
+            Apply = {
+                param([string] $Dir)
+                Edit-FixtureFile -Path (Join-Path $Dir 'skills/engineering-loop/prompts/design.md') `
+                    -Find 'only the calibration-change revision contract below also permits updating the paired `prd.md`' `
+                    -ReplaceWith 'never update any other artifact'
+            }
+        },
+        @{
+            Name  = 'engineering-loop-reconciliation-drops-scope-class'
+            Apply = {
+                param([string] $Dir)
+                Edit-FixtureFile -Path (Join-Path $Dir 'skills/engineering-loop/SKILL.md') `
+                    -Find 'resolve from the calibration and evidence rather than using a severity-like maximum' `
+                    -ReplaceWith 'choose any critic classification'
+            }
+        },
+        @{
+            Name  = 'engineering-loop-late-structure-skips-reapproval'
+            Apply = {
+                param([string] $Dir)
+                Edit-FixtureFile -Path (Join-Path $Dir 'skills/engineering-loop/SKILL.md') `
+                    -Find 'coordinator repeats design approval before creating any replacement implementation' `
+                    -ReplaceWith 'start replacement implementation immediately'
+            }
+        },
+        @{
             Name  = 'engineering-loop-optional-blocker'
             Apply = {
                 param([string] $Dir)
@@ -1906,6 +1974,15 @@ function Get-NegativeFixtures {
                 Edit-FixtureFile -Path (Join-Path $Dir 'skills/engineering-loop/prompts/requirements.md') `
                     -Find 'Never mark legacy or repository-inferred coverage as explicit.' `
                     -ReplaceWith 'Legacy runs may infer coverage.'
+            }
+        },
+        @{
+            Name  = 'engineering-loop-legacy-wrong-phase-owner'
+            Apply = {
+                param([string] $Dir)
+                Edit-FixtureFile -Path (Join-Path $Dir 'skills/engineering-loop/SKILL.md') `
+                    -Find 'the requirements session before Phase 2, or the existing design session at and after Phase 2' `
+                    -ReplaceWith 'the requirements session at every phase'
             }
         },
         @{
