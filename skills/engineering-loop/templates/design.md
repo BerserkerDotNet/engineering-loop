@@ -12,12 +12,15 @@ List only decisions needed to implement or review this task.
 
 ## Requirements and current path
 
-| Requirement | Design mechanism | Verification |
-|---|---|---|
-| FR1 / AC1 | <Mechanism> | <Test/runtime evidence> |
+| Included item | Scope class | Requirement or safeguard evidence | Necessity for approved behavior | Design mechanism | Verification |
+|---|---|---|---|---|---|
+| <Behavior or safeguard> | `calibrated-behavior` or `necessary-safeguard` | <FR/AC, or named existing safeguard plus repository/authoritative platform citation> | <Why this is required for the calibrated outcome> | <Mechanism> | <Test/runtime evidence> |
 
 Describe only the current runtime path and reusable constraints needed to understand the
 change. Cite paths/symbols rather than restating code.
+
+Anything without a requirement/criterion or evidence-backed necessary-safeguard trace is
+`optional` and remains excluded unless the user changes the calibration.
 
 ## End-to-end flow and entry points
 
@@ -40,6 +43,20 @@ Define changed data/API/state contracts, ownership, validation, versioning, down
 and shared mechanisms. Name failure/recovery, compatibility/migration/rollback,
 security/privacy, concurrency/lifecycle, and observability decisions only where applicable.
 Do not use silent success-shaped fallbacks.
+
+## Structural decision
+
+| Field | Value |
+|---|---|
+| Evidence | `none`, or repository paths/symbols showing the material issue |
+| Material consequence | `none`, or the concrete effect on approved scope, risk, maintainability, or delivery |
+| Choice | `not-applicable`, `refactor-first`, or `current-structure` |
+| Scope effect | <Work added, constrained, or deliberately avoided> |
+| Source | `repository-evidence` plus `coordinator-answer` when a choice was required |
+
+Cosmetic naming, formatting, or local style debt is not material. Coupling that forces
+unrelated changes or duplicates an invariant is material. `current-structure` may use a
+localized seam or adapter when that is the smallest elegant way not to worsen coupling.
 
 ## Implementation map and risks
 

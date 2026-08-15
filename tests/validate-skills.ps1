@@ -1387,6 +1387,152 @@ function Test-ReviewSkill {
     Test-ReviewPromptContracts -Root $Root -Violations $Violations
 }
 
+function Test-EngineeringLoopContracts {
+    param([string] $Root, [System.Collections.Generic.List[string]] $Violations)
+
+    $targets = [ordered]@{
+        'SKILL.md'                 = 'skills/engineering-loop/SKILL.md'
+        'requirements prompt'      = 'skills/engineering-loop/prompts/requirements.md'
+        'design prompt'            = 'skills/engineering-loop/prompts/design.md'
+        'critique prompt'          = 'skills/engineering-loop/prompts/critique.md'
+        'implementation prompt'    = 'skills/engineering-loop/prompts/implementation.md'
+        'PRD template'             = 'skills/engineering-loop/templates/prd.md'
+        'design template'          = 'skills/engineering-loop/templates/design.md'
+    }
+    $text = @{}
+    foreach ($label in $targets.Keys) {
+        $path = Join-Path $Root $targets[$label]
+        if (Test-Path -LiteralPath $path -PathType Leaf) {
+            $text[$label] = Get-NormalizedText -Path $path
+        }
+    }
+    if ($text.Count -ne $targets.Count) { return }
+
+    $required = [ordered]@{
+        'calibration-fields' = @{
+            Target = 'PRD template'
+            Patterns = @(
+                '## Calibration record', 'Intended outcome', 'Users and usage', 'Maturity',
+                'Included edge cases', 'Exclusions'
+            )
+        }
+        'coverage-provenance' = @{
+            Target = 'requirements prompt'
+            Patterns = @(
+                '`initial-ask` and `coordinator-answer`',
+                'Repository inference may propose a value or expose a contradiction, but cannot confirm',
+                '`minimal/default cases only` is valid',
+                'Do not re-ask an explicit fact'
+            )
+        }
+        'focused-input-contract' = @{
+            Target = 'requirements prompt'
+            Patterns = @(
+                'only one focused missing or contradictory material product question at a time',
+                'REASON:', 'KNOWN_FACTS:', 'SCOPE_IMPACT:'
+            )
+        }
+        'scope-trace' = @{
+            Target = 'design template'
+            Patterns = @(
+                'Scope class', '`calibrated-behavior` or `necessary-safeguard`',
+                'named existing safeguard plus repository/authoritative platform citation',
+                'Anything without a requirement/criterion or evidence-backed necessary-safeguard trace is `optional`'
+            )
+        }
+        'structural-record' = @{
+            Target = 'design template'
+            Patterns = @(
+                '## Structural decision', 'Material consequence',
+                '`not-applicable`, `refactor-first`, or `current-structure`',
+                'Coupling that forces unrelated changes or duplicates an invariant is material',
+                'localized seam or adapter'
+            )
+        }
+        'critique-classification' = @{
+            Target = 'critique prompt'
+            Patterns = @(
+                'Scope classification:', '`calibrated-behavior`, `necessary-safeguard`, `optional`, or',
+                'An `optional` ideal-state improvement cannot be a blocker',
+                'must name the existing safeguard'
+            )
+        }
+        'ledger-authority' = @{
+            Target = 'SKILL.md'
+            Patterns = @(
+                'Closed calibration snapshot:', 'Authoritative PRD commit',
+                'authoritative design commit', 'latest global sequence',
+                'Use one acceptance procedure for every child envelope'
+            )
+        }
+        'closed-pause-states' = @{
+            Target = 'SKILL.md'
+            Patterns = @(
+                '`awaiting-calibration`', '`awaiting-structure-choice`',
+                'original returns `SUPERSEDED`', 'BLOCKED` is reserved for unrecoverable'
+            )
+        }
+        'late-structure-recovery' = @{
+            Target = 'implementation prompt'
+            Patterns = @(
+                'STATUS: NEEDS_INPUT', 'late material structural scope decision',
+                'existing design session', 'return `STATUS: SUPERSEDED` exactly once',
+                'no commit, push, merge, cherry-pick, rebase, or patch transfer'
+            )
+        }
+        'revision-ownership' = @{
+            Target = 'design prompt'
+            Patterns = @(
+                'Before Phase 2 only the requirements session owns `prd.md`',
+                'update `prd.md` and `design.md` together in one new commit',
+                'Never update only one artifact'
+            )
+        }
+        'legacy-backfill' = @{
+            Target = 'requirements prompt'
+            Patterns = @(
+                'For a legacy run, reuse this writable session and lineage',
+                'Never mark legacy or repository-inferred coverage as explicit',
+                'before any downstream phase'
+            )
+        }
+        'preserved-gates' = @{
+            Target = 'SKILL.md'
+            Patterns = @(
+                'wait for all three', 'Do not start implementation until the user approves the design',
+                'PUSH_NOT_AUTHORIZED', 'Never infer approval from autonomy settings',
+                'The same implementation session that wrote the code pushes and creates the PR'
+            )
+        }
+    }
+
+    foreach ($check in $required.Keys) {
+        $contract = $required[$check]
+        $targetText = $text[$contract.Target]
+        foreach ($pattern in $contract.Patterns) {
+            if (-not (Test-Contains $targetText ([regex]::Escape($pattern)))) {
+                Add-Violation $Violations "engineering-loop-$check" "$($contract.Target) is missing '$pattern'."
+            }
+        }
+    }
+
+    foreach ($target in @('design prompt', 'critique prompt', 'implementation prompt')) {
+        foreach ($class in @('calibrated-behavior', 'necessary-safeguard', 'optional')) {
+            if (-not (Test-Contains $text[$target] ([regex]::Escape($class)))) {
+                Add-Violation $Violations 'engineering-loop-trace-propagation' "$target does not propagate scope class '$class'."
+            }
+        }
+    }
+
+    foreach ($target in @('design prompt', 'implementation prompt', 'SKILL.md')) {
+        foreach ($choice in @('refactor-first', 'current-structure')) {
+            if (-not (Test-Contains $text[$target] ([regex]::Escape($choice)))) {
+                Add-Violation $Violations 'engineering-loop-structure-propagation' "$target does not propagate structural choice '$choice'."
+            }
+        }
+    }
+}
+
 # ---------------------------------------------------------------------------
 # Entry points
 # ---------------------------------------------------------------------------
@@ -1415,6 +1561,7 @@ function Get-SkillViolations {
         Test-EvidenceFloor -SkillText $skillText -Violations $violations
     }
 
+    Test-EngineeringLoopContracts -Root $Root -Violations $violations
     Test-SkillResourceReferences -Root $Root -Violations $violations
     Test-SafetyDrift -Root $Root -Violations $violations
     Test-PhaseContracts -Root $Root -Violations $violations
@@ -1669,6 +1816,96 @@ function Get-NegativeFixtures {
                 Edit-FixtureFile -Path (Join-Path $Dir 'skills/engineering-loop/SKILL.md') `
                     -Find 'Critique sessions are read-only. They never edit, commit, push, or create PRs.' `
                     -ReplaceWith 'Critique sessions may edit files.'
+            }
+        },
+        @{
+            Name  = 'engineering-loop-missing-calibration-field'
+            Apply = {
+                param([string] $Dir)
+                Edit-FixtureFile -Path (Join-Path $Dir 'skills/engineering-loop/templates/prd.md') `
+                    -Find '| Included edge cases | <Explicit cases, including `minimal/default cases only` when selected> | `initial-ask` or `coordinator-answer` |' `
+                    -ReplaceWith '| General coverage | <Cases> | `initial-ask` |'
+            }
+        },
+        @{
+            Name  = 'engineering-loop-inferred-coverage'
+            Apply = {
+                param([string] $Dir)
+                Edit-FixtureFile -Path (Join-Path $Dir 'skills/engineering-loop/prompts/requirements.md') `
+                    -Find 'Repository inference may propose a value or expose a contradiction, but cannot confirm a field or satisfy edge-case coverage.' `
+                    -ReplaceWith 'Repository inference may confirm default coverage.'
+            }
+        },
+        @{
+            Name  = 'engineering-loop-untraced-scope'
+            Apply = {
+                param([string] $Dir)
+                Edit-FixtureFile -Path (Join-Path $Dir 'skills/engineering-loop/templates/design.md') `
+                    -Find 'Anything without a requirement/criterion or evidence-backed necessary-safeguard trace is `optional` and remains excluded unless the user changes the calibration.' `
+                    -ReplaceWith 'Best practices may be included without a trace.'
+            }
+        },
+        @{
+            Name  = 'engineering-loop-missing-structural-record'
+            Apply = {
+                param([string] $Dir)
+                Edit-FixtureFile -Path (Join-Path $Dir 'skills/engineering-loop/templates/design.md') `
+                    -Find '## Structural decision' `
+                    -ReplaceWith '## Code quality notes'
+            }
+        },
+        @{
+            Name  = 'engineering-loop-ledger-loses-authority'
+            Apply = {
+                param([string] $Dir)
+                Edit-FixtureFile -Path (Join-Path $Dir 'skills/engineering-loop/SKILL.md') `
+                    -Find 'Closed calibration snapshot: intended outcome, users/usage, maturity, included edge cases, exclusions, and the `initial-ask` or `coordinator-answer` source for each field' `
+                    -ReplaceWith 'A short requirements summary'
+            }
+        },
+        @{
+            Name  = 'engineering-loop-open-pause-state'
+            Apply = {
+                param([string] $Dir)
+                Edit-FixtureFile -Path (Join-Path $Dir 'skills/engineering-loop/SKILL.md') `
+                    -Find '`awaiting-calibration`' `
+                    -ReplaceWith '`waiting-for-something`'
+            }
+        },
+        @{
+            Name  = 'engineering-loop-late-structure-continues'
+            Apply = {
+                param([string] $Dir)
+                Edit-FixtureFile -Path (Join-Path $Dir 'skills/engineering-loop/prompts/implementation.md') `
+                    -Find 'return `STATUS: SUPERSEDED` exactly once' `
+                    -ReplaceWith 'continue implementation after design advice'
+            }
+        },
+        @{
+            Name  = 'engineering-loop-split-calibration-revision'
+            Apply = {
+                param([string] $Dir)
+                Edit-FixtureFile -Path (Join-Path $Dir 'skills/engineering-loop/prompts/design.md') `
+                    -Find 'update `prd.md` and `design.md` together in one new commit' `
+                    -ReplaceWith 'update either artifact as convenient'
+            }
+        },
+        @{
+            Name  = 'engineering-loop-optional-blocker'
+            Apply = {
+                param([string] $Dir)
+                Edit-FixtureFile -Path (Join-Path $Dir 'skills/engineering-loop/prompts/critique.md') `
+                    -Find 'An `optional` ideal-state improvement cannot be a blocker.' `
+                    -ReplaceWith 'An optional ideal-state improvement may block approval.'
+            }
+        },
+        @{
+            Name  = 'engineering-loop-legacy-inference-bypass'
+            Apply = {
+                param([string] $Dir)
+                Edit-FixtureFile -Path (Join-Path $Dir 'skills/engineering-loop/prompts/requirements.md') `
+                    -Find 'Never mark legacy or repository-inferred coverage as explicit.' `
+                    -ReplaceWith 'Legacy runs may infer coverage.'
             }
         },
         @{
