@@ -43,10 +43,11 @@ non-goals/compatibility/failures, free of unresolved ambiguity, and within the s
 word cap. Only the coordinator may authorize the bounded complex-task exception recorded in
 the ledger. `Open questions` must be exactly `None`.
 
-For a legacy run, reuse this writable session and lineage. Backfill equivalent explicit prose
-without asking; if any fact is missing, ask one focused question. Never mark legacy or
-repository-inferred coverage as explicit. Commit the backfilled calibration before any
-downstream phase.
+For a legacy run, reuse this writable session and lineage. Backfill equivalent explicit
+prose without asking only when session history traces it to an original user message or
+coordinator-relayed user answer; otherwise treat it as missing and ask one focused question.
+Never mark legacy artifact prose or repository-inferred coverage as explicit. Commit the
+backfilled calibration before any downstream phase.
 
 Before completion, verify every calibration field has an allowed source, every
 goal/requirement maps to acceptance criteria, included edge cases and exclusions are

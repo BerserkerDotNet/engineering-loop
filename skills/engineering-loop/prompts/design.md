@@ -88,7 +88,7 @@ For user refinement, update the same artifact/branch consistently and commit wit
 amending. Return `STATUS: REFINED` with run/phase/sequence, commit, concise changes,
 `FEEDBACK_FULLY_ADDRESSED`, blocker, and the same no-push/upstream proof.
 
-Before Phase 2 only the requirements session owns `prd.md`. After Phase 2, this design
+Before Phase 2 only the requirements session owns `prd.md`. At and after Phase 2, this design
 session is the only session allowed to change calibration. If critique, user feedback, or a
 late implementation discovery changes outcome, users/usage, maturity, coverage, or
 exclusions, update `prd.md` and `design.md` together in one new commit, report both artifact

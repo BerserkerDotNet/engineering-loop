@@ -1429,6 +1429,7 @@ function Test-EngineeringLoopContracts {
             Target = 'requirements prompt'
             Patterns = @(
                 'only one focused missing or contradictory material product question at a time',
+                'Questions may change scope, behavior, acceptance',
                 'REASON:', 'KNOWN_FACTS:', 'SCOPE_IMPACT:'
             )
         }
@@ -1493,7 +1494,7 @@ function Test-EngineeringLoopContracts {
             Target = 'design prompt'
             Patterns = @(
                 'only the calibration-change revision contract below also permits updating the paired `prd.md`',
-                'Before Phase 2 only the requirements session owns `prd.md`',
+                'Before Phase 2 only the requirements session owns `prd.md`. At and after Phase 2',
                 'update `prd.md` and `design.md` together in one new commit',
                 'Never update only one artifact'
             )
@@ -1502,13 +1503,15 @@ function Test-EngineeringLoopContracts {
             Target = 'requirements prompt'
             Patterns = @(
                 'For a legacy run, reuse this writable session and lineage',
-                'Never mark legacy or repository-inferred coverage as explicit',
+                'Never mark legacy artifact prose or repository-inferred coverage as explicit',
                 'before any downstream phase'
             )
         }
         'legacy-phase-owner' = @{
             Target = 'SKILL.md'
             Patterns = @(
+                'session history traces each value to an original user message',
+                'artifact prose by itself',
                 'the requirements session before Phase 2, or the existing design session at and after Phase 2',
                 'design session updates and commits PRD and design together',
                 'authoritative commit remains on the delivery lineage'
@@ -1534,7 +1537,9 @@ function Test-EngineeringLoopContracts {
             Target = 'SKILL.md'
             Patterns = @(
                 'The design session commits the choice, reruns all three critiques',
-                'coordinator repeats design approval before creating any replacement implementation'
+                'coordinator repeats design approval before creating any replacement implementation',
+                'accept that terminal envelope, and record it as superseded',
+                'Only then create a replacement implementation session'
             )
         }
         'preserved-gates' = @{
@@ -1542,7 +1547,8 @@ function Test-EngineeringLoopContracts {
             Patterns = @(
                 'wait for all three', 'Do not start implementation until the user approves the design',
                 'PUSH_NOT_AUTHORIZED', 'Never infer approval from autonomy settings',
-                'The same implementation session that wrote the code pushes and creates the PR'
+                'The same implementation session that wrote the code pushes and creates the PR',
+                'Only after `Approved`, send the same implementation session'
             )
         }
     }
@@ -1878,6 +1884,15 @@ function Get-NegativeFixtures {
             }
         },
         @{
+            Name  = 'engineering-loop-multiple-calibration-questions'
+            Apply = {
+                param([string] $Dir)
+                Edit-FixtureFile -Path (Join-Path $Dir 'skills/engineering-loop/prompts/requirements.md') `
+                    -Find 'Ask only one focused missing or contradictory material product question at a time.' `
+                    -ReplaceWith 'Ask every missing calibration question together.'
+            }
+        },
+        @{
             Name  = 'engineering-loop-untraced-scope'
             Apply = {
                 param([string] $Dir)
@@ -1977,6 +1992,15 @@ function Get-NegativeFixtures {
             }
         },
         @{
+            Name  = 'engineering-loop-replacement-before-supersession'
+            Apply = {
+                param([string] $Dir)
+                Edit-FixtureFile -Path (Join-Path $Dir 'skills/engineering-loop/SKILL.md') `
+                    -Find 'Only then create a replacement implementation session' `
+                    -ReplaceWith 'Create a replacement implementation session before the previous session stops'
+            }
+        },
+        @{
             Name  = 'engineering-loop-optional-blocker'
             Apply = {
                 param([string] $Dir)
@@ -1990,7 +2014,7 @@ function Get-NegativeFixtures {
             Apply = {
                 param([string] $Dir)
                 Edit-FixtureFile -Path (Join-Path $Dir 'skills/engineering-loop/prompts/requirements.md') `
-                    -Find 'Never mark legacy or repository-inferred coverage as explicit.' `
+                    -Find 'Never mark legacy artifact prose or repository-inferred coverage as explicit.' `
                     -ReplaceWith 'Legacy runs may infer coverage.'
             }
         },
@@ -2001,6 +2025,24 @@ function Get-NegativeFixtures {
                 Edit-FixtureFile -Path (Join-Path $Dir 'skills/engineering-loop/SKILL.md') `
                     -Find 'the requirements session before Phase 2, or the existing design session at and after Phase 2' `
                     -ReplaceWith 'the requirements session at every phase'
+            }
+        },
+        @{
+            Name  = 'engineering-loop-legacy-artifact-provenance'
+            Apply = {
+                param([string] $Dir)
+                Edit-FixtureFile -Path (Join-Path $Dir 'skills/engineering-loop/SKILL.md') `
+                    -Find 'session history traces each value to an original user message' `
+                    -ReplaceWith 'artifact prose contains a value'
+            }
+        },
+        @{
+            Name  = 'engineering-loop-push-before-implementation-approval'
+            Apply = {
+                param([string] $Dir)
+                Edit-FixtureFile -Path (Join-Path $Dir 'skills/engineering-loop/SKILL.md') `
+                    -Find 'Only after `Approved`, send the same implementation session a message containing:' `
+                    -ReplaceWith 'Before implementation approval, send the implementation session a message containing:'
             }
         },
         @{

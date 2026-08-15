@@ -84,13 +84,15 @@ If that directory already exists, inspect it and existing sessions before decidi
 to resume. Never overwrite an unrelated run.
 
 For a legacy run, reuse its writable sessions and branch lineage. Equivalent explicit prose
-may be normalized into the calibration record without a question. Missing or contradictory
-facts require one focused question through the phase owner: the requirements session before
-Phase 2, or the existing design session at and after Phase 2. Before Phase 2, commit the PRD
-backfill on the requirements lineage. At and after Phase 2, the design session updates and
-commits PRD and design together so the authoritative commit remains on the delivery lineage,
-then reruns downstream gates as required below. Neither `legacy` nor repository inference is
-valid coverage provenance.
+may be normalized without a question only when session history traces each value to an
+original user message (`initial-ask`) or coordinator-relayed user answer
+(`coordinator-answer`). Untraceable, missing, or contradictory facts require one focused
+question through the phase owner: the requirements session before Phase 2, or the existing
+design session at and after Phase 2. Before Phase 2, commit the PRD backfill on the
+requirements lineage. At and after Phase 2, the design session updates and commits PRD and
+design together so the authoritative commit remains on the delivery lineage, then reruns
+downstream gates as required below. Neither `legacy`, artifact prose by itself, nor repository
+inference is valid coverage provenance.
 
 Generate a stable run ID as `<task-slug>-<UTC YYYYMMDD-HHmmss>`. Reuse it for every child
 prompt, ledger update, retry, and the final `PR_AUTHORIZED` marker.
@@ -509,8 +511,10 @@ If implementation discovers that the approved design must materially change:
    three critiques when contracts, architecture, product behavior, scope, security,
    compatibility, or verification strategy changed materially.
 3. Repeat design approval.
-4. Create a replacement implementation session from the newly approved design branch.
-5. Record the previous implementation session as superseded. Do not copy commits through an
+4. Command the previous implementation session to return `SUPERSEDED`, accept that terminal
+   envelope, and record it as superseded.
+5. Only then create a replacement implementation session from the newly approved design
+   branch. Do not copy commits through an
    implicit cherry-pick, merge, rebase, or patch.
 
 The replacement session becomes the sole final implementation/PR session. This recovery is
