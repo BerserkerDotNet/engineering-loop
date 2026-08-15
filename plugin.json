@@ -1,6 +1,6 @@
 {
   "name": "engineering-loop",
-  "description": "Coordinated engineering workflows: engineering-loop takes a new capability from requirements, design, independent critique, and approval to a pull request, issue-resolution takes a reproducible defect from evidence to root cause, an approved fix plan, and a runtime-validated pull request, and pr-review reviews a GitHub or Azure DevOps pull request across security, design, canonical practice, and performance, then posts only the exact comment set the user approved.",
+  "description": "Coordinated engineering workflows: engineering-loop takes a new capability from requirements, design, independent critique, and approval to a pull request, issue-resolution takes a reproducible defect from evidence to root cause, an approved fix plan, and a runtime-validated pull request, and pr-review reviews a GitHub or Azure DevOps pull request across security, design, canonical practice, and performance, then posts only the exact comment set the user approved. Engineering-loop and issue-resolution are visualized live as multi-session pipelines.",
   "version": "1.2.0",
   "author": {
     "name": "BerserkerDotNet",
@@ -17,6 +17,8 @@
     "debugging",
     "root-cause",
     "bug-fix",
+    "visualization",
+    "multi-session",
     "pr-review",
     "code-review",
     "pull-request",

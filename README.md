@@ -118,12 +118,58 @@ skills/pr-review/
   SKILL.md
   prompts/
   reference/
+extensions/loop-execution-visualizer/
+  extension.mjs
+  REPORTING.md
+  contracts/v1/
+  src/
 tests/validate-skills.ps1
+tests/loop-execution-visualizer/
 docs/engineering-loop/<task-slug>/
 ```
 
-`plugin.json` publishes the whole `skills/` directory, so every skill directory
-is loaded by the same plugin.
+`plugin.json` publishes the whole `skills/` directory, so all three skill directories
+are loaded by the same plugin. Copilot CLI loads `extensions/<name>/extension.mjs`
+from the same plugin by convention, so the visualizer ships and updates with the
+skills and is never installed separately.
+
+## Loop execution visualizer
+
+`extensions/loop-execution-visualizer/` is a Copilot CLI extension that renders a
+live multi-session run as a horizontal pipeline: a pinned orchestrator lane above
+the child stage graph, with health, elapsed time, cost, incidents and a
+targeted-message composer.
+
+It runs in every session the plugin is loaded into and needs no configuration.
+Engineering-loop and issue-resolution report to it through `loopviz_*` tools at
+the entry points in their `## Loop visibility` sections. If the extension is
+absent or disabled the skills detect that once and run exactly as they did
+before it existed.
+
+- Shared contract for skill authors:
+  [`extensions/loop-execution-visualizer/REPORTING.md`](extensions/loop-execution-visualizer/REPORTING.md)
+- Normative schemas and coverage:
+  [`extensions/loop-execution-visualizer/contracts/v1/`](extensions/loop-execution-visualizer/contracts/v1/)
+
+The extension uses Node built-ins only (Node 22+) and has no dependencies to
+install. Its first-release store is isolated at
+`plugin-data/<marketplace>/<plugin>/loop-execution-visualizer/v1`; only that
+namespace is read, watched, retained, or written. Pre-v1 sibling data from
+development builds is unsupported, remains untouched, and is never imported or
+discovered.
+
+This release is a local, single-user MVP intended for normal engineering-loop
+and issue-resolution runs. It keeps at most 50 run histories and replays at most
+20,000 events per run; any replay windowing is shown as truncated rather than
+presented as complete. **Deferred hardening:** large-scale concurrent retention,
+power-loss recovery, legacy-store migration, and performance beyond those
+practical bounds are not release guarantees.
+
+Run its tests with the Node test runner:
+
+```powershell
+node --test "tests/loop-execution-visualizer/*.test.mjs"
+```
 
 ## Validate before a release
 
@@ -137,11 +183,14 @@ ordered Azure DevOps probe, isolated-workspace revision checks, app-diff citatio
 approval binding, lease fencing, journal creation, outcome classification, the review-decision
 predicate, prohibited actions, that each skill is
 self-contained and never references another, and that every skill states the
-shared safety baseline in its own `SKILL.md`.
+shared safety baseline in its own `SKILL.md`. It also verifies that every
+loop-visibility entry point in `contracts/v1/coverage.json` is wired in the skill
+it belongs to with the required tool.
 
 ```powershell
 pwsh -File tests/validate-skills.ps1 -RepoRoot .
 pwsh -File tests/validate-skills.ps1 -RepoRoot . -SelfTest
+node --test "tests/loop-execution-visualizer/*.test.mjs"
 ```
 
 It exits `0` when every contract holds and `1` with a list of violations

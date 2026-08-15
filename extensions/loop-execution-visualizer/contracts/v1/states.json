@@ -1,0 +1,744 @@
+{
+  "$id": "loop-execution-visualizer/v1/states",
+  "version": "1",
+  "description": "Normative state vocabularies and transitions. Every state machine in the visualizer is defined here once; per-skill duplication of these rules is forbidden and is rejected by the coverage validator.",
+  "terminalEnvelopeStates": {
+    "COMPLETE": { "node": "succeeded", "attempt": "succeeded" },
+    "CRITIQUE_COMPLETE": { "node": "succeeded", "attempt": "succeeded" },
+    "CRITIQUE_ADDRESSED": { "node": "succeeded", "attempt": "succeeded" },
+    "REFINED": { "node": "succeeded", "attempt": "succeeded" },
+    "IMPLEMENTATION_VALIDATED": { "node": "succeeded", "attempt": "succeeded" },
+    "PR_CREATED": { "node": "succeeded", "attempt": "succeeded" },
+    "RETRO_COMPLETE": { "node": "succeeded", "attempt": "succeeded" },
+    "BLOCKED": { "node": "failed", "attempt": "failed" }
+  },
+  "run": {
+    "states": [
+      "declared",
+      "running",
+      "blocked",
+      "completed",
+      "failed",
+      "canceled"
+    ],
+    "initial": "declared",
+    "terminal": [
+      "completed",
+      "failed",
+      "canceled"
+    ],
+    "callerDirected": true,
+    "transitions": {
+      "declared": [
+        "running",
+        "blocked",
+        "completed",
+        "failed",
+        "canceled"
+      ],
+      "running": [
+        "running",
+        "blocked",
+        "completed",
+        "failed",
+        "canceled"
+      ],
+      "blocked": [
+        "running",
+        "blocked",
+        "completed",
+        "failed",
+        "canceled"
+      ],
+      "completed": [],
+      "failed": [],
+      "canceled": []
+    },
+    "authority": {
+      "terminalRequires": "orchestrator_control",
+      "note": "Only an orchestrator-authoritative run.outcome may move a run to a terminal state. Host idle, end-of-turn, session end and heartbeat loss must never do so. Every non-terminal state can reach every terminal state, so an authoritative outcome is never dropped for want of a transition."
+    }
+  },
+  "node": {
+    "states": [
+      "pending",
+      "creating_queued",
+      "ready",
+      "running",
+      "waiting_input",
+      "waiting_approval",
+      "blocked",
+      "succeeded",
+      "failed",
+      "skipped",
+      "canceled",
+      "replaced"
+    ],
+    "initial": "pending",
+    "terminal": [
+      "replaced"
+    ],
+    "settled": [
+      "succeeded",
+      "failed",
+      "skipped",
+      "canceled",
+      "replaced"
+    ],
+    "waiting": [
+      "waiting_input",
+      "waiting_approval"
+    ],
+    "callerDirected": true,
+    "transitions": {
+      "pending": [
+        "creating_queued",
+        "ready",
+        "running",
+        "waiting_input",
+        "waiting_approval",
+        "blocked",
+        "skipped",
+        "canceled",
+        "replaced"
+      ],
+      "creating_queued": [
+        "ready",
+        "running",
+        "waiting_input",
+        "waiting_approval",
+        "blocked",
+        "failed",
+        "skipped",
+        "canceled",
+        "replaced"
+      ],
+      "ready": [
+        "creating_queued",
+        "running",
+        "waiting_input",
+        "waiting_approval",
+        "blocked",
+        "skipped",
+        "canceled",
+        "replaced"
+      ],
+      "running": [
+        "running",
+        "waiting_input",
+        "waiting_approval",
+        "blocked",
+        "succeeded",
+        "failed",
+        "canceled",
+        "replaced"
+      ],
+      "waiting_input": [
+        "running",
+        "waiting_input",
+        "waiting_approval",
+        "blocked",
+        "succeeded",
+        "failed",
+        "canceled",
+        "replaced"
+      ],
+      "waiting_approval": [
+        "running",
+        "waiting_input",
+        "waiting_approval",
+        "blocked",
+        "succeeded",
+        "failed",
+        "canceled",
+        "replaced"
+      ],
+      "blocked": [
+        "ready",
+        "running",
+        "waiting_input",
+        "waiting_approval",
+        "succeeded",
+        "failed",
+        "canceled",
+        "replaced"
+      ],
+      "succeeded": [
+        "running",
+        "waiting_input",
+        "waiting_approval",
+        "replaced"
+      ],
+      "failed": [
+        "running",
+        "waiting_input",
+        "waiting_approval",
+        "succeeded",
+        "replaced"
+      ],
+      "skipped": [
+        "ready",
+        "running",
+        "replaced"
+      ],
+      "canceled": [
+        "running",
+        "replaced"
+      ],
+      "replaced": []
+    },
+    "labels": {
+      "pending": "Not started",
+      "creating_queued": "Creating/queued",
+      "ready": "Ready",
+      "running": "In progress",
+      "waiting_input": "Waiting for input",
+      "waiting_approval": "Waiting for approval",
+      "blocked": "Blocked",
+      "succeeded": "Completed",
+      "failed": "Failed",
+      "skipped": "Skipped",
+      "canceled": "Cancelled",
+      "replaced": "Superseded"
+    },
+    "note": "PRD FR2 requires one unambiguous displayed state per block, and separates waiting for input from waiting for approval; the two waits are therefore distinct states, never one generic 'waiting'. `labels` is the single source of the displayed wording so no renderer invents its own. A logical node is 'settled' when it reaches succeeded/failed/skipped/canceled, but only 'replaced' is truly terminal: retries and replacements are recorded as new attempts on the same logical node and legitimately re-enter running.",
+    "tones": {
+      "pending": "neutral",
+      "creating_queued": "neutral",
+      "ready": "ok",
+      "running": "active",
+      "waiting_input": "warn",
+      "waiting_approval": "warn",
+      "blocked": "warn",
+      "succeeded": "ok",
+      "failed": "bad",
+      "skipped": "neutral",
+      "canceled": "neutral",
+      "replaced": "neutral"
+    }
+  },
+  "attempt": {
+    "states": [
+      "pending",
+      "creating_queued",
+      "running",
+      "waiting_input",
+      "waiting_approval",
+      "succeeded",
+      "failed",
+      "canceled",
+      "abandoned"
+    ],
+    "initial": "pending",
+    "terminal": [
+      "succeeded",
+      "failed",
+      "canceled",
+      "abandoned"
+    ],
+    "waiting": [
+      "waiting_input",
+      "waiting_approval"
+    ],
+    "callerDirected": true,
+    "transitions": {
+      "pending": [
+        "creating_queued",
+        "running",
+        "waiting_input",
+        "waiting_approval",
+        "succeeded",
+        "canceled",
+        "abandoned",
+        "failed"
+      ],
+      "creating_queued": [
+        "running",
+        "waiting_input",
+        "waiting_approval",
+        "succeeded",
+        "failed",
+        "canceled",
+        "abandoned"
+      ],
+      "running": [
+        "running",
+        "waiting_input",
+        "waiting_approval",
+        "succeeded",
+        "failed",
+        "canceled",
+        "abandoned"
+      ],
+      "waiting_input": [
+        "running",
+        "waiting_input",
+        "waiting_approval",
+        "succeeded",
+        "failed",
+        "canceled",
+        "abandoned"
+      ],
+      "waiting_approval": [
+        "running",
+        "waiting_input",
+        "waiting_approval",
+        "succeeded",
+        "failed",
+        "canceled",
+        "abandoned"
+      ],
+      "succeeded": [],
+      "failed": [],
+      "canceled": [],
+      "abandoned": []
+    },
+    "labels": {
+      "pending": "Not started",
+      "creating_queued": "Creating/queued",
+      "running": "In progress",
+      "waiting_input": "Waiting for input",
+      "waiting_approval": "Waiting for approval",
+      "succeeded": "Completed",
+      "failed": "Failed",
+      "canceled": "Cancelled",
+      "abandoned": "Abandoned"
+    },
+    "authoritativeFailureSignals": [
+      "session.lifecycle:end:error",
+      "session.lifecycle:error",
+      "session.lifecycle:shutdown",
+      "attempt.state:failed"
+    ],
+    "note": "Only the listed authoritative signals may fail an attempt. Missing heartbeats, host idle and end-of-turn must not. `session.lifecycle:error` is authoritative only when the host reported the error as non-recoverable.",
+    "tones": {
+      "pending": "neutral",
+      "creating_queued": "neutral",
+      "running": "active",
+      "waiting_input": "warn",
+      "waiting_approval": "warn",
+      "succeeded": "ok",
+      "failed": "bad",
+      "canceled": "neutral",
+      "abandoned": "neutral"
+    }
+  },
+  "controller": {
+    "axis": "workflow",
+    "states": [
+      "initializing",
+      "scheduling",
+      "waiting_children",
+      "waiting_user",
+      "reconciling",
+      "recovering",
+      "delivering",
+      "retrospective",
+      "blocked",
+      "terminal"
+    ],
+    "initial": "initializing",
+    "terminal": [
+      "terminal"
+    ],
+    "waiting": [
+      "waiting_children",
+      "waiting_user"
+    ],
+    "callerDirected": true,
+    "transitions": {
+      "initializing": [
+        "scheduling",
+        "waiting_children",
+        "waiting_user",
+        "reconciling",
+        "recovering",
+        "delivering",
+        "retrospective",
+        "blocked",
+        "terminal"
+      ],
+      "scheduling": [
+        "scheduling",
+        "waiting_children",
+        "waiting_user",
+        "reconciling",
+        "recovering",
+        "delivering",
+        "retrospective",
+        "blocked",
+        "terminal"
+      ],
+      "waiting_children": [
+        "scheduling",
+        "waiting_children",
+        "waiting_user",
+        "reconciling",
+        "recovering",
+        "delivering",
+        "retrospective",
+        "blocked",
+        "terminal"
+      ],
+      "waiting_user": [
+        "scheduling",
+        "waiting_children",
+        "waiting_user",
+        "reconciling",
+        "recovering",
+        "delivering",
+        "retrospective",
+        "blocked",
+        "terminal"
+      ],
+      "reconciling": [
+        "scheduling",
+        "waiting_children",
+        "waiting_user",
+        "reconciling",
+        "recovering",
+        "delivering",
+        "retrospective",
+        "blocked",
+        "terminal"
+      ],
+      "recovering": [
+        "scheduling",
+        "waiting_children",
+        "waiting_user",
+        "reconciling",
+        "recovering",
+        "delivering",
+        "retrospective",
+        "blocked",
+        "terminal"
+      ],
+      "delivering": [
+        "scheduling",
+        "waiting_children",
+        "waiting_user",
+        "reconciling",
+        "recovering",
+        "delivering",
+        "retrospective",
+        "blocked",
+        "terminal"
+      ],
+      "retrospective": [
+        "scheduling",
+        "waiting_children",
+        "waiting_user",
+        "reconciling",
+        "recovering",
+        "delivering",
+        "retrospective",
+        "blocked",
+        "terminal"
+      ],
+      "blocked": [
+        "scheduling",
+        "waiting_children",
+        "waiting_user",
+        "reconciling",
+        "recovering",
+        "delivering",
+        "retrospective",
+        "blocked",
+        "terminal"
+      ],
+      "terminal": []
+    },
+    "labels": {
+      "initializing": "Initializing",
+      "scheduling": "Scheduling",
+      "waiting_children": "Waiting on children",
+      "waiting_user": "Waiting on user",
+      "reconciling": "Reconciling",
+      "recovering": "Recovering",
+      "delivering": "Delivering",
+      "retrospective": "Retrospective",
+      "blocked": "Blocked",
+      "terminal": "Terminal"
+    },
+    "independentOfHostActivity": true,
+    "note": "Controller workflow state and host activity are independent axes. An idle host while waiting_children renders as 'Waiting on N children - host idle', never as completed. The controller has exactly one terminal workflow state; whether the run completed, failed or was cancelled is carried by the authoritative run.outcome, never inferred from the controller lane.",
+    "tones": {
+      "initializing": "active",
+      "scheduling": "active",
+      "waiting_children": "warn",
+      "waiting_user": "warn",
+      "reconciling": "active",
+      "recovering": "active",
+      "delivering": "active",
+      "retrospective": "neutral",
+      "blocked": "warn",
+      "terminal": "neutral"
+    }
+  },
+  "hostActivity": {
+    "states": [
+      "unknown",
+      "active",
+      "idle",
+      "connection_lost",
+      "ended",
+      "error"
+    ],
+    "initial": "unknown",
+    "neverImpliesCompletion": [
+      "idle",
+      "ended",
+      "unknown"
+    ],
+    "labels": {
+      "unknown": "Unknown",
+      "active": "Active",
+      "idle": "Idle",
+      "connection_lost": "Connection lost",
+      "ended": "Ended",
+      "error": "Error"
+    },
+    "note": "Host activity is a liveness axis only. `unknown` is the honest pre-observation value and is never rendered as idle or complete. Finer host detail (thinking, running a named tool, awaiting permission, awaiting user) is carried in the accompanying detail string rather than by inventing extra axis values, so the axis stays comparable across skills.",
+    "tones": {
+      "unknown": "neutral",
+      "active": "active",
+      "idle": "neutral",
+      "connection_lost": "bad",
+      "ended": "neutral",
+      "error": "bad"
+    }
+  },
+  "health": {
+    "states": [
+      "unknown",
+      "healthy",
+      "connection_lost",
+      "orchestrator_unavailable",
+      "recovered",
+      "ended"
+    ],
+    "initial": "unknown",
+    "heartbeatIntervalMs": 2000,
+    "missingHeartbeatMs": 5000,
+    "transitions": {
+      "unknown": [
+        "healthy",
+        "connection_lost",
+        "orchestrator_unavailable",
+        "ended"
+      ],
+      "healthy": [
+        "healthy",
+        "connection_lost",
+        "orchestrator_unavailable",
+        "ended"
+      ],
+      "connection_lost": [
+        "recovered",
+        "connection_lost",
+        "orchestrator_unavailable",
+        "ended"
+      ],
+      "orchestrator_unavailable": [
+        "recovered",
+        "healthy",
+        "connection_lost",
+        "orchestrator_unavailable",
+        "ended"
+      ],
+      "recovered": [
+        "healthy",
+        "connection_lost",
+        "orchestrator_unavailable",
+        "ended"
+      ],
+      "ended": []
+    },
+    "note": "connection_lost is a health state only. It never fails a workflow and never clears prior history. orchestrator_unavailable is the controller-side health used when the orchestrator heartbeat is stale or local session.send rejects.",
+    "tones": {
+      "unknown": "neutral",
+      "healthy": "ok",
+      "connection_lost": "bad",
+      "orchestrator_unavailable": "warn",
+      "recovered": "ok",
+      "ended": "neutral"
+    },
+    "labels": {
+      "unknown": "Unknown",
+      "healthy": "Healthy",
+      "connection_lost": "Connection lost",
+      "orchestrator_unavailable": "Orchestrator unavailable",
+      "recovered": "Recovered",
+      "ended": "Ended"
+    }
+  },
+  "incident": {
+    "states": [
+      "open",
+      "delivery_pending",
+      "delivered",
+      "acknowledged",
+      "resolved",
+      "recovery_pending",
+      "expired"
+    ],
+    "initial": "open",
+    "terminal": [
+      "resolved",
+      "expired"
+    ],
+    "transitions": {
+      "open": [
+        "delivery_pending",
+        "delivered",
+        "acknowledged",
+        "resolved",
+        "recovery_pending",
+        "expired"
+      ],
+      "delivery_pending": [
+        "delivered",
+        "delivery_pending",
+        "acknowledged",
+        "resolved",
+        "recovery_pending",
+        "expired"
+      ],
+      "delivered": [
+        "acknowledged",
+        "delivery_pending",
+        "recovery_pending",
+        "resolved",
+        "expired"
+      ],
+      "acknowledged": [
+        "resolved",
+        "expired"
+      ],
+      "recovery_pending": [
+        "delivery_pending",
+        "delivered",
+        "acknowledged",
+        "resolved",
+        "expired"
+      ],
+      "resolved": [],
+      "expired": []
+    },
+    "deliveryBackoffMs": [
+      1000,
+      2000,
+      4000,
+      8000
+    ],
+    "envelopeSettleMs": 2000,
+    "maxDeliveryAttempts": 4,
+    "grantsNoAuthority": [
+      "approval",
+      "delivery_authority",
+      "push",
+      "terminal_status"
+    ],
+    "tones": {
+      "open": "neutral",
+      "delivery_pending": "warn",
+      "delivered": "neutral",
+      "acknowledged": "neutral",
+      "resolved": "ok",
+      "recovery_pending": "warn",
+      "expired": "warn"
+    },
+    "labels": {
+      "open": "Open",
+      "delivery_pending": "Delivery pending",
+      "delivered": "Delivered",
+      "acknowledged": "Acknowledged",
+      "resolved": "Resolved",
+      "recovery_pending": "Recovery pending",
+      "expired": "Expired"
+    }
+  },
+  "outbox": {
+    "states": [
+      "queued",
+      "delivering",
+      "delivered",
+      "accepted",
+      "rejected",
+      "expired",
+      "failed",
+      "denied"
+    ],
+    "initial": "queued",
+    "terminal": [
+      "accepted",
+      "rejected",
+      "expired",
+      "failed",
+      "denied"
+    ],
+    "transitions": {
+      "queued": [
+        "delivering",
+        "denied",
+        "expired"
+      ],
+      "delivering": [
+        "delivered",
+        "delivering",
+        "failed",
+        "expired",
+        "denied"
+      ],
+      "delivered": [
+        "accepted",
+        "rejected",
+        "expired"
+      ],
+      "accepted": [],
+      "rejected": [],
+      "expired": [],
+      "failed": [],
+      "denied": []
+    },
+    "defaultTtlMs": 900000,
+    "maxDeliveryAttempts": 3,
+    "exactlyOneTerminalAuditState": true,
+    "grantsNoAuthority": [
+      "approval",
+      "delivery_authority",
+      "push",
+      "terminal_status"
+    ],
+    "tones": {
+      "queued": "neutral",
+      "delivering": "active",
+      "delivered": "neutral",
+      "accepted": "ok",
+      "rejected": "bad",
+      "expired": "warn",
+      "failed": "bad",
+      "denied": "bad"
+    },
+    "labels": {
+      "queued": "Queued",
+      "delivering": "Delivering",
+      "delivered": "Delivered",
+      "accepted": "Accepted",
+      "rejected": "Rejected",
+      "expired": "Expired",
+      "failed": "Failed",
+      "denied": "Denied"
+    }
+  },
+  "costConfidence": {
+    "values": [
+      "actual",
+      "estimated",
+      "partial",
+      "unavailable"
+    ],
+    "actualRequires": "explicit_provider_billed_currency",
+    "note": "Copilot AI credits are not a billed currency. Credit-derived numbers are estimated or partial and are never relabelled actual."
+  }
+}

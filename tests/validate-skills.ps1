@@ -1391,6 +1391,174 @@ function Test-ReviewSkill {
 # Entry points
 # ---------------------------------------------------------------------------
 
+function Test-LoopVisibility {
+    param([string] $Root, [System.Collections.Generic.List[string]] $Violations)
+
+    # coverage.json is normative: it is the single place that says which entry
+    # points every multi-session skill must wire, so drift fails here rather
+    # than being discovered when a run is already invisible.
+    $coveragePath = Join-Path $Root 'extensions/loop-execution-visualizer/contracts/v1/coverage.json'
+    if (-not (Test-Path -LiteralPath $coveragePath -PathType Leaf)) {
+        Add-Violation $Violations 'loop-visibility' "Coverage contract is missing at 'extensions/loop-execution-visualizer/contracts/v1/coverage.json'."
+        return
+    }
+
+    $coverage = $null
+    try {
+        $coverage = Get-Content -LiteralPath $coveragePath -Raw | ConvertFrom-Json
+    }
+    catch {
+        Add-Violation $Violations 'loop-visibility' "coverage.json is not valid JSON: $($_.Exception.Message)"
+        return
+    }
+
+    $markerPrefix = [string](Get-JsonProperty -Object $coverage -Name 'markerPrefix')
+    if ([string]::IsNullOrWhiteSpace($markerPrefix)) { $markerPrefix = 'LOOPVIZ:' }
+
+    $sharedPath = [string](Get-JsonProperty -Object $coverage -Name 'sharedContractPath')
+    if (-not [string]::IsNullOrWhiteSpace($sharedPath)) {
+        if (-not (Test-Path -LiteralPath (Join-Path $Root $sharedPath) -PathType Leaf)) {
+            Add-Violation $Violations 'loop-visibility' "Shared reporting contract '$sharedPath' does not exist."
+        }
+    }
+    $sharedReference = [string](Get-JsonProperty -Object $coverage -Name 'sharedContractReference')
+
+    # The declared tool surface must match the tools the extension actually
+    # registers, otherwise a skill is told to call something that is not there.
+    $toolsPath = Join-Path $Root 'extensions/loop-execution-visualizer/src/tools.mjs'
+    $declaredTools = @(Get-JsonProperty -Object $coverage -Name 'tools')
+    if (Test-Path -LiteralPath $toolsPath -PathType Leaf) {
+        $toolsText = [System.IO.File]::ReadAllText($toolsPath)
+        # Match the quoted tool name itself rather than a registration shape, so
+        # the check survives refactoring of how tools are constructed. A name
+        # embedded in prose is not a bare string literal and does not match.
+        $namePattern = '["''](?<tool>loopviz_[a-z_]+)["'']'
+        $registered = @([regex]::Matches($toolsText, $namePattern) | ForEach-Object { $_.Groups['tool'].Value } | Sort-Object -Unique)
+        foreach ($tool in $declaredTools) {
+            if ($registered -notcontains $tool) {
+                Add-Violation $Violations 'loop-visibility' "coverage.json declares tool '$tool' but src/tools.mjs does not register it."
+            }
+        }
+        foreach ($found in $registered) {
+            if ($declaredTools -notcontains $found) {
+                Add-Violation $Violations 'loop-visibility' "src/tools.mjs registers '$found' but coverage.json does not declare it."
+            }
+        }
+    }
+    else {
+        Add-Violation $Violations 'loop-visibility' "Extension tool surface is missing at 'extensions/loop-execution-visualizer/src/tools.mjs'."
+    }
+
+    $forbidden = @()
+    $guard = Get-JsonProperty -Object $coverage -Name 'duplicationGuard'
+    if ($null -ne $guard) { $forbidden = @(Get-JsonProperty -Object $guard -Name 'forbiddenPhrasesInSkills') }
+
+    $skills = Get-JsonProperty -Object $coverage -Name 'skills'
+    $declaredSkillNames = @()
+    if ($null -ne $skills) {
+        foreach ($property in $skills.PSObject.Properties) {
+            $skillName = $property.Name
+            $declaredSkillNames += $skillName
+            $spec = $property.Value
+            $relative = [string](Get-JsonProperty -Object $spec -Name 'path')
+            $skillPath = Join-Path $Root $relative
+
+            if (-not (Test-Path -LiteralPath $skillPath -PathType Leaf)) {
+                Add-Violation $Violations 'loop-visibility' "coverage.json declares skill '$skillName' at '$relative', which does not exist."
+                continue
+            }
+
+            $raw = [System.IO.File]::ReadAllText($skillPath)
+            $text = Get-NormalizedText -Path $skillPath
+
+            if (-not (Test-Contains $text '##\s+Loop visibility')) {
+                Add-Violation $Violations 'loop-visibility' "$relative has no '## Loop visibility' section."
+            }
+            if (-not [string]::IsNullOrWhiteSpace($sharedReference) -and -not (Test-Contains $text ([regex]::Escape($sharedReference)))) {
+                Add-Violation $Violations 'loop-visibility' "$relative does not reference the shared contract '$sharedReference'."
+            }
+
+            # Every marker occurrence in the file, so an id that no longer
+            # exists in the contract is still visible.
+            $seen = @{}
+            foreach ($match in [regex]::Matches($raw, ([regex]::Escape($markerPrefix) + '(?<id>[A-Za-z0-9._-]+)'))) {
+                $id = $match.Groups['id'].Value
+                if ($seen.ContainsKey($id)) { $seen[$id] = $seen[$id] + 1 } else { $seen[$id] = 1 }
+            }
+
+            $entryPoints = @(Get-JsonProperty -Object $spec -Name 'entryPoints')
+            $knownIds = @()
+            foreach ($entry in $entryPoints) {
+                $id = [string](Get-JsonProperty -Object $entry -Name 'id')
+                $tool = [string](Get-JsonProperty -Object $entry -Name 'tool')
+                $site = [string](Get-JsonProperty -Object $entry -Name 'site')
+                $required = Get-JsonProperty -Object $entry -Name 'required'
+                $knownIds += $id
+
+                # The binding record is the table row. Prose may cross-reference a
+                # marker freely; only rows count. Note the anchor is deliberately
+                # not '$' because .NET multiline does not match before CRLF.
+                $rowPattern = '(?m)^\|[^\r\n]*' + [regex]::Escape($markerPrefix + $id) + '[^\r\n]*'
+                $rows = @([regex]::Matches($raw, $rowPattern))
+
+                if ($rows.Count -eq 0) {
+                    if ($required -eq $true) {
+                        Add-Violation $Violations 'loop-visibility' "$relative has no coverage table row for required entry point '$markerPrefix$id' ($tool at: $site)."
+                    }
+                    continue
+                }
+                if ($rows.Count -gt 1) {
+                    Add-Violation $Violations 'loop-visibility' "$relative has $($rows.Count) coverage table rows for '$markerPrefix$id'; each entry point has exactly one."
+                }
+                # A row must name the tool it binds, so a marker cannot be
+                # satisfied by a row that tells the agent to call something else.
+                if ($rows[0].Value -notmatch [regex]::Escape($tool)) {
+                    Add-Violation $Violations 'loop-visibility' "$relative pairs '$markerPrefix$id' with the wrong tool; the contract requires '$tool'."
+                }
+            }
+
+            foreach ($id in $seen.Keys) {
+                if ($knownIds -notcontains $id) {
+                    Add-Violation $Violations 'loop-visibility' "$relative declares '$markerPrefix$id', which coverage.json does not define for '$skillName'."
+                }
+            }
+
+            foreach ($phrase in $forbidden) {
+                if (Test-Contains $text ([regex]::Escape($phrase))) {
+                    Add-Violation $Violations 'loop-visibility' "$relative restates visualizer invariant '$phrase'; that text belongs only in the shared contract."
+                }
+            }
+        }
+    }
+
+    # Discovery is by directory. A new multi-session skill that never declares
+    # its entry points must fail rather than ship without visibility.
+    $future = Get-JsonProperty -Object $coverage -Name 'futureSkillRule'
+    if ($null -ne $future -and [string](Get-JsonProperty -Object $future -Name 'onUndeclaredSkill') -eq 'fail') {
+        $phrases = @(Get-JsonProperty -Object $future -Name 'detectionPhrases')
+        $skillsDir = Join-Path $Root 'skills'
+        if (Test-Path -LiteralPath $skillsDir -PathType Container) {
+            foreach ($dir in Get-ChildItem -LiteralPath $skillsDir -Directory) {
+                $candidate = Join-Path $dir.FullName 'SKILL.md'
+                if (-not (Test-Path -LiteralPath $candidate -PathType Leaf)) { continue }
+                if ($declaredSkillNames -contains $dir.Name) { continue }
+
+                $frontmatter = Get-Frontmatter -Path $candidate
+                $description = ''
+                if ($null -ne $frontmatter -and $frontmatter.ContainsKey('description')) {
+                    $description = [string] $frontmatter['description']
+                }
+                foreach ($phrase in $phrases) {
+                    if ($description -match [regex]::Escape($phrase)) {
+                        Add-Violation $Violations 'loop-visibility' "Skill '$($dir.Name)' describes multi-session work ('$phrase') but coverage.json does not declare its loop visibility entry points."
+                        break
+                    }
+                }
+            }
+        }
+    }
+}
+
 function Get-SkillViolations {
     param([string] $Root)
 
@@ -1420,6 +1588,7 @@ function Get-SkillViolations {
     Test-PhaseContracts -Root $Root -Violations $violations
     Test-SkillIndependence -Root $Root -Violations $violations
     Test-Discovery -Root $Root -Violations $violations
+    Test-LoopVisibility -Root $Root -Violations $violations
     Test-ReviewSkill -Root $Root -Violations $violations
     return , $violations
 }
@@ -1620,7 +1789,7 @@ function Copy-Fixture {
     param([string] $Source, [string] $Destination)
 
     New-Item -ItemType Directory -Path $Destination -Force | Out-Null
-    foreach ($relative in @('skills', 'tests', '.github', 'docs')) {
+    foreach ($relative in @('skills', 'tests', '.github', 'docs', 'extensions')) {
         $from = Join-Path $Source $relative
         if (Test-Path -LiteralPath $from) {
             Copy-Item -LiteralPath $from -Destination $Destination -Recurse -Force
@@ -1908,6 +2077,80 @@ function Get-NegativeFixtures {
                 Edit-FixtureFile -Path (Join-Path $Dir 'plugin.json') `
                     -Find '"root-cause"' `
                     -ReplaceWith '"unrelated"'
+            }
+        },
+        @{
+            # A phase loses its visibility wiring: the run would silently stop
+            # showing implementation progress.
+            Name  = 'loop-visibility-missing-entry-point'
+            Apply = {
+                param([string] $Dir)
+                Edit-FixtureFile -Path (Join-Path $Dir 'skills/engineering-loop/SKILL.md') `
+                    -Find '| `LOOPVIZ:el.p5.dispatch` | Before `create_session` for implementation. Enrollment line into the kickoff prompt. | `loopviz_attempt_start` |' `
+                    -ReplaceWith '| (removed) |'
+            }
+        },
+        @{
+            # The row survives but points at the wrong tool, so the marker looks
+            # wired while the call would never record a dispatch.
+            Name  = 'loop-visibility-wrong-tool'
+            Apply = {
+                param([string] $Dir)
+                Edit-FixtureFile -Path (Join-Path $Dir 'skills/issue-resolution/SKILL.md') `
+                    -Find '| `LOOPVIZ:ir.p2.dispatch` | Before `create_session` for RCA. Put the returned enrollment line in the kickoff prompt. | `loopviz_attempt_start` |' `
+                    -ReplaceWith '| `LOOPVIZ:ir.p2.dispatch` | Before `create_session` for RCA. | `loopviz_status` |'
+            }
+        },
+        @{
+            # A skill restates a normative invariant instead of referencing the
+            # shared contract, which is how the two copies drift apart.
+            Name  = 'loop-visibility-duplicated-invariant'
+            Apply = {
+                param([string] $Dir)
+                Edit-FixtureFile -Path (Join-Path $Dir 'skills/engineering-loop/SKILL.md') `
+                    -Find 'Optionally attach model, plan, or progress detail to any stage with `loopviz_report`.' `
+                    -ReplaceWith 'A child that stops sending a heartbeat is shown as connection_lost.'
+            }
+        },
+        @{
+            # The contract grows an entry point that no skill wires yet.
+            Name  = 'loop-visibility-uncovered-contract-entry'
+            Apply = {
+                param([string] $Dir)
+                Edit-FixtureFile -Path (Join-Path $Dir 'extensions/loop-execution-visualizer/contracts/v1/coverage.json') `
+                    -Find '{ "id": "el.outcome",' `
+                    -ReplaceWith '{ "id": "el.newgate", "phase": "8", "site": "A newly required gate", "tool": "loopviz_controller_state", "required": true }, { "id": "el.outcome",'
+            }
+        },
+        @{
+            # A new multi-session skill ships without declaring any visibility.
+            Name  = 'loop-visibility-undeclared-multi-session-skill'
+            Apply = {
+                param([string] $Dir)
+                $skillDir = Join-Path $Dir 'skills/parallel-audit'
+                New-Item -ItemType Directory -Path $skillDir -Force | Out-Null
+                $content = @(
+                    '---',
+                    'name: parallel-audit',
+                    'description: Audit a repository by coordinating child sessions across multiple areas.',
+                    '---',
+                    '',
+                    '# Parallel Audit',
+                    '',
+                    'Fan work out to child sessions and aggregate their reports.'
+                ) -join [Environment]::NewLine
+                [System.IO.File]::WriteAllText((Join-Path $skillDir 'SKILL.md'), $content)
+            }
+        },
+        @{
+            # The extension registers a tool the contract never declared, so
+            # skills could be told to call something unreviewed.
+            Name  = 'loop-visibility-undeclared-tool'
+            Apply = {
+                param([string] $Dir)
+                Edit-FixtureFile -Path (Join-Path $Dir 'extensions/loop-execution-visualizer/src/tools.mjs') `
+                    -Find '"loopviz_status",' `
+                    -ReplaceWith '"loopviz_undeclared_backdoor",'
             }
         },
         @{
