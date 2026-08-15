@@ -12,6 +12,7 @@
 
 import { rmSync } from "node:fs";
 import { createReporter } from "../extensions/loop-execution-visualizer/src/reporter.mjs";
+import { createTools } from "../extensions/loop-execution-visualizer/src/tools.mjs";
 
 const storeDir = process.argv[2];
 if (!storeDir) {
@@ -47,6 +48,10 @@ function lead(now, { role = "orchestrator", hostSessionId = "host-lead", appSess
     now,
     send,
   });
+}
+
+function toolsFor(reporter) {
+  return new Map(createTools({ reporter }).map((tool) => [tool.name, tool]));
 }
 
 function spec(runId, title, skill = "engineering-loop") {
@@ -357,6 +362,26 @@ async function scenarioParallelLayout() {
   const now = clockFrom("2026-08-09T20:30:00.000Z");
   const orch = lead(now, { hostSessionId: "host-layout", appSessionId: "app-layout", pid: 9401 });
   orch.declareRun(parallelSpec("scn-parallel-layout", "Parallel critiques with expanded retry history"));
+  orch.emit("dag.node_added", {
+    node: {
+      nodeId: "ghost",
+      label: "Ghost stage",
+      phase: "4",
+      role: "recovery",
+      dependsOn: ["design"],
+    },
+    reason: "runtime recovery stage added after the initial declaration",
+  }, { immediate: true });
+  orch.emit("dag.node_added", {
+    node: {
+      nodeId: "security",
+      label: "Security review",
+      phase: "4",
+      role: "review",
+      dependsOn: ["design", "contracts", "operations", "boundaries", "ghost"],
+    },
+    reason: "runtime review depends on every critique and the recovery stage",
+  }, { immediate: true });
   for (const nodeId of ["contracts", "operations", "boundaries"]) {
     orch.startAttempt({
       nodeId,
@@ -383,6 +408,51 @@ async function scenarioParallelLayout() {
     state: "running",
     reason: "retry is collecting operational evidence",
   });
+  for (const [nodeId, count] of [["ghost", 3], ["security", 2]]) {
+    orch.setNodeState({ nodeId, state: "running", reason: `${nodeId} is active` });
+    for (let attemptNumber = 1; attemptNumber <= count; attemptNumber += 1) {
+      const attemptId = `${nodeId}-a${attemptNumber}`;
+      orch.startAttempt({
+        nodeId,
+        attemptId,
+        attemptNumber,
+        kind: attemptNumber === 1 ? "initial" : "retry",
+        model: attemptNumber % 2 === 0 ? "gpt-5.6-sol" : "claude-opus-5",
+        reason: `${nodeId} attempt ${attemptNumber} exercises expanded card height`,
+      });
+      orch.setAttemptState({
+        nodeId,
+        attemptId,
+        state: "running",
+        reason: `${nodeId} attempt ${attemptNumber} is collecting evidence`,
+      });
+    }
+  }
+  const tools = toolsFor(orch);
+  const reports = [
+    {
+      nodeId: "operations",
+      attemptId: "operations-a2",
+      model: "claude-opus-5",
+      prompt: "Review the approved visualizer design for operational failure modes and report concrete remediation.",
+      plan: "Inspect runtime entry points, trace recovery behavior, validate evidence, then return prioritized findings.",
+      progress: "Runtime and recovery paths inspected; evidence review is in progress.",
+      details: "Current state: validating retry behavior and local server recovery.",
+    },
+    {
+      nodeId: "ghost",
+      attemptId: "ghost-a3",
+      model: "claude-opus-5",
+      prompt: "Recover the interrupted implementation without changing the approved product contract.",
+      plan: "Audit transferred files, reproduce the failure, repair only verified gaps, and rerun normal-flow validation.",
+      progress: "Transferred files audited; focused validation is running.",
+      details: "Current state: recovery attempt three is checking the repaired canvas.",
+    },
+  ];
+  for (const report of reports) {
+    const result = await tools.get("loopviz_report").handler(report);
+    if (!result.ok) throw new Error(`scenario report failed for ${report.nodeId}: ${result.reason}`);
+  }
   orch.close();
 }
 

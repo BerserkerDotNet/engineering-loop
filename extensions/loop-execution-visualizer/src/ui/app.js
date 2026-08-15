@@ -3,6 +3,8 @@
 // The renderer is a pure view over the projection: it never derives workflow
 // state of its own, so it can never show something the contract would reject.
 
+import { computeGraphLayout, GRAPH_LAYOUT, routePath } from "./layout.mjs";
+
 const params = new URLSearchParams(location.search);
 const BOOTSTRAP = params.get("bootstrap") ?? "";
 const INITIAL_RUN = params.get("runId") || null;
@@ -21,9 +23,7 @@ const TABS = [
   { id: "diagnostics", label: "Diagnostics" },
 ];
 
-const STAGE_W = 236;
-const GAP_X = 56;
-const GAP_Y = 16;
+const STAGE_W = GRAPH_LAYOUT.stageWidth;
 const ROW_H = 30;
 
 const state = {
@@ -467,51 +467,30 @@ function isExpanded(node) {
 
 function renderGraph() {
   const run = state.run;
-  const columns = new Map();
-  for (const node of run.dag.nodes) {
-    if (!columns.has(node.column)) columns.set(node.column, []);
-    columns.get(node.column).push(node);
-  }
-
-  const positions = new Map();
   const cards = run.dag.nodes.map((node) => renderStage(node, { x: 0, y: 0 }));
   dom.canvas.replaceChildren(...cards);
   const measured = new Map(cards.map((card) => [
     card.dataset.nodeId,
     Math.ceil(card.getBoundingClientRect().height / state.zoom),
   ]));
-  let maxBottom = 0;
-  for (const [column, nodes] of [...columns.entries()].sort((a, b) => a[0] - b[0])) {
-    let top = 0;
-    for (const node of nodes) {
-      const height = measured.get(node.nodeId) ?? cardFallbackHeight(node);
-      positions.set(node.nodeId, { x: column * (STAGE_W + GAP_X), y: top, height });
-      top += height + GAP_Y;
-      maxBottom = Math.max(maxBottom, top);
-    }
+  for (const node of run.dag.nodes) {
+    if (!measured.has(node.nodeId)) measured.set(node.nodeId, cardFallbackHeight(node));
   }
-
-  const width = (Math.max(1, columns.size)) * (STAGE_W + GAP_X);
-  dom.canvas.style.width = `${width}px`;
-  dom.canvas.style.height = `${Math.max(120, maxBottom)}px`;
+  const layout = computeGraphLayout(run.dag.nodes, run.dag.edges, measured);
+  dom.canvas.style.width = `${layout.width}px`;
+  dom.canvas.style.height = `${layout.height}px`;
 
   const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
   svg.setAttribute("class", "graph-edges");
-  svg.setAttribute("width", String(width));
-  svg.setAttribute("height", String(Math.max(120, maxBottom)));
+  svg.setAttribute("width", String(layout.width));
+  svg.setAttribute("height", String(layout.height));
   svg.setAttribute("aria-hidden", "true");
-  for (const edge of run.dag.edges) {
-    const from = positions.get(edge.from);
-    const to = positions.get(edge.to);
-    if (!from || !to) continue;
-    const x1 = from.x + STAGE_W;
-    const y1 = from.y + 24;
-    const x2 = to.x;
-    const y2 = to.y + 24;
-    const mid = x1 + (x2 - x1) / 2;
+  for (const { edge, points } of layout.routes) {
     const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
-    path.setAttribute("d", `M ${x1} ${y1} C ${mid} ${y1}, ${mid} ${y2}, ${x2} ${y2}`);
+    path.setAttribute("d", routePath(points));
     path.dataset.added = String(edge.addedDuringRun === true);
+    path.dataset.from = edge.from;
+    path.dataset.to = edge.to;
     // The graph itself is aria-hidden because the stage cards carry the same
     // relationships in text, but a title still gives a sighted user hovering a
     // dashed line the reason it is dashed rather than leaving it to be guessed.
@@ -524,7 +503,7 @@ function renderGraph() {
   }
 
   for (const card of cards) {
-    const position = positions.get(card.dataset.nodeId);
+    const position = layout.positions.get(card.dataset.nodeId);
     card.style.left = `${position.x}px`;
     card.style.top = `${position.y}px`;
   }

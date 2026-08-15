@@ -1,40 +1,47 @@
 :root {
-  color-scheme: light dark;
+  color-scheme: dark;
   --bg: #0d1117;
   --bg-raised: #161b22;
   --bg-sunken: #010409;
   --border: #30363d;
   --border-strong: #484f58;
+  --connector: #6e7681;
   --text: #e6edf3;
   --text-muted: #8b949e;
-  --accent: #2f81f7;
+  --accent: #58a6ff;
+  --on-accent: #ffffff;
   --ok: #3fb950;
   --warn: #d29922;
   --bad: #f85149;
   --neutral: #6e7681;
   --lost: #a371f7;
+  --card-shadow: 0 1px 0 rgba(255, 255, 255, 0.04);
+  --overlay-shadow: rgba(1, 4, 9, 0.72);
   --radius: 6px;
   --stage-w: 236px;
-  --gap-x: 56px;
-  --gap-y: 16px;
   --focus: 2px solid var(--accent);
 }
 
 @media (prefers-color-scheme: light) {
   :root {
+    color-scheme: light;
     --bg: #ffffff;
     --bg-raised: #f6f8fa;
     --bg-sunken: #eaeef2;
     --border: #d0d7de;
     --border-strong: #8c959f;
+    --connector: #57606a;
     --text: #1f2328;
-    --text-muted: #656d76;
+    --text-muted: #57606a;
     --accent: #0969da;
-    --ok: #1a7f37;
-    --warn: #9a6700;
-    --bad: #cf222e;
+    --on-accent: #ffffff;
+    --ok: #116329;
+    --warn: #7d4e00;
+    --bad: #a40e26;
     --neutral: #6e7781;
-    --lost: #8250df;
+    --lost: #6639ba;
+    --card-shadow: 0 1px 2px rgba(31, 35, 40, 0.08);
+    --overlay-shadow: rgba(31, 35, 40, 0.28);
   }
 }
 
@@ -46,17 +53,20 @@
     --bg-sunken: Canvas;
     --border: CanvasText;
     --border-strong: CanvasText;
+    --connector: CanvasText;
     --text: CanvasText;
     --text-muted: CanvasText;
     --accent: Highlight;
+    --on-accent: HighlightText;
     --ok: CanvasText;
     --warn: CanvasText;
     --bad: CanvasText;
     --neutral: CanvasText;
     --lost: CanvasText;
   }
-  .stage, .controller-card, .btn, .attempt { forced-color-adjust: none; border: 1px solid CanvasText; }
+  .stage, .controller-card, .btn, .attempt { forced-color-adjust: none; border: 1px solid CanvasText; box-shadow: none; }
   .stage[aria-selected="true"] { outline: 3px solid Highlight; }
+  .graph-edges path { stroke: CanvasText; }
 }
 
 * { box-sizing: border-box; }
@@ -80,7 +90,7 @@ body {
   left: -9999px;
   top: 0;
   background: var(--accent);
-  color: #fff;
+  color: var(--on-accent);
   padding: 8px 12px;
   z-index: 20;
 }
@@ -181,7 +191,7 @@ body {
   cursor: pointer;
 }
 .btn:hover { border-color: var(--border-strong); }
-.btn--primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+.btn--primary { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
 .btn--ghost { background: transparent; }
 .btn[disabled] { opacity: 0.5; cursor: not-allowed; }
 
@@ -204,6 +214,7 @@ body {
   border-radius: var(--radius);
   padding: 8px 12px;
   background: var(--bg-raised);
+  box-shadow: var(--card-shadow);
   cursor: pointer;
   width: 100%;
   text-align: left;
@@ -239,7 +250,14 @@ body {
 }
 
 .graph-edges { position: absolute; inset: 0; overflow: visible; pointer-events: none; }
-.graph-edges path { fill: none; stroke: var(--border-strong); stroke-width: 1.5; }
+.graph-edges path {
+  fill: none;
+  stroke: var(--connector);
+  stroke-width: 1.5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  vector-effect: non-scaling-stroke;
+}
 .graph-edges path[data-added="true"] { stroke-dasharray: 4 3; }
 
 .stage {
@@ -249,6 +267,7 @@ body {
   border-left: 4px solid var(--neutral);
   border-radius: var(--radius);
   background: var(--bg-raised);
+  box-shadow: var(--card-shadow);
   padding: 8px 10px;
   text-align: left;
   font: inherit;
@@ -488,7 +507,7 @@ body {
     inset: 0;
     z-index: 15;
     border-left: none;
-    box-shadow: 0 0 0 100vmax rgba(0, 0, 0, 0.45);
+    box-shadow: 0 0 0 100vmax var(--overlay-shadow);
   }
   .inspector[hidden] { display: none; }
   .overlay-toggle { display: block; }

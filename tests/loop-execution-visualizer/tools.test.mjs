@@ -375,8 +375,11 @@ test("tools: a child session may report detail but may not control the run", asy
 
     const projection = lead.projection({ force: true });
     const design = projection.dag.nodes.find((n) => n.nodeId === "design");
+    assert.equal(design.attempts[0].semantics.model, "claude-opus-5");
+    assert.equal(design.attempts[0].semantics.prompt, "Design the visualizer contract layer.");
     assert.equal(design.attempts[0].semantics.plan, "1. contracts 2. store 3. projection");
     assert.equal(design.attempts[0].semantics.progress, "still on the bound stage");
+    assert.equal(design.attempts[0].semantics.details, "no blockers");
     assert.equal(design.attempts[0].state, "waiting_input");
     assert.equal(
       projection.dag.nodes.find((n) => n.nodeId === "requirements").attempts.length,
