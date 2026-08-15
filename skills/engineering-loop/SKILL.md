@@ -156,10 +156,6 @@ The coordinator enforces every child model by passing the exact selected ID in
 If a model cannot be selected, stop before that phase and report the exact missing model.
 Do not substitute.
 
-Then probe the run visualizer once, at `LOOPVIZ:el.p0.declare` in
-[Loop visibility](#loop-visibility). Its result decides visibility for the whole run and
-is never a reason to stop.
-
 ### Child delivery contract
 
 Include `COORDINATOR_SESSION_ID`, `PHASE`, and a monotonically increasing
@@ -328,14 +324,6 @@ Send one consolidated list to the existing design session. Require it to:
 7. Report `PUSHED: no`, `PR_CREATED: no`, and `UPSTREAM: none`.
 8. Provide command evidence that the branch has no upstream and no matching remote branch.
 
-Immediately before sending the findings, call `loopviz_attempt_start` on the design node
-with kind `retry`, a fresh reconciliation attempt ID, and expected envelope
-statuses `CRITIQUE_ADDRESSED` and `BLOCKED` plus the message sequence. Include its
-enrollment line in the message. When either exact envelope arrives, call
-`loopviz_node_state` with the reconciliation attempt ID and exact status and sequence:
-`CRITIQUE_ADDRESSED` is `succeeded`; `BLOCKED` is `failed`. Do not leave the
-reconciliation attempt running after accepting its terminal envelope.
-
 Inspect the updated design and resolution map before requesting approval. If a finding was
 silently skipped, return it to the design session.
 
@@ -499,15 +487,6 @@ After the PR exists, send the retro prompt to every child session:
 - All three critiques
 - Implementation
 
-For each child, add one unplanned retro node, start one `initial` attempt with expected
-envelope `COMPLETE` and that message's sequence, and include the returned enrollment line
-in the retro prompt. Settle each report with `loopviz_node_state`, using the exact attempt
-ID, status, and sequence. After every report is incorporated, settle the initially planned
-aggregate `retro` node. If aggregate work exists, first set it to `running` when aggregation
-begins, then set it to `succeeded` after the report is produced. If no aggregate work exists,
-settle the still-pending node as `skipped`. No completed run may retain pending retro nodes
-or attempts.
-
 Each child reviews its own complete conversation and returns evidence, not generic advice.
 Wait for all reports.
 
@@ -556,51 +535,3 @@ The engineering loop is complete only when:
 - All child retro reports were aggregated.
 
 If any item is missing, report the current phase instead of declaring completion.
-
-Either way, close the run once at `LOOPVIZ:el.outcome`.
-
-## Loop visibility
-
-Report this run to the loop execution visualizer so the user can watch it as a
-pipeline. The full contract — probe-once behaviour, ordering, enrollment, and the rule
-that a visibility call can never grant approval, authority, or completion — is
-[`extensions/loop-execution-visualizer/REPORTING.md`](../../extensions/loop-execution-visualizer/REPORTING.md).
-Read it before making the first call; do not restate its rules here.
-
-For every terminal-envelope result marker below, pass the dispatched
-`attemptId` plus the envelope's exact `STATUS` and `SEQUENCE` to
-`loopviz_node_state` as `envelopeStatus` and `envelopeSequence`. That single
-orchestrator call settles both the attempt and its logical node. Never settle an
-expected envelope with a terminal `loopviz_attempt_state` call.
-
-Make each call at the site below. If `loopviz_run_declare` is unavailable, record
-`reporter-absent` in the run ledger once and omit every other row for this run.
-
-| Marker | Site | Tool |
-| --- | --- | --- |
-| `LOOPVIZ:el.p0.declare` | Phase 0 preflight, immediately after the run ledger row is created. Declare the run with one node per planned stage: requirements, design, the three critiques, design approval, implementation, implementation approval, delivery, retro. | `loopviz_run_declare` |
-| `LOOPVIZ:el.p0.controller` | Immediately after declaring, and at every later phase transition of the orchestration session itself. | `loopviz_controller_state` |
-| `LOOPVIZ:el.p1.dispatch` | Before `create_session` for requirements. Put the returned enrollment line in the kickoff prompt. | `loopviz_attempt_start` |
-| `LOOPVIZ:el.p1.result` | On the requirements terminal envelope, reporting the outcome the envelope declared. | `loopviz_node_state` |
-| `LOOPVIZ:el.p2.dispatch` | Before `create_session` for design. Enrollment line into the kickoff prompt. | `loopviz_attempt_start` |
-| `LOOPVIZ:el.p2.result` | On the design terminal envelope. | `loopviz_node_state` |
-| `LOOPVIZ:el.p3.dispatch` | Before creating each of the three critique sessions, once per critique node. | `loopviz_attempt_start` |
-| `LOOPVIZ:el.p3.result` | On each critique terminal envelope. | `loopviz_node_state` |
-| `LOOPVIZ:el.p3.replacement` | When a critique is retried or its session replaced. Reuse the same critique node id so the attempts stay on one stage. | `loopviz_attempt_start` |
-| `LOOPVIZ:el.p3.reconcile.dispatch` | Before consolidated findings go back to the design session, start a reconciliation attempt with its exact expected envelope. | `loopviz_attempt_start` |
-| `LOOPVIZ:el.p3.reconcile.result` | On the design reconciliation terminal envelope, settle its attempt and design node with the exact status and sequence. | `loopviz_node_state` |
-| `LOOPVIZ:el.p4.gate` | Design approval loop: once when the question is asked, once when the user answers. Report the gate state only — the approval itself is the user's answer. | `loopviz_controller_state` |
-| `LOOPVIZ:el.p5.dispatch` | Before `create_session` for implementation. Enrollment line into the kickoff prompt. | `loopviz_attempt_start` |
-| `LOOPVIZ:el.p5.recovery` | When implementation reveals a design-invalidating gap that adds an unplanned stage, before dispatching it. | `loopviz_node_add` |
-| `LOOPVIZ:el.p5.result` | On the implementation terminal envelope. | `loopviz_node_state` |
-| `LOOPVIZ:el.p6.gate` | Implementation approval loop: once when asked, once when answered. | `loopviz_controller_state` |
-| `LOOPVIZ:el.p7.delivery` | When PR authorization is sent, and again when the PR URL is confirmed. | `loopviz_node_state` |
-| `LOOPVIZ:el.p8.retro.add` | Retro fan-out, adding one node per child session being asked for a retro report. | `loopviz_node_add` |
-| `LOOPVIZ:el.p8.retro.dispatch` | Before sending each retro prompt, start one attempt on that child's retro node and include its enrollment line. | `loopviz_attempt_start` |
-| `LOOPVIZ:el.p8.retro.result` | On each child retro terminal envelope, settle the matching attempt and node with the exact status and sequence. | `loopviz_node_state` |
-| `LOOPVIZ:el.p8.retro.aggregate.start` | When aggregation begins, move the planned aggregate retro node to running. | `loopviz_node_state` |
-| `LOOPVIZ:el.p8.retro.aggregate.result` | After aggregation, settle the running node as succeeded, or skip a pending no-work node. | `loopviz_node_state` |
-| `LOOPVIZ:el.outcome` | Completion or terminal blocker, exactly once. | `loopviz_run_outcome` |
-| `LOOPVIZ:el.incidents` | Whenever the orchestration session resumes, is woken by a message it did not expect, or begins waiting on children. Respond using the failure and resume rules above. | `loopviz_incidents` |
-
-Optionally attach model, plan, or progress detail to any stage with `loopviz_report`.
