@@ -404,7 +404,15 @@ Send one consolidated list to the existing design session. Require it to:
    required scope.
 
 Inspect the updated design and resolution map before requesting approval. If a finding was
-silently skipped, return it to the design session.
+silently skipped, return it to the design session. Record the returned revision commit as the
+new authoritative design commit before any approval or implementation launch.
+
+If critique reconciliation changes outcome, users/usage, maturity, coverage, or exclusions,
+the design session must update PRD and design together. Atomically replace the ledger's
+authoritative PRD commit, design commit, and calibration snapshot with that returned commit,
+then launch three replacement critiques from the revised design branch using new per-child
+sequences. Reconcile all three again before entering Phase 4; no approval or implementation
+may consume the superseded commits or snapshot.
 
 The approved design must have no material open design questions. Resolve them or present
 them to the user through the refinement loop before implementation.

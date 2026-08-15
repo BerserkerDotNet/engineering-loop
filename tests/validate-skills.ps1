@@ -1521,6 +1521,15 @@ function Test-EngineeringLoopContracts {
                 'resolve from the calibration and evidence rather than using a severity-like maximum'
             )
         }
+        'reconciliation-authority' = @{
+            Target = 'SKILL.md'
+            Patterns = @(
+                'Record the returned revision commit as the new authoritative design commit',
+                'Atomically replace the ledger''s authoritative PRD commit, design commit, and calibration snapshot',
+                'launch three replacement critiques from the revised design branch',
+                'no approval or implementation may consume the superseded commits or snapshot'
+            )
+        }
         'late-structure-reapproval' = @{
             Target = 'SKILL.md'
             Patterns = @(
@@ -1947,6 +1956,15 @@ function Get-NegativeFixtures {
                 Edit-FixtureFile -Path (Join-Path $Dir 'skills/engineering-loop/SKILL.md') `
                     -Find 'resolve from the calibration and evidence rather than using a severity-like maximum' `
                     -ReplaceWith 'choose any critic classification'
+            }
+        },
+        @{
+            Name  = 'engineering-loop-reconciliation-keeps-stale-authority'
+            Apply = {
+                param([string] $Dir)
+                Edit-FixtureFile -Path (Join-Path $Dir 'skills/engineering-loop/SKILL.md') `
+                    -Find 'Atomically replace the ledger''s authoritative PRD commit, design commit, and calibration snapshot with that returned commit, then launch three replacement critiques from the revised design branch using new per-child sequences.' `
+                    -ReplaceWith 'Keep the original authoritative commits and proceed to approval.'
             }
         },
         @{
