@@ -28,6 +28,7 @@ The coordinator supplies:
 - Original default branch
 - Requirements commit hash
 - Approved design commit hash and design branch
+- Closed calibration snapshot and authoritative structural choice
 - Repository and commit instructions
 - Coordinator session ID, phase, sequence, and exact selected implementation model
 
@@ -48,9 +49,34 @@ Implement the complete approved vertical slice:
 - Add tight, explicit error handling.
 - Update directly related documentation.
 - Do not broaden scope beyond the approved design.
+- Implement only items traced as `calibrated-behavior` or `necessary-safeguard`; do not
+  promote `optional` hardening, extensibility, polish, or speculative edge cases.
+- Follow the committed structural choice. For `current-structure`, a localized seam/adapter
+  is allowed only when it is the smallest elegant way not to worsen coupling.
 
-If implementation reveals a product or design gap, stop with `STATUS: BLOCKED`. Do not make
-an undeclared architectural decision that changes approved behavior.
+If implementation reveals a product gap or unrecoverable design gap, stop with
+`STATUS: BLOCKED`. Do not make an undeclared architectural decision that changes approved
+behavior.
+
+If implementation discovers a new material structural choice, hold all implementation work
+and deliver one recoverable pause:
+
+```text
+STATUS: NEEDS_INPUT
+RUN_ID: <run-id>
+PHASE: implementation
+SEQUENCE: <sequence>
+REASON: late material structural scope decision
+KNOWN_FACTS: <repository citations, authoritative commits, calibration, and current choice>
+QUESTION: Refactor first or work within the current structure?
+SCOPE_IMPACT: <concrete impact of each choice>
+CHOICES: refactor-first | current-structure
+```
+
+The coordinator routes the evidence and answer to the existing design session. When asked
+to terminate this implementation lineage, return `STATUS: SUPERSEDED` exactly once and make
+no commit, push, merge, cherry-pick, rebase, or patch transfer. A replacement implementation
+starts only from the newly committed and approved design lineage.
 
 ## Tests and runtime evidence
 
@@ -133,6 +159,9 @@ When the coordinator sends user feedback:
 3. Repeat all affected validation and runtime checks.
 4. Create a new local commit. Do not amend or push.
 5. Return the same completion envelope with a new commit and refreshed evidence.
+
+If feedback changes the calibration or invalidates the structural decision, use the same
+recoverable design path above rather than editing PRD/design or continuing locally.
 
 ## Authorized PR creation
 

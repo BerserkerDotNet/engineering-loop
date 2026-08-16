@@ -1,8 +1,9 @@
 # Requirements Session Contract
 
 Own product requirements for one engineering-loop run on the assigned requirements branch.
-The coordinator supplies the run/task/repository context, artifact/template, coordinator
-session ID, phase, sequence, and active word cap.
+The coordinator supplies the run/task/repository context, explicit calibration facts already
+present in the initial ask, artifact/template, coordinator session ID, phase, sequence, and
+active word cap.
 
 ## Product boundary
 
@@ -10,8 +11,14 @@ Read only enough code, tests, docs, and history to establish current user-visibl
 terminology, compatibility, constraints, and affected flows. Do not choose architecture,
 APIs, classes, files, schemas, libraries, or implementation order.
 
-Ask only material product questions that can change scope, behavior, acceptance,
-compatibility, failure handling, or UX. Deliver one at a time with
+Build one closed calibration record containing intended outcome, users and usage, maturity,
+included edge cases, exclusions, and a source for every field. Sources are only
+`initial-ask` and `coordinator-answer`. Repository inference may propose a value or expose a
+contradiction, but cannot confirm a field or satisfy edge-case coverage. A concise explicit
+answer such as `minimal/default cases only` is valid. Do not re-ask an explicit fact.
+
+Ask only one focused missing or contradictory material product question at a time. Questions
+may change scope, behavior, acceptance, compatibility, failure handling, or UX. Deliver with
 `send_session_message`; never ask the user directly:
 
 ```text
@@ -20,7 +27,9 @@ RUN_ID: <run-id>
 PHASE: requirements
 SEQUENCE: <sequence>
 QUESTION: <one focused product question>
-WHY_IT_MATTERS: <one sentence>
+REASON: <missing or contradictory calibration fact>
+KNOWN_FACTS: <concise explicit facts and sources>
+SCOPE_IMPACT: <what cannot be scoped until answered>
 ```
 
 Do not repeat answered questions or ask implementation preferences that are not product
@@ -34,9 +43,16 @@ non-goals/compatibility/failures, free of unresolved ambiguity, and within the s
 word cap. Only the coordinator may authorize the bounded complex-task exception recorded in
 the ledger. `Open questions` must be exactly `None`.
 
-Before completion, verify every goal/requirement maps to acceptance criteria, likely edge
-cases are defined, no technical design leaked in, and the diff contains only the PRD. Commit
-locally with repository conventions and
+For a legacy run, reuse this writable session and lineage. Backfill equivalent explicit
+prose without asking only when session history traces it to an original user message or
+coordinator-relayed user answer; otherwise treat it as missing and ask one focused question.
+Never mark legacy artifact prose or repository-inferred coverage as explicit. Commit the
+backfilled calibration before any downstream phase.
+
+Before completion, verify every calibration field has an allowed source, every
+goal/requirement maps to acceptance criteria, included edge cases and exclusions are
+explicit, no technical design leaked in, and the diff contains only the PRD. Commit locally
+with repository conventions and
 `Co-authored-by: Copilot App <223556219+Copilot@users.noreply.github.com>`. Do not push or
 create a PR. Prove no upstream or matching remote branch with `git branch -vv` and
 `git ls-remote --heads <remote> <branch>` when a remote exists.
@@ -54,6 +70,8 @@ COMMIT: <full hash>
 SUMMARY: <short product summary>
 OPEN_QUESTIONS: None
 MATERIAL_GAPS: None
+CALIBRATION_COMPLETE: yes
+COVERAGE_PROVENANCE: <initial-ask or coordinator-answer>
 PUSHED: no
 PR_CREATED: no
 UPSTREAM: none

@@ -10,7 +10,9 @@ Do not edit files, commit, push, create a PR, or ask the user questions.
 - Review lens: `<REVIEW_LENS>`
 - Initial product ask: `<INITIAL_TASK>`
 - PRD: `<PRD_PATH>`
+- PRD commit: `<PRD_COMMIT>`
 - Design: `<DESIGN_PATH>`
+- Calibration snapshot: `<CALIBRATION_SNAPSHOT>`
 - Task-specific risk areas: `<TASK_SPECIFIC_RISKS>`
 - Known affected entry points: `<ENTRY_POINTS>`
 - Design commit: `<DESIGN_COMMIT>`
@@ -57,6 +59,8 @@ Report only actionable findings. Each finding must include:
 - Exact design change recommended
 - Verification needed after the change
 - Evidence basis: repository-static, observed-runtime, or current authoritative external source
+- Scope classification: `calibrated-behavior`, `necessary-safeguard`, `optional`, or
+  `structural-decision`
 
 If a finding depends on provider/platform limits, verify it against a current authoritative
 source for the exact production model/version. Record source URL/title, accessed date, exact
@@ -65,6 +69,10 @@ must say what runtime or test verification turns it into implementation work.
 
 Do not inflate severity. Do not report style preferences. If the design is correct on a
 reviewed concern, include it under strengths rather than inventing a finding.
+An `optional` ideal-state improvement cannot be a blocker. A `necessary-safeguard` finding
+must name the existing safeguard, cite repository or authoritative platform evidence, and
+state why it is necessary for approved behavior. A `structural-decision` finding must cite
+the relevant repository structure and its material consequence; cosmetic debt is not one.
 
 Return:
 
@@ -80,6 +88,7 @@ FINDINGS:
 - ID: <id>
   SEVERITY: <severity>
   REQUIREMENT: <requirement or criterion>
+  SCOPE_CLASS: <calibrated-behavior | necessary-safeguard | optional | structural-decision>
   EVIDENCE_BASIS: <repository-static | observed-runtime | authoritative-external with citation>
   EVIDENCE: <specific evidence>
   FAILURE_SCENARIO: <observable failure>

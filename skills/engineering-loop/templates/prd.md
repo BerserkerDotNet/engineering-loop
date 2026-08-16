@@ -9,6 +9,19 @@
 In one short paragraph, state the user/business problem, who is affected, and the observable
 outcome. Do not prescribe implementation.
 
+## Calibration record
+
+| Field | Explicit value | Source |
+|---|---|---|
+| Intended outcome | <Observable result the run should deliver> | `initial-ask` or `coordinator-answer` |
+| Users and usage | <Who will use it and in what context> | `initial-ask` or `coordinator-answer` |
+| Maturity | <prototype, MVP, production, or another explicit target> | `initial-ask` or `coordinator-answer` |
+| Included edge cases | <Explicit cases, including `minimal/default cases only` when selected> | `initial-ask` or `coordinator-answer` |
+| Exclusions | <Hardening, extensibility, polish, and cases intentionally outside this run> | `initial-ask` or `coordinator-answer` |
+
+Every field is required. Repository evidence may identify a question or proposal, but it is
+never a coverage source and cannot complete this record.
+
 ## Scope
 
 - G1. <Observable product outcome>
